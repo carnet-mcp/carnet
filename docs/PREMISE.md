@@ -35,16 +35,15 @@ provable in the audit log. The wider sentence — *every call the agent makes* i
 governed — is not true and no connector makes it true: an agent on a customer's
 machine can dial a vendor directly, and one that can execute code always will be able
 to. Making the wider sentence true means running agents inside infrastructure this
-platform controls, with egress blocked except through the door; that is registered
-future work (DEFERRED.md, the egress-control row), not an implied present capability.
-Widening *which kinds of call can be routed* — REST APIs, model calls — is plan 045's
-arc and does not change this boundary.
+platform controls, with egress blocked except through the door. That is future work and
+not an implied present capability. Widening *which kinds* of call can be routed — REST
+APIs, model calls — does not change this boundary.
 
 ## Agent mode is withdrawn, permanently
 
-Plan 033 named a second mode — **agent mode**, an agent exposed as a single MCP tool
-where `tools/call` submits a run and holds for the answer. Four plan documents describe
-it as "coming", in nine separate sentences.
+An earlier design named a second mode — **agent mode**, an agent exposed as a single MCP
+tool where `tools/call` submits a job and holds for the answer. It was described as
+coming, more than once.
 
 **It is not coming. It was never built, and it is now cancelled rather than pending.**
 
@@ -83,7 +82,7 @@ permission model. The word is imperfect and it is load-bearing.
 
 Carnet used to be able to *run* an agent itself — a queue, workers, a model loop,
 schedules, triggers and the screens for all of it, kept as a bench for trying an agent
-before wiring it up elsewhere. **Step 078 deleted it.** This tree is the door and what
+before wiring it up elsewhere. **It was deleted.** This tree is the door and what
 the door scopes by, and nothing in it executes an agent or holds a model key. The
 `runs`, `schedules`, `triggers` and `files` tables still exist, because released
 migrations are immutable and checksummed; nothing reads them.
@@ -97,12 +96,12 @@ a door call  →  NO runs row   +  ONE audit row, correlation id `door-<hex>`
 ```
 
 A tool-mode call has no prompt, no config and no version, so a `runs` row would be untrue
-about all three — and since step 078 there is nothing that writes one.
+about all three — and since the runtime was removed, nothing writes one.
 
 **Therefore: anything measuring `runs` is measuring nothing.** Usage, adoption and
 governance all read `audit` filtered on `run_id LIKE 'door-%'`
-(`storage.DOOR_CALL_ID_PREFIX`). This mistake has already been made once, in the first
-draft of plan 041, which built an entire dashboard on `runs`.
+(`storage.DOOR_CALL_ID_PREFIX`). This mistake has already been made once here: an entire
+dashboard was built on `runs` before anybody noticed it could only ever show zero.
 
 ## Not the product, stated plainly
 
