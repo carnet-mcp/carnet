@@ -1,0 +1,20 @@
+/* One stylesheet, in five files. No framework, no utility classes, no preprocessor.
+ *
+ * The plan's scope cut still stands: "ten primitives written here are smaller than the
+ * dependency and answer to this design rather than to a generic one". This entry exists
+ * to fix the cascade order, which is the one thing splitting a stylesheet can break:
+ *
+ *   tokens      the values, and nothing that uses them
+ *   base        bare elements — the reset, type, controls, tables, the focus ring
+ *   shell       the frame around every page
+ *   primitives  the things in `components/ui`, which may override a bare element
+ *   features    shapes belonging to one screen, which may override a primitive
+ *
+ * Vite inlines these at build, so this is a reading order rather than five requests.
+ */
+
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/shell.css";
+@import "./styles/primitives.css";
+@import "./styles/features.css";

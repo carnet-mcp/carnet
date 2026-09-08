@@ -1,0 +1,884 @@
+/* The primitives. Each of these has a component in `components/ui` and nothing here
+ * knows what an agent or a run is. */
+
+/* --- page ----------------------------------------------------------------------- */
+
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+.page-head .head-text {
+  min-width: 0;
+  flex: 1;
+}
+.page-head .lede {
+  color: var(--ink-soft);
+  margin-top: var(--space-1);
+  max-width: 62ch;
+}
+/* The page's actions, level with its title. A list page's "New agent" and a detail
+   page's Edit/Delete are the same kind of thing in the same place on every screen. */
+.page-head .head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  padding-top: 0.15rem;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: var(--text-md);
+  color: var(--ink-faint);
+  margin-bottom: var(--space-2);
+}
+.back:hover {
+  color: var(--accent);
+}
+
+/* A row of controls above a list or under a heading — a search box and a button, a
+   filter and a count. The spacing patch that used to be written inline at eight call
+   sites. */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+/* --- card ----------------------------------------------------------------------- */
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-5) var(--space-5);
+  margin-bottom: var(--space-4);
+}
+.card > h2,
+.card > h3 {
+  margin-bottom: var(--space-2);
+}
+/* The heading, ruled off from what it heads. A card in this app is usually a heading
+   over a table or a form, and without the line the two ran together into one block of
+   left-aligned text. */
+.card-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.card-title .hint {
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
+  margin-left: auto;
+}
+.card > table {
+  margin-top: var(--space-3);
+}
+
+/* --- rows ----------------------------------------------------------------------- */
+
+.rows {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.row {
+  display: block;
+  padding: var(--space-3) var(--pad);
+  border-bottom: 1px solid var(--line);
+  color: inherit;
+}
+.row:last-child {
+  border-bottom: none;
+}
+a.row {
+  position: relative;
+  transition: background-color var(--fast) var(--ease);
+}
+a.row:hover {
+  background: var(--sunk);
+  text-decoration: none;
+}
+/* The name takes the accent on hover, and the row grows a bar down its left edge. Two
+   signals rather than one because the row tint alone is a two-percent change in
+   lightness — real on a good monitor, invisible on a projector or in sunlight. */
+a.row:hover .row-name {
+  color: var(--accent);
+}
+a.row::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease);
+}
+a.row:hover::before,
+a.row:focus-visible::before {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  a.row,
+  a.row::before {
+    transition: none;
+  }
+}
+.row-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.row-name {
+  font-weight: 600;
+  transition: color var(--fast) var(--ease);
+}
+.row-sub {
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
+  margin-top: 0.125rem;
+}
+/* **Inside a table cell it needs a ceiling.** A `.row-sub` in a list sits in a column
+   that is already the width of the card, and wraps on its own. In a log table it is a
+   failure sentence in one of eight columns — and since step 041 that sentence is on
+   every errored call, not only on refusals, so it arrives carrying a vendor's timeout
+   complete with host, port and connection pool. A cell has no intrinsic width, so an
+   unbroken sentence like that sets the width of the column and then of the table.
+
+   `overflow-wrap: anywhere` rather than `break-word` because the long token here is
+   usually a URL or a `HTTPSConnectionPool(host='…', port=443)` with no spaces to break
+   at, and `break-word` will not break inside one. The table still scrolls in its own
+   container when the *other* seven columns need it; this stops one column doing it
+   alone. */
+td .row-sub {
+  /* A floor as well as a ceiling. `table-layout: auto` pays for extra width by
+     squeezing whichever column *can* shrink, and that is always this one — the only
+     cell holding wrappable prose. Left to itself the browser collapsed it to a sliver
+     and turned every errored row into eight lines of two words. The minimum is a
+     readable measure; the maximum stops one sentence setting the table's width; the
+     scroll container absorbs whatever total the eight columns then need. */
+  min-width: 26ch;
+  max-width: 44ch;
+  overflow-wrap: anywhere;
+}
+
+/* **A row with something to do to it.** `.row-main` and `.row-action` were written at
+   six call sites — a connector's Open, a group's Members, a connection's Connect, a
+   trigger's and a schedule's enable — and neither had a single rule in this stylesheet.
+   So every one of them stacked: a paragraph of description, and then a button on its own
+   line under it, left-aligned against the text as if it were another sentence.
+
+   Keyed on `:has()` rather than applied to `.row` outright, because the *other* kind of
+   row — a name over a subtitle, which is what every list page draws — is a block on
+   purpose and would lay its two lines out side by side. */
+.row:has(> .row-main) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3) var(--space-4);
+}
+.row-main {
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+.row-main > :first-child {
+  margin-top: 0;
+}
+.row-main > :last-child {
+  margin-bottom: 0;
+}
+.row-action {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+/* A trigger's URL, in a listing row. `.rows` clips (`overflow: hidden`), and this is the
+   value a person opened the row to copy — so a URL longer than the row must wrap rather
+   than lose its tail to a clip that cannot even be selected. */
+.row-main code {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/* --- badge ---------------------------------------------------------------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.125rem 0.5rem 0.125rem 0.45rem;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.badge.good {
+  color: var(--good);
+  background: var(--good-soft);
+  border-color: color-mix(in srgb, var(--good) 40%, transparent);
+}
+.badge.warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+.badge.bad {
+  color: var(--bad);
+  background: var(--bad-soft);
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+}
+.badge.going {
+  color: var(--going);
+  background: var(--going-soft);
+  border-color: color-mix(in srgb, var(--going) 40%, transparent);
+}
+.badge.waiting {
+  color: var(--waiting);
+  background: var(--waiting-soft);
+  border-color: var(--line-strong);
+}
+.badge .pip {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+/* A running run's pip breathes, and it breathes *outward* — the halo is the thing that
+   catches the eye in a table of thirty rows, where a dot changing opacity does not. */
+.badge.going .pip {
+  animation: pulse 1.6s var(--ease) infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 currentColor;
+    opacity: 1;
+  }
+  70% {
+    box-shadow: 0 0 0 4px transparent;
+    opacity: 0.55;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .badge.going .pip {
+    animation: none;
+  }
+  .spinner {
+    animation-duration: 3s;
+  }
+}
+
+/* --- button --------------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  height: var(--control);
+  padding: 0 0.85rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--raised);
+  color: var(--ink);
+  font-weight: 500;
+  font-size: var(--text-md);
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-btn);
+  transition:
+    background-color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease),
+    transform var(--fast) var(--ease);
+}
+/* The glyph is optically wider than its box on the leading edge; pulling it back is
+   what stops "＋ New agent" from looking like two things in a row. */
+.btn .icon {
+  margin-left: -0.15rem;
+  flex: none;
+}
+.btn:hover:not(:disabled) {
+  background: var(--sunk);
+  border-color: var(--ink-faint);
+  text-decoration: none;
+}
+/* It goes down when you press it. One pixel, and it is most of what separates a control
+   that feels connected to the click from a rectangle that repaints. */
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition: none;
+  }
+  .btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  box-shadow:
+    var(--shadow-btn),
+    inset 0 1px 0 rgb(255 255 255 / 0.14);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.btn.primary:active:not(:disabled) {
+  box-shadow: none;
+}
+
+.btn.danger {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--line-strong));
+  background: transparent;
+  box-shadow: none;
+}
+.btn.danger:hover:not(:disabled) {
+  background: var(--bad-soft);
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.btn.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  padding-inline: 0.55rem;
+  box-shadow: none;
+}
+.btn.quiet:hover:not(:disabled) {
+  background: var(--sunk);
+  border-color: transparent;
+  color: var(--ink);
+}
+
+/* --- field ---------------------------------------------------------------------- */
+
+label.field,
+div.field {
+  display: block;
+  margin-bottom: var(--space-4);
+}
+.field .label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin-bottom: var(--space-1);
+  color: var(--ink);
+}
+.field .hint {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
+  margin-bottom: 0.4rem;
+  max-width: 62ch;
+}
+
+/* A value a person is about to select and paste somewhere else — a trigger's URL and
+   the one showing of its secret. Not a field: there is no control here, so it is a
+   `<div>` with a `<span class="label">` that names a value rather than a `<label>` that
+   would name nothing. It wraps rather than scrolling because a truncated secret is a
+   secret somebody copies half of, and `break-all` because these are random characters
+   with no word boundaries to break on. */
+.reveal {
+  margin-bottom: 0.6rem;
+}
+.reveal .label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+.reveal code {
+  display: block;
+  padding: 0.45rem 0.6rem;
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  /* Unprefixed alone is not enough: this build has no autoprefixer, and WebKit drops the
+     whole declaration without the prefix — which would silently remove the one
+     single-click affordance a mouse user has for selecting a secret shown once. */
+  -webkit-user-select: all;
+  user-select: all;
+}
+.reveal code:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- notice, empty, spinner, block ----------------------------------------------- */
+
+/* A notice leads with a glyph, and the glyph is the *second* signal rather than the
+   first: the tone already carries a colour and a word. A person who cannot tell the
+   amber border from the red one can tell a triangle from a circle. */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--pad);
+  margin-bottom: var(--space-4);
+}
+.notice-icon {
+  flex: none;
+  margin-top: 0.15rem;
+}
+.notice-body {
+  min-width: 0;
+  flex: 1;
+}
+.notice-body > :first-child {
+  margin-top: 0;
+}
+.notice-body > :last-child {
+  margin-bottom: 0;
+}
+.notice.warn {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+.notice.warn .notice-icon {
+  color: var(--warn);
+}
+.notice.bad {
+  border-color: var(--bad);
+  background: var(--bad-soft);
+}
+.notice.bad .notice-icon {
+  color: var(--bad);
+}
+.notice.info {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.notice.info .notice-icon {
+  color: var(--accent);
+}
+.notice h3 {
+  margin-bottom: var(--space-1);
+}
+
+.empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6) var(--pad);
+  text-align: center;
+  color: var(--ink-soft);
+  background: linear-gradient(var(--paper), var(--canvas));
+}
+/* The glyph over an empty result, deliberately faint. In this product **absence is
+   denial** — the screen is an answer, not a fault — and a large, dark, centred symbol
+   is the visual grammar of an error page. */
+.empty .empty-icon {
+  display: grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin: 0 auto var(--space-3);
+  border-radius: 50%;
+  background: var(--sunk);
+  color: var(--ink-faint);
+}
+.empty h2 {
+  margin-bottom: 0.35rem;
+  color: var(--ink);
+}
+.empty p {
+  max-width: 34rem;
+  margin-inline: auto;
+}
+
+.spinner {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -0.1em;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A list that has not arrived yet, drawn as the shape of the list. It replaces a
+   spinner where the wait is a list of rows: the page does not jump when the rows land,
+   because the space was already the right size. */
+.skeleton {
+  display: block;
+  height: 1em;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--sunk) 25%,
+    var(--line) 37%,
+    var(--sunk) 63%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+.skeleton + .skeleton {
+  margin-top: var(--space-2);
+}
+.skeleton.wide {
+  width: 40%;
+}
+.skeleton.narrow {
+  width: 22%;
+}
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background: var(--sunk);
+  }
+}
+
+pre.block {
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* --- stats and tags -------------------------------------------------------------- */
+
+/* Each number in its own tile. They are read by comparing them with each other, and a
+   bordered box makes "3 failed" a fact with an edge rather than two words in a row. */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+}
+.stat {
+  flex: 1 1 7rem;
+  min-width: 6rem;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--sunk);
+}
+.stat .k {
+  display: block;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+}
+.stat .v {
+  display: block;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  font-size: 1.375rem;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin-top: 0.1rem;
+}
+/* How this window compares with the one before it. Step 066a.
+   **Ink, never colour**, and that is the decision rather than a default: a figure that
+   moved is not good or bad until somebody says which figure it is — refusals falling and
+   traffic falling are opposite news — and a green arrow says it for them. */
+.stat .delta {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.15rem;
+}
+
+/* A tile that opens the rows behind it. The whole tile is the target — a four-character
+   link inside a 12rem box is a target people miss — and it is otherwise indistinguishable
+   from a tile that is not one until the pointer is over it. Step 066. */
+a.stat.linked {
+  color: inherit;
+  text-decoration: none;
+  display: block;
+}
+a.stat.linked:hover {
+  border-color: var(--accent);
+}
+a.stat.linked:focus-visible {
+  outline: 2px solid var(--focus, var(--ink));
+  outline-offset: 2px;
+}
+
+.stat.alert {
+  border-color: color-mix(in srgb, var(--bad) 55%, transparent);
+  background: var(--bad-soft);
+}
+.stat.alert .k {
+  color: color-mix(in srgb, var(--bad) 80%, var(--ink-faint));
+}
+.stat.alert .v {
+  color: var(--bad);
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.tag {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--sunk);
+  color: var(--ink-soft);
+}
+.tag.write {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+/* --- odds and ends --------------------------------------------------------------- */
+
+.muted {
+  color: var(--ink-faint);
+}
+.sentence {
+  color: var(--ink-soft);
+}
+.tiny {
+  font-size: var(--text-xs);
+}
+.spread {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+/* Top level, not `.spread .right` — it is used inside a `.row-top` too, and a
+   descendant selector meant that call site silently did nothing and patched itself
+   with an inline style. */
+.right {
+  margin-left: auto;
+}
+.stack-sm {
+  margin-top: var(--space-3);
+}
+
+/* --- the simulate form and its verdict (069) --------------------------------------- */
+
+/* An argument is a name and a value, and they are one thing. Side by side above the
+ * fold this page is usually read at, stacked below it — a two-column grid that wraps is
+ * a name orphaned from its value, which reads as two arguments. */
+.pair {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.pair > * {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* **Separated from the submit button, because driving it showed why.** With no rule and
+ * no space the badge sits directly under the control that produced it and reads as part
+ * of the button row — a status attached to the press rather than an answer to the
+ * question. It is the answer, so it gets a boundary. */
+.verdict {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+.verdict .rows {
+  margin-top: var(--space-3);
+}
+.verdict ul {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+}
+
+/* --- tabs ------------------------------------------------------------------------ */
+
+/* Step 048. The strip sits on the page rather than on a card, because the panes below it
+ * are cards and figures with their own surfaces — a second surface behind the strip would
+ * put a box inside a box on every pane.
+ *
+ * The selected tab is marked by a **weight change and a rule under it**, not by colour
+ * alone: the accent is the only thing separating it from its neighbours otherwise, and
+ * `Badge`'s rule applies here for the same reason it applies there. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: var(--space-5) 0 var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  appearance: none;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink-soft);
+  background: none;
+  border: 0;
+  /* The bottom padding carries the rule the selected state draws, so the text does not
+   * move by two pixels when a tab is chosen. */
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.tab.selected {
+  color: var(--accent);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+/* The first heading inside a pane sits directly under the strip, so it does not need the
+ * top margin `.section-head` carries to separate it from the figure above it. */
+[role="tabpanel"] > .section-head:first-child,
+[role="tabpanel"] > *:first-child > .section-head:first-child {
+  margin-top: 0;
+}
+
+/* --- printing a tabbed page. Step 066 ------------------------------------------------
+ * 048's known limit, answered: *"Printing and PDF export now show one tab. A reader who
+ * printed this page got the whole record; they now get the visible pane."* It was small
+ * then and it matters more now — 066 adds eight figures across five panes, so the
+ * fraction of the page a print loses has grown with every one of them.
+ *
+ * `[hidden]` is what the tab strip uses to hide a pane, so unhiding it here is the whole
+ * fix. `!important` because the attribute's own UA rule is `display: none` and a
+ * specificity fight with the user agent is not a fight worth having in a stylesheet
+ * nobody looks at.
+ *
+ * The strip itself goes: on paper a row of buttons is a row of words that cannot be
+ * pressed, and the headings inside each pane already say what each one is. Each pane
+ * starts on a fresh page — six sections running into each other mid-figure is what makes
+ * a printout unreadable — except the first, which follows the tiles it belongs with. */
+@media print {
+  [role="tabpanel"][hidden] {
+    display: block !important;
+  }
+
+  [role="tablist"] {
+    display: none;
+  }
+
+  [role="tabpanel"] {
+    break-before: page;
+  }
+
+  [role="tabpanel"]:first-of-type {
+    break-before: auto;
+  }
+
+  /* A figure is not split across a page boundary if it can be helped: half a chart at
+   * the foot of one page and its legend at the head of the next is worse than a short
+   * page. */
+  .figure,
+  .card {
+    break-inside: avoid;
+  }
+}
+
+/* --- brandmark — step 091 ----------------------------------------------------------
+ *
+ * A vendor's mark, or its initial, on a tile tinted with the vendor's own colour. One
+ * value drives both — the ink is `--brand` and the tile is `--brand` mixed into the
+ * surface — so a new row in `BRANDS` cannot get the pair out of step, and so the tint
+ * lands on `--paper` in one scheme and on the dark paper in the other rather than on a
+ * checked-in white.
+ *
+ * The dark scheme lifts the ink instead of inverting the tile: Notion's near-black and
+ * GitHub's are legible on white and invisible on `#16171b`, and the fix a designer would
+ * reach for — a white tile in both schemes — is the one thing that would make every card
+ * on a dark page glow. */
+.brandmark {
+  /* A hair of black into the ink. Brands that are already dark barely move; the light
+     ones — Anthropic's clay, Snowflake's blue — stop reading as a ghost on a tile that is
+     a pale version of themselves. */
+  --brand-ink: color-mix(in srgb, var(--brand) 88%, #000000);
+  --brand-tile: color-mix(in srgb, var(--brand) 11%, var(--paper));
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius);
+  color: var(--brand-ink);
+  background: var(--brand-tile);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 16%, transparent);
+}
+/* No vendor at all — the "something else" card. Not a brand, so not a brand colour. */
+.brandmark.plain {
+  color: var(--ink-faint);
+  background: var(--sunk);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.brandmark-letter {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .brandmark {
+    --brand-ink: color-mix(in srgb, var(--brand) 55%, #ffffff);
+    --brand-tile: color-mix(in srgb, var(--brand) 20%, var(--paper));
+  }
+}

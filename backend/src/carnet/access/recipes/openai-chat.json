@@ -1,0 +1,63 @@
+{
+  "id": "openai-chat",
+  "name": "OpenAI — Chat Completions",
+  "description": "Broker an OpenAI model. Written out beside the Anthropic recipe precisely so neither reads as the supported one.",
+  "verified_on": null,
+  "verified_by": "",
+  "verified_against": "",
+  "hosts": [
+    {
+      "host": "api.openai.com",
+      "why": "The Chat Completions API itself. Every brokered model call is a server-side POST to this host."
+    }
+  ],
+  "connector": {
+    "connector_id": "openai",
+    "kind": "rest",
+    "url": "https://api.openai.com",
+    "credential_env": "OPENAI_BROKERED_KEY",
+    "credential_header": null,
+    "credential_prefix": null,
+    "headers": {},
+    "description": "OpenAI, chat completions only"
+  },
+  "oauth": null,
+  "tools": [
+    {
+      "remote_name": "chat",
+      "effect": "write",
+      "identity": "service",
+      "description": "Think with an OpenAI model.",
+      "note": "A reasoning step, not a chat pipe. `messages` is redacted, so the audit log records that a call happened and what it cost — never what was said.",
+      "redact_args": ["messages"],
+      "resources": [
+        {
+          "type": "openai.model",
+          "args": ["model"],
+          "template": null,
+          "families": ["gpt-5", "gpt-4"]
+        }
+      ],
+      "binding": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "query": [],
+        "body": ["model", "messages", "max_tokens"],
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "model": { "type": "string" },
+            "messages": { "type": "array" },
+            "max_tokens": { "type": "integer" }
+          },
+          "required": ["model", "messages"]
+        },
+        "usage_map": {
+          "model": "model",
+          "input_tokens": "usage.prompt_tokens",
+          "output_tokens": "usage.completion_tokens"
+        }
+      }
+    }
+  ]
+}

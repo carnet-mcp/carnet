@@ -1,0 +1,227 @@
+# The deployment, stated (docs/plans/030-deployment-artifacts.md). Four services:
+#
+#   db        Postgres 16, bundled behind the `bundled-db` profile — drop the profile
+#             from .env and set CARNET_DATABASE_URL to bring your own
+#   migrate   `carnet --migrate`, one-shot; everything below waits for it, so
+#             an upgrade is `docker compose up -d --build` and the schema moves first
+#   api       the door — /mcp, the broker, and the administration surface
+#   front     the terminating proxy — the only service that publishes a port
+#
+# `migrate` and `api` are the same image with different commands, and the compose
+# file is where that is inspectable.
+
+name: carnet
+
+services:
+  db:
+    # Pinned to the multi-arch index digest, like every base image in the Dockerfile
+    # (step 055): a tag is a name somebody else can move. The tag stays beside the
+    # digest so a reader sees what it was; digest taken 2026-08-30.
+    image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+    profiles: ["bundled-db"]
+    environment:
+      # The superuser stays inside this container: it runs initdb and nothing else.
+      # Every DSN below names carnet_app, which initdb/01-app-role.sh creates as an
+      # ordinary NOSUPERUSER role — the BYOC shape, because a superuser bypasses
+      # row-level security by itself and hides the class of defect 029's testing pass
+      # found. The default password is acceptable only because this port is not
+      # published; .env.example says to change it anyway.
+      POSTGRES_PASSWORD: ${CARNET_DB_PASSWORD:-carnet}
+      CARNET_DB_PASSWORD: ${CARNET_DB_PASSWORD:-carnet}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d carnet"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+    image: carnet-api
+    command: ["carnet", "--migrate"]
+    restart: "no"
+    environment: &app-env
+      # Unset means the bundled database. Managed Postgres (RDS, Cloud SQL, Azure —
+      # 16 or later): set it in .env and drop COMPOSE_PROFILES=bundled-db. One DSN for
+      # migrate and api, on purpose: UPGRADING's rule is *serve with the role
+      # that migrates* — ownership is the row-level-security exemption, and a second
+      # DSN would be a second chance to violate it.
+      CARNET_DATABASE_URL: ${CARNET_DATABASE_URL:-postgresql://carnet_app:${CARNET_DB_PASSWORD:-carnet}@db:5432/carnet}
+      # No default, deliberately: the key is generated once, held in your secret
+      # store, and never kept by the platform. See .env.example.
+      CARNET_SECRET_KEY: ${CARNET_SECRET_KEY:?generate once with `carnet --generate-key`, keep it in your secret store, set it in .env — losing it is losing every delegated credential}
+      # Retired keys, during a rotation. **Without this the rotation procedure in
+      # docs/UPGRADING.md is impossible under compose** — you would set the new key,
+      # every credential sealed under the old one would stop opening, and
+      # `--finish-rotation` would have nothing to re-encrypt from.
+      CARNET_SECRET_KEYS_OLD: ${CARNET_SECRET_KEYS_OLD:-}
+      # Derived from the domain by default, and overridable for the case the default
+      # gets wrong: a trial on shifted ports, or a path prefix that is not `/api`.
+      # The in-repo default (http://localhost:8080/api) exists for development and is
+      # wrong for every deployment on purpose; this is where the wrongness stops.
+      CARNET_PUBLIC_ORIGIN: ${CARNET_PUBLIC_ORIGIN:-https://${CARNET_DOMAIN:?the name this deployment is reached at — `localhost` for a trial}/api}
+      CARNET_BOOTSTRAP_ADMIN: ${CARNET_BOOTSTRAP_ADMIN:-}
+      # Step 097: `on` lets every signed-in member administer this tenant — hosts,
+      # connectors, vetting, consent flows, groups — with every act still recorded
+      # against them. Writes no row; unset it and the gate is back. Off by default.
+      CARNET_OPEN_ADMIN: ${CARNET_OPEN_ADMIN:-}
+
+      # --- The knobs, passed through rather than hard-coded ------------------------
+      #
+      # `environment:` is a closed list: a variable absent here cannot be set from
+      # .env at all, it is silently ignored — so every knob the application reads has
+      # to be named or it does not exist for a deployment. Several of these carry a
+      # comment in `config.py` promising they are "overridable without a deploy",
+      # which was not true of this artifact until they were listed here; two more are
+      # described there as deployment-level controls. Empty means unset: every reader
+      # takes `os.environ.get(...) or <default>`, so a blank is the shipped default.
+      # Observability (step 057): the carnet logger's threshold and shape. Both
+      # validated at start — a typo refuses with a sentence rather than silently
+      # meaning info/text. `json` is one object per line, for a log pipeline.
+      CARNET_LOG_LEVEL: ${CARNET_LOG_LEVEL:-}
+      CARNET_LOG_FORMAT: ${CARNET_LOG_FORMAT:-}
+      # Step 096: one JSON object per brokered call and per refusal, on stdout, for the
+      # pipeline that already reads this container's logs. On unless set to `off`.
+      CARNET_AUDIT_STDOUT: ${CARNET_AUDIT_STDOUT:-}
+      CARNET_RETENTION_DAYS: ${CARNET_RETENTION_DAYS:-}
+      CARNET_RETENTION_SWEEP: ${CARNET_RETENTION_SWEEP:-}
+      # The MCP door's ceiling (033b): how many calls one token may make in a UTC day.
+      # Counted in Postgres, which is what makes it the same ceiling however many API
+      # replicas serve.
+      CARNET_MCP_CALLS_PER_DAY: ${CARNET_MCP_CALLS_PER_DAY:-}
+      # The door's spend ceilings — plan 049 blocker B4. Since 045c a brokered model call
+      # through the door spends real money under the connector's own credential, and
+      # these are the only dials that cap it. Both ship at 0 (off), and until they were
+      # named here a compose deployment had **no way to turn them on** — unbounded spend
+      # with the control documented in config.py and unreachable. USD is the dollar
+      # ceiling; TOKENS is the token-count net under it.
+      CARNET_MCP_USD_PER_DAY: ${CARNET_MCP_USD_PER_DAY:-}
+      CARNET_MCP_TOKENS_PER_DAY: ${CARNET_MCP_TOKENS_PER_DAY:-}
+      # The prices those ceilings are counted against. A **file path**, not a value, so
+      # setting it also means mounting the file — see the `volumes:` note below and
+      # .env.example. Unset uses config.py's built-in rate snapshot.
+      CARNET_MODEL_RATES: ${CARNET_MODEL_RATES:-}
+      # The most an acting-for identity may carry through the door (033c). A real IdP
+      # token with group claims runs to several KB; raise it for a provider that emits
+      # larger ones.
+      CARNET_MCP_MAX_ACTING_FOR_BYTES: ${CARNET_MCP_MAX_ACTING_FOR_BYTES:-}
+      # The most one door call may carry as arguments. Bounds what an authenticated
+      # caller can write into the audit log, which the ceiling above does not: a
+      # denied call spends no budget and still records its arguments.
+      CARNET_MCP_MAX_CALL_BYTES: ${CARNET_MCP_MAX_CALL_BYTES:-}
+      CARNET_MCP_SESSION_POOL_MAX: ${CARNET_MCP_SESSION_POOL_MAX:-}
+      # Step 083. How long a token minted by an MCP client's OAuth consent lives, in
+      # days; 0 for no expiry. The flow issues no refresh token, so an expiry is a
+      # re-consent — one click for a person still signed in at their provider.
+      CARNET_OAUTH_TOKEN_DAYS: ${CARNET_OAUTH_TOKEN_DAYS:-}
+      # The operator's own networks (step 058): hosts listed here may resolve to
+      # loopback or private addresses and still be dialled — internal connectors,
+      # a sidecar. Empty (the default) means every connector host must resolve
+      # public; link-local (cloud metadata) is refused whatever this says.
+      CARNET_EGRESS_INTERNAL_HOSTS: ${CARNET_EGRESS_INTERNAL_HOSTS:-}
+      # The customer's own vault (step 070). Set these and a connector's shared
+      # credential may be an `op://vault/item/field` reference resolved at call time
+      # instead of a variable this deployment holds — the whole of *if you would rather
+      # we didn't hold it, we don't have to*.
+      #
+      # Empty is the honest default: a deployment with no vault has no vault, and a
+      # connector that names one gets a refusal saying which two variables are missing.
+      # The timeout is a budget for the WHOLE resolution, not per hop.
+      CARNET_VAULT_URL: ${CARNET_VAULT_URL:-}
+      CARNET_VAULT_TOKEN: ${CARNET_VAULT_TOKEN:-}
+      CARNET_VAULT_TIMEOUT_SECONDS: ${CARNET_VAULT_TIMEOUT_SECONDS:-}
+      # How long a tool implementation waits for a vendor, in seconds. Made overridable
+      # by step 065 for a named reason — a documentation server answered in 1.9s all
+      # afternoon and then did not, which the caller sees as `no reply from the server in
+      # time` on a call that may well have taken effect — and **never added to this closed
+      # list**, so the sentence in `config.py` promising a deployment can raise it was not
+      # true of a deployment. Found by step 070's edge pass, running `the_knobs`.
+      CARNET_REQUEST_TIMEOUT: ${CARNET_REQUEST_TIMEOUT:-}
+    depends_on:
+      db:
+        condition: service_healthy
+        # `required: false` is what lets the bundled-db profile be switched off
+        # without editing this file.
+        required: false
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+    image: carnet-api
+    # The image's default command, restated so the compose file reads whole. What the
+    # flags mean — and why there is no --workers and no --proxy-headers — is argued in
+    # the Dockerfile.
+    command: ["uvicorn", "carnet.api:app", "--host", "0.0.0.0", "--port", "8000", "--root-path", "/api"]
+    environment: *app-env
+    volumes:
+      - var-data:/var/lib/carnet
+      # A custom model-rates file (CARNET_MODEL_RATES) is the one setting whose value
+      # is a path rather than a scalar, so reaching it means mounting the file and
+      # pointing the variable at where it lands. Uncomment and adjust:
+      #   - ./model-rates.json:/etc/carnet/model-rates.json:ro
+      # then set CARNET_MODEL_RATES=/etc/carnet/model-rates.json in .env.
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # /health/ready, not /health (step 056): liveness proves the process, and a
+      # container whose green light means "running" while every request 503s is the
+      # defect plan 049 named. Readiness makes one real database round trip, so this
+      # goes unhealthy when the database is gone — and `unless-stopped` does not
+      # restart on unhealthy, so an outage shows as an unhealthy container rather
+      # than a restart storm.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  front:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: front
+    image: carnet-front
+    environment:
+      CARNET_DOMAIN: ${CARNET_DOMAIN}
+      # The identity provider the BROWSER talks to (plan 031). One declaration, and
+      # the entrypoint derives both /config.json and the CSP from it, so the two
+      # cannot disagree. Must name the same provider `--add-idp` registers with the
+      # API. Empty means unconfigured: the stack comes up, /config.json is a real
+      # 404, and the sign-in screen says what is missing — day one runs `up` before
+      # a provider is decided, so this must not refuse. Half-set IS a refusal.
+      CARNET_OIDC_ISSUER: ${CARNET_OIDC_ISSUER:-}
+      CARNET_OIDC_CLIENT_ID: ${CARNET_OIDC_CLIENT_ID:-}
+      CARNET_OIDC_SCOPES: ${CARNET_OIDC_SCOPES:-}
+      # For providers whose token endpoint lives on a second origin (Google:
+      # https://oauth2.googleapis.com). Space-separated, added to connect-src and
+      # frame-src beside the issuer's own origin.
+      CARNET_OIDC_EXTRA_ORIGINS: ${CARNET_OIDC_EXTRA_ORIGINS:-}
+    # The only published ports. Overridable for a trial beside other services;
+    # ACME's HTTP challenge needs the real 80/443 when CARNET_DOMAIN is a real name.
+    ports:
+      - "${CARNET_HTTP_PORT:-80}:80"
+      - "${CARNET_HTTPS_PORT:-443}:443"
+    volumes:
+      # Caddy's certificates and state. Losing db-data is losing the deployment;
+      # losing these is only re-issuing certificates, but ACME rate limits exist.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  var-data:
+  caddy-data:
+  caddy-config:

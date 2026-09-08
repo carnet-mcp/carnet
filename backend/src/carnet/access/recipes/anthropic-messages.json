@@ -1,0 +1,94 @@
+{
+  "id": "anthropic-messages",
+  "name": "Anthropic — Messages API",
+  "description": "Broker an Anthropic model. Takes the last private credential off an outside agent: it holds your Carnet token and stops holding a model key.",
+  "verified_on": null,
+  "verified_by": "",
+  "verified_against": "",
+  "hosts": [
+    {
+      "host": "api.anthropic.com",
+      "why": "The Messages API itself. Every brokered model call is a server-side POST to this host."
+    }
+  ],
+  "connector": {
+    "connector_id": "anthropic",
+    "kind": "rest",
+    "url": "https://api.anthropic.com",
+    "credential_env": "ANTHROPIC_BROKERED_KEY",
+    "credential_header": "x-api-key",
+    "credential_prefix": "",
+    "headers": {
+      "anthropic-version": "2023-06-01"
+    },
+    "description": "Anthropic, the Messages API"
+  },
+  "oauth": null,
+  "tools": [
+    {
+      "remote_name": "chat",
+      "effect": "write",
+      "identity": "service",
+      "description": "Think with an Anthropic model.",
+      "note": "A reasoning step, not a chat pipe. `messages` and `system` are redacted, so the audit log records that a call happened and what it cost — never what was said.",
+      "redact_args": [
+        "messages",
+        "system"
+      ],
+      "resources": [
+        {
+          "type": "anthropic.model",
+          "args": [
+            "model"
+          ],
+          "template": null,
+          "families": [
+            "opus",
+            "sonnet",
+            "haiku"
+          ]
+        }
+      ],
+      "binding": {
+        "method": "POST",
+        "path": "/v1/messages",
+        "query": [],
+        "body": [
+          "model",
+          "messages",
+          "max_tokens",
+          "system"
+        ],
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "messages": {
+              "type": "array"
+            },
+            "max_tokens": {
+              "type": "integer"
+            },
+            "system": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "model",
+            "messages",
+            "max_tokens"
+          ]
+        },
+        "usage_map": {
+          "model": "model",
+          "input_tokens": "usage.input_tokens",
+          "output_tokens": "usage.output_tokens",
+          "cache_read_tokens": "usage.cache_read_input_tokens",
+          "cache_write_tokens": "usage.cache_creation_input_tokens"
+        }
+      }
+    }
+  ]
+}

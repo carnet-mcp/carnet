@@ -1,0 +1,285 @@
+/* The frame: a column that says where you are, and the page beside it.
+ *
+ * The column is dark in both colour schemes. It is chrome rather than content — keeping
+ * it fixed means the shape of "where am I" does not change when the OS theme does, and
+ * the one thing that lights up in it is the row you are on. */
+
+.shell {
+  min-height: 100vh;
+  display: flex;
+}
+
+.sidebar {
+  --rail: 15rem;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  flex: none;
+  width: var(--rail);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--chrome-bg);
+  border-right: 1px solid var(--chrome-line);
+  color: var(--chrome-ink-soft);
+  transition: width 150ms ease;
+}
+.shell.collapsed .sidebar {
+  --rail: 3.5rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
+  }
+}
+
+/* --- head ------------------------------------------------------------------------ */
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  min-height: 3.25rem;
+  border-bottom: 1px solid var(--chrome-line);
+}
+.sidebar .brand {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: var(--text-md);
+  letter-spacing: -0.01em;
+  color: var(--chrome-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-toggle {
+  margin-left: auto;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--chrome-ink-faint);
+  cursor: pointer;
+}
+.rail-toggle:hover {
+  background: var(--chrome-hover);
+  color: var(--chrome-ink);
+}
+.rail-toggle:active {
+  transform: translateY(1px);
+}
+
+/* --- the rows -------------------------------------------------------------------- */
+
+.sidebar-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-2);
+}
+
+.side-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0.45rem var(--space-2);
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--chrome-ink-soft);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+.side-link:hover {
+  background: var(--chrome-hover);
+  color: var(--chrome-ink);
+  text-decoration: none;
+}
+.side-link.on {
+  background: var(--chrome-active-bg);
+  color: var(--chrome-active-ink);
+  font-weight: 600;
+}
+/* The bar that marks the row you are on. Inset rather than a border so the row does not
+   change size when it becomes active, and colour is not the only thing carrying it —
+   the row is also brighter, heavier and filled. */
+.side-link.on::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 2px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--accent);
+}
+.side-link .icon {
+  flex: none;
+  color: var(--chrome-ink-faint);
+  transition: color var(--fast) var(--ease);
+}
+.side-link:hover .icon {
+  color: var(--chrome-ink-soft);
+}
+/* The active row's glyph takes the row's colour rather than staying grey — the one
+   place in the column where the icon is doing work rather than sitting beside the word. */
+.side-link.on .icon {
+  color: var(--chrome-active-ink);
+}
+.side-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-link,
+  .side-link .icon {
+    transition: none;
+  }
+}
+
+/* The chrome is dark in both schemes, so the focus ring has to be visible on it in both.
+   The light-mode accent is dark enough to disappear against `--chrome-bg`. */
+.sidebar :focus-visible {
+  outline: 2px solid var(--chrome-active-ink);
+  outline-offset: -1px;
+}
+
+/* --- the admin group -------------------------------------------------------------- */
+
+.sidebar-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--chrome-line);
+}
+.sidebar-group-label {
+  padding: 0 var(--space-2) var(--space-1);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--chrome-ink-faint);
+}
+
+/* --- foot ------------------------------------------------------------------------ */
+
+.sidebar-foot {
+  flex: none;
+  padding: var(--space-2);
+  border-top: 1px solid var(--chrome-line);
+}
+.whoami {
+  display: block;
+  padding: 0 var(--space-2) var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--chrome-ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-link.signout {
+  width: 100%;
+}
+
+/* --- collapsed, and narrow ---------------------------------------------------------
+ *
+ * The same rail two ways: chosen, and forced by a window too narrow for a column and a
+ * page. The labels stay in the DOM and are hidden here — each row keeps its accessible
+ * name, and `title` gives a mouse user the same word as a tooltip. */
+.shell.collapsed .side-label,
+.shell.collapsed .brand,
+.shell.collapsed .whoami,
+.shell.collapsed .sidebar-group-label {
+  display: none;
+}
+.shell.collapsed .side-link {
+  justify-content: center;
+}
+.shell.collapsed .rail-toggle {
+  margin-inline: auto;
+}
+
+@media (max-width: 720px) {
+  .sidebar {
+    --rail: 3.5rem;
+  }
+  .side-label,
+  .sidebar .brand,
+  .whoami,
+  .sidebar-group-label,
+  .rail-toggle {
+    display: none;
+  }
+  .side-link {
+    justify-content: center;
+  }
+}
+
+/* --- the page -------------------------------------------------------------------- */
+
+main {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5) var(--space-7);
+}
+@media (max-width: 720px) {
+  main {
+    padding: var(--space-5) var(--space-4) var(--space-6);
+  }
+}
+
+/* The sign-in screen, and anything else that is the whole window rather than a page
+   inside the frame. */
+.centered {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+}
+.signin {
+  max-width: 32rem;
+  padding: var(--space-7) var(--space-6);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+.signin .brand {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--ink);
+}
+.signin .sentence {
+  max-width: 26rem;
+  margin-inline: auto;
+}
+/* The notice is a sentence to a person who is not signed in — it is the only thing on
+   this screen that is not centred, and centring it made two lines of text look like a
+   heading. */
+.signin .notice {
+  text-align: left;
+  margin-top: var(--space-4);
+}
+.signin .btn {
+  margin-top: var(--space-4);
+}

@@ -1,0 +1,53 @@
+-- The partial index for the door's own traffic. Step 066.
+--
+-- This is not a new idea. Two docstrings have named it for six steps as *the fix if it
+-- bites*: `base.door_call_records` — *"the fix if it ever bites is a partial index, not
+-- a column"* — and `base.overview`, which spells it out to the column. `DEFERRED.md`
+-- carries its measurements: 29 ms worst case for 1M rows in one partition holding 20
+-- door calls, 14 ms at 300k/5, 4.4 ms at 100k with 1% door traffic.
+--
+-- **Step 066 is what makes it bite.** Until now `/admin/door-calls` took `limit` and
+-- nothing else, and that read is an index-ordered backward walk over each partition's
+-- primary key with the `LIKE` as a filter — it stops as soon as it has a page, which is
+-- why heavy door traffic is the *cheap* case and sparse door traffic under many runs is
+-- the expensive one. 066 gives that route ten filters and gives the Overview links that
+-- are exactly those queries. A filtered walk no longer stops early: it traverses until
+-- it has found `limit` rows matching the filter, and a filter that matches nothing
+-- traverses the whole retained history. That is the case this index exists for.
+--
+-- **A partial index and not a `source` column**, which is the decision both docstrings
+-- took and this migration inherits rather than reopens. `door-` is already what
+-- separates a door call from a run; a column would be a second way to say one thing, and
+-- the two would eventually disagree in silence — the door minting ids a reader no longer
+-- matches, and the log simply looking empty. It is the shape refused for soft delete, for
+-- the connector cache, for the grant cache, and by migration 041's own note about
+-- `identity_source`.
+--
+-- The predicate is written as the literal `'door-%'` rather than assembled from
+-- `storage.DOOR_CALL_ID_PREFIX`, because a partial index's predicate is part of its
+-- definition and Postgres must be able to prove a query's `WHERE` implies it. A released
+-- migration is checksummed and immutable anyway (step 027), so this literal is frozen by
+-- construction — and if the prefix ever changed, the honest consequence is a new
+-- migration, not an index that silently stops matching.
+--
+-- `(tenant_id, ts DESC)`: the tenant first because every read here is tenant-scoped and
+-- it is the leading column of every other index on this table, `ts DESC` because both
+-- readers want the recent end and the filtered listing now bounds on `ts` directly.
+--
+-- ## Not CONCURRENTLY, and the cost of that
+--
+-- `audit` is partitioned (migration 030) and `CREATE INDEX` on a partitioned parent
+-- cannot be `CONCURRENTLY` — Postgres refuses it. The available shapes are: build on each
+-- partition concurrently and then attach to an `ONLY` parent index, which is a multi
+-- statement dance no migration runner here performs and which leaves an invalid parent
+-- index if it is interrupted; or take the lock.
+--
+-- This takes the lock, on step 019's precedent for the same table. The lock blocks writes
+-- to `audit`, which is every tool call, for the duration of the build. Partitions are
+-- monthly and bounded, so the build is short, but **it is a write pause on the hot path**
+-- and `docs/UPGRADING.md` says so rather than leaving an operator to find it during a
+-- busy hour. That is the honest trade: an interrupted concurrent build leaves an invalid
+-- index nothing warns about, and a brief pause somebody planned for is better than a
+-- silent one nobody did.
+
+CREATE INDEX audit_door ON audit (tenant_id, ts DESC) WHERE run_id LIKE 'door-%';

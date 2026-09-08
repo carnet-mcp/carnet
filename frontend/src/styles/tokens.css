@@ -1,0 +1,266 @@
+/* The design, as values. Every colour, space, size and radius the app uses is named
+ * here and nowhere else — a rule that only holds because there is no framework
+ * underneath quietly supplying a second set.
+ *
+ * Two things this stylesheet commits to, because both are decisions rather than defaults:
+ *
+ *   - **Identifiers are monospace, prose is not.** A run id, a tool name, a principal
+ *     and a resource are things people compare character by character against a
+ *     terminal, and a proportional font makes `u_a4d6c00d` and `u_a4d6cO0d` look alike.
+ *   - **Status colour is never the only signal.** Every badge carries its word. Colour
+ *     that carries meaning alone fails for the reader who cannot see the difference,
+ *     and this app's colours mean "your systems were written to".
+ *
+ * The palette is graphite and indigo: a cool near-neutral for everything structural, one
+ * saturated accent that means "this is the action" or "you are here", and status hues
+ * that stay conventional — a reader should not have to learn what green means here.
+ */
+
+:root {
+  /* **Declared, not inferred.** Without it the browser paints its own widgets — a
+     scrollbar, a native date picker, a checkbox we have not restyled — in light
+     regardless of the palette below, which is how a dark page ends up with a white
+     scrollbar down the side of it. */
+  color-scheme: light;
+
+  /* Surfaces. `--canvas` is the page behind the content; `--paper` is what sits on it.
+     They are different colours so a card has an edge even where a border is absent.
+     `--raised` is what a control is: a hair above paper rather than sunk into it. */
+  --canvas: #f5f6f9;
+  --paper: #ffffff;
+  --sunk: #f0f2f5;
+  --raised: #ffffff;
+
+  --ink: #14161a;
+  --ink-soft: #4a4e58;
+  --ink-faint: #787d88;
+
+  --line: #e5e6ea;
+  --line-strong: #d2d5dc;
+
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;
+  /* The label on a filled accent — dark in the dark scheme, where the accent is a
+     light indigo. Named so that nothing has to re-derive it at a call site. */
+  --accent-ink: #ffffff;
+  /* The halo under the focus outline. Alpha rather than a flat colour, so it reads
+     the same over paper, over a sunk field and over a tinted row. */
+  --accent-ring: rgb(79 70 229 / 0.16);
+
+  --good: #15803d;
+  --good-soft: #ecfdf3;
+  --warn: #b45309;
+  --warn-soft: #fdf5e7;
+  --bad: #dc2626;
+  --bad-soft: #fdf0ef;
+  --going: #4f46e5;
+  --going-soft: #eef2ff;
+  --waiting: #52555e;
+  --waiting-soft: #f0f1f3;
+
+  /* The chrome — the sidebar, and anything else structural rather than content.
+     **Dark in both colour schemes.** It is the frame, not the page: keeping it fixed
+     means the eye learns one shape for "where am I" and the content area is the only
+     thing that changes when the OS theme does. */
+  --chrome-bg: #131417;
+  --chrome-line: #24262c;
+  --chrome-ink: #e8e9ec;
+  --chrome-ink-soft: #9a9ea8;
+  --chrome-ink-faint: #6b6f78;
+  --chrome-hover: rgb(255 255 255 / 0.06);
+  --chrome-active-bg: rgb(99 102 241 / 0.18);
+  --chrome-active-ink: #c7ccf9;
+
+  --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", "Consolas", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+
+  --radius-sm: 5px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* **One height for every control.** A text field, a select and a button end up beside
+     each other in half the forms in this app — an administrative row is usually all
+     three — and three sets of vertical padding is what made those rows look assembled
+     rather than designed. Everything that takes a click is `--control`; everything
+     inside one is padded to fit it. */
+  --control: 2.25rem;
+  --control-sm: 1.875rem;
+
+  --shadow-sm: 0 1px 2px rgb(16 17 20 / 0.05);
+  --shadow-md:
+    0 1px 2px rgb(16 17 20 / 0.04), 0 6px 20px -6px rgb(16 17 20 / 0.12);
+  --shadow-lg:
+    0 2px 4px rgb(16 17 20 / 0.05), 0 16px 40px -12px rgb(16 17 20 / 0.18);
+  /* What a filled button sits on. Small, and it is the difference between a rectangle
+     of accent and something that looks pressable. */
+  --shadow-btn: 0 1px 2px rgb(16 17 20 / 0.10);
+  /* The hairline of light along a field's top edge, which is what makes an input read
+     as recessed. Transparent in the dark scheme, where a recess reads the other way. */
+  --inset-field: inset 0 1px 1px rgb(16 17 20 / 0.04);
+
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+  --fast: 120ms;
+
+  --pad: 1rem;
+
+  /* --- chart marks — step 041 -------------------------------------------------------
+     The only colours in this file that are **not** reused from the UI palette, and the
+     reason is measured rather than aesthetic. The status tokens above are tuned to be
+     read as *text and badges*: `--good` beside `--warn` is ΔE 6.8 under protanopia, and
+     `--bad` beside `--warn` is ΔE 2.8 — indistinguishable — which is survivable on a
+     one-word badge carrying its own label and is not survivable as two touching segments
+     of a stacked column. The dark status steps fail worse for filled marks: they sit at
+     L 0.80–0.84, above the band a mark on `--paper` needs.
+
+     So chart series get their own slots, in a fixed order, validated against these exact
+     surfaces rather than eyeballed. Assigned in sequence and **never cycled**: a fifth
+     categorical series is not a generated fifth hue, it is a fold into "other" or a
+     second figure.
+
+     Status *does* still carry status: a run that completed is `--good` on this page as
+     everywhere else, because there the colour is the meaning. What those stacks buy for
+     the 6–8 floor band is the secondary encoding the band requires — a legend, a 2px
+     surface gap between every segment, and the numbers under `<details>`. */
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+
+  /* One hue, dark → light, for the identity split. **Ordinal, not categorical**:
+     verified → asserted → none is a trust ordering, and swapping two of them changes
+     what the chart says. A reader should see the order in the colour, so it is a single
+     hue stepped by lightness rather than three identities. Steps 550/400/250 of the
+     documented blue ramp — monotone L, every adjacent gap ≥ 0.06, light end still
+     clearing the surface. */
+  --chart-step-1: #1c5cab;
+  --chart-step-2: #3987e5;
+  --chart-step-3: #86b6ef;
+
+  /* A five-step **sequential** ramp, for the hour grid. Step 066b.
+     Neither ramp above would do, and the reason each is refused is worth keeping.
+     `--chart-1..4` is categorical: colouring a magnitude with it says "these are four
+     kinds of thing" about a scale where the only difference is *more*. `--chart-step-*`
+     is ordinal and **spoken for** — it is the identity ordering, verified → asserted →
+     none, and a second meaning inside one vocabulary is how a reader learns to distrust
+     both.
+     An opacity ramp computed in the component was the cheap alternative and is refused
+     on `charts.tsx`' own rule: a literal there is "a colour nobody checked", and a colour
+     composited at runtime is a colour nobody checked either.
+     Steps 100/250/400/550/700 of the documented blue ramp — monotone L, every adjacent
+     gap ≥ 0.06, the light end still clearing `--paper` and the dark end still taking
+     `--paper`-coloured text if anything is ever printed on it. Nothing is: a cell's
+     count lives in its `<title>`. */
+  --chart-heat-1: #d3e3f8;
+  --chart-heat-2: #86b6ef;
+  --chart-heat-3: #3987e5;
+  --chart-heat-4: #1c5cab;
+  --chart-heat-5: #123c70;
+
+  /* Chrome. One step off the surface and hairline — the grid is there to be measured
+     against, not looked at. */
+  --chart-grid: #e5e6ea;
+  --chart-axis: #d2d5dc;
+  /* What separates touching marks: the surface itself, 2px of it, never a stroke. A
+     border round a segment adds ink that is not data. */
+  --chart-gap: var(--paper);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --canvas: #0c0d10;
+    --paper: #16171b;
+    --sunk: #1d1f24;
+    /* A control is *lighter* than paper here, not darker. In the light scheme a field
+       is a recess; on a dark page the same recess is a hole you cannot see into, and
+       the affordance has to come from the control catching light instead. */
+    --raised: #1e2026;
+
+    --ink: #e8e9ec;
+    --ink-soft: #a3a7b0;
+    --ink-faint: #6e727c;
+
+    --line: #262830;
+    --line-strong: #383b47;
+
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-soft: #232647;
+    --accent-ink: #101114;
+    --accent-ring: rgb(129 140 248 / 0.26);
+
+    --good: #4ade80;
+    --good-soft: #13291c;
+    --warn: #fbbf24;
+    --warn-soft: #2c2310;
+    --bad: #f87171;
+    --bad-soft: #2f1618;
+    --going: #818cf8;
+    --going-soft: #232647;
+    --waiting: #a3a7b0;
+    --waiting-soft: #1d1f24;
+
+    /* A shade darker than the light-mode chrome, so the sidebar still reads as *behind*
+       a `--paper` card rather than level with it. */
+    --chrome-bg: #101114;
+
+    /* **Shadows do not survive a dark background.** A drop shadow is light being blocked,
+       and there is no light here — on `#0c0d10` it is an invisible smudge. The same
+       separation is carried by a border instead, and the deeper elevations keep a real
+       shadow *underneath* the border so a card still lifts off the page. */
+    --shadow-sm: 0 0 0 1px var(--line);
+    --shadow-md: 0 0 0 1px var(--line-strong), 0 8px 24px -8px rgb(0 0 0 / 0.6);
+    --shadow-lg: 0 0 0 1px var(--line-strong), 0 20px 48px -12px rgb(0 0 0 / 0.7);
+    --shadow-btn: 0 1px 2px rgb(0 0 0 / 0.4);
+    --inset-field: none;
+
+    /* **Selected, not flipped.** These are different steps of the same ramps, chosen
+       against `--paper: #16171b` and validated there — not the light values lightened,
+       which is how a dark palette ends up with two series that were distinct on white
+       and are not on black. The categorical four hold ΔE 8.4 at their worst adjacent
+       pair here (better than the light set's 9.1 neighbour, because the darker surface
+       lets each step carry more chroma), and all four clear 3:1 against paper, which
+       the light set does not — so the dark rendering is the *stronger* one. */
+    --chart-1: #3987e5;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #c98500;
+
+    /* The ordinal ramp inverts its anchor: on a dark surface *more* is lighter, so
+       verified is the light end here and `none` the dark one. The ordering the reader
+       sees is unchanged — it is still one hue, monotone, three visible steps. */
+    --chart-step-1: #86b6ef;
+    --chart-step-2: #3987e5;
+    --chart-step-3: #184f95;
+
+    /* Inverted, not merely darkened: on a dark surface *more* has to read as *brighter*,
+       so the ramp runs the other way up the same hue. A dark-on-dark heat map is the
+       most common way this figure gets built wrong — the busiest cell disappears into
+       the background it is supposed to stand out from. */
+    --chart-heat-1: #123c70;
+    --chart-heat-2: #1c5cab;
+    --chart-heat-3: #3987e5;
+    --chart-heat-4: #86b6ef;
+    --chart-heat-5: #d3e3f8;
+
+    --chart-grid: #262830;
+    --chart-axis: #383b47;
+  }
+}

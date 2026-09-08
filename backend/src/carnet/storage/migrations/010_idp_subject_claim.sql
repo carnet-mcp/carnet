@@ -1,0 +1,31 @@
+-- Which claim carries the stable identity.
+--
+-- `users` is keyed on (issuer, subject) precisely because a subject is supposed to be
+-- stable for the life of an account while an email is not — people marry, companies
+-- migrate domains, and keying on an address detaches somebody from their entire audit
+-- history the week it changes.
+--
+-- OIDC says `sub` is that stable identifier, so the column did not exist. **Then a real
+-- Okta access token arrived:**
+--
+--     ID token       sub = 00u15ycj6pa9ccs2y698           the opaque, stable id
+--     access token   sub = priya@example.com            the LOGIN
+--                    uid = 00u15ycj6pa9ccs2y698           the stable id, over here
+--
+-- Okta's authorization server puts the user's login in `sub` and the stable id in a
+-- vendor claim. An API validates access tokens — ID tokens are for the client, and
+-- sending one to an API is a known anti-pattern — so following the spec here would
+-- have keyed our identities on email after all, silently, having argued at length not
+-- to.
+--
+-- So the claim is per provider, exactly as `email_claim` already is and for exactly the
+-- same reason: the module whose job is working with any provider cannot hardcode one
+-- provider's idea of a field name. `sub` stays the default because it is right for a
+-- conformant token; Okta access tokens get `uid`.
+--
+-- Forward-only, as a new migration rather than an edit to 007, because 007 has been
+-- applied to real databases. The history is also worth keeping: this column exists
+-- because of something a real token did, not something a spec said.
+
+ALTER TABLE tenant_idps
+    ADD COLUMN subject_claim TEXT NOT NULL DEFAULT 'sub';

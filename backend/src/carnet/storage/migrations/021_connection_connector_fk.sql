@@ -1,0 +1,77 @@
+-- The foreign key `connections` was missing, and the credential it was missing on.
+--
+-- `connections` has had a foreign key on `tenant_id` since migration 006 and none on
+-- `connector_id`. Every other table in this schema guards exactly this hazard —
+-- `vetted_tools` cascades from `connectors`, `agent_grants` from `agents`, group
+-- membership from `groups` — and this one was missed.
+--
+-- ## What the absence costs
+--
+-- Delete a connector and every user's sealed credential for it survives, pointing at
+-- nothing. Those rows are worse than useless:
+--
+--   - Nobody can read them. The ciphertext is sealed with `crypto.connection_aad` and
+--     the platform deliberately cannot decrypt its own storage to go and look.
+--   - Nobody can attribute them. "Whose token is this, and for what" is answerable only
+--     by the connector row that no longer exists.
+--   - **They reactivate.** `connections` is keyed on `(tenant, principal, connector_id)`
+--     and `connector_id` is a plain string, so creating a new connector that reuses the
+--     id silently reattaches every orphan to it. A credential a person consented to give
+--     one server is then handed to a different one, vetted by somebody else, with no
+--     event anywhere recording that it happened.
+--
+-- The third is why this is `RESTRICT` rather than `CASCADE`. Cascading would delete the
+-- credentials along with the connector, which is defensible and still wrong: it destroys
+-- the only evidence that anybody had connected, silently, as a side effect of an
+-- unrelated administrative action. Refusing makes the operator disconnect people
+-- deliberately — `--disconnect-account`, or the route that replaces it — and that
+-- refusal is the audit trail until the administrative log exists.
+--
+-- ## This constraint also enforces something new, and it is a decision
+--
+-- A foreign key is not directional. As well as refusing the delete, it refuses an
+-- INSERT naming a connector that does not exist — which `access/connections.py`
+-- documented itself as deliberately not checking:
+--
+--     Connector ids are opaque strings here. This module never asks whether a connector
+--     exists [...] The check that a connector can actually *carry* a per-user credential
+--     belongs where the transport is known.
+--
+-- That sentence stays true: `access/` still asks nothing and still imports nothing about
+-- MCP. Postgres asks. What changes is *when* a person finds out, and the change is an
+-- improvement — a credential sealed against a connector that does not exist is dead on
+-- arrival, and today it is stored happily and fails at the first run that needs it, by
+-- which time the person who typed it has gone. `connect_account` now refuses at the
+-- moment of connecting, with `ConnectionRefused`.
+--
+-- The narrower check in `tools/mcp.check_delegation_supported` is unaffected and still
+-- necessary: it answers "can this connector carry a *delegated* credential at all",
+-- which is a question about transport, not existence. A stdio connector exists and still
+-- cannot hold one.
+--
+-- ## Applying this to a database that already has orphans
+--
+-- The ALTER will fail, loudly, naming the rows. That is intended: there is no safe
+-- automatic answer, because the two candidate repairs are "delete somebody's credential"
+-- and "recreate a connector nobody has vetted". Find them with the query below and
+-- decide deliberately.
+--
+--     SELECT c.tenant_id, c.principal_id, c.connector_id
+--       FROM connections c
+--       LEFT JOIN connectors k
+--         ON k.tenant_id = c.tenant_id AND k.id = c.connector_id
+--      WHERE k.id IS NULL;
+
+ALTER TABLE connections
+    ADD CONSTRAINT connections_connector_fk
+    FOREIGN KEY (tenant_id, connector_id)
+    REFERENCES connectors (tenant_id, id)
+    ON DELETE RESTRICT;
+
+-- No index needed for the constraint itself: `connections` is keyed
+-- `(tenant_id, principal_kind, principal_id, connector_id)`, and Postgres checks the
+-- referenced side against the `connectors` primary key. What has no index is the
+-- *referencing* side for `RESTRICT` — deleting a connector scans `connections` looking
+-- for dependants. That table holds one row per person per connector, so the scan is
+-- small and the delete is rare; an index here would cost more on every connect than it
+-- saves on the deletes anybody actually performs.

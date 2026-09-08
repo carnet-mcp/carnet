@@ -1,0 +1,323 @@
+/* The elements themselves, before anything is given a class: the reset, the type scale,
+ * the controls, and the one focus treatment the whole app uses. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+h1 {
+  font-size: 1.5rem;
+  letter-spacing: -0.02em;
+}
+h2 {
+  font-size: var(--text-lg);
+}
+h3 {
+  font-size: 0.95rem;
+}
+
+p {
+  margin: var(--space-2) 0;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+.mono {
+  font-family: var(--mono);
+  font-size: 0.875em;
+}
+
+button {
+  font: inherit;
+}
+
+/* --- fields ------------------------------------------------------------------------
+ *
+ * **Every text input, not `input[type="text"]`.** That selector is what shipped, and
+ * roughly thirty inputs in this app never write `type` at all — an `<input>` with no
+ * type *is* a text input to HTML and is not one to CSS. Those thirty rendered as raw
+ * platform boxes: no radius, no padding, no focus ring, and in the dark scheme a white
+ * field with black text in the middle of a dark form. Every administrative form, both
+ * trigger forms and both schedule forms had at least one.
+ *
+ * So the set is stated the other way round — everything except the inputs that are not
+ * fields. A checkbox, a radio, a file picker and a button-shaped input are all `<input>`
+ * and none of them wants a text field's border. */
+:is(
+    input:not(
+        [type="checkbox"],
+        [type="radio"],
+        [type="file"],
+        [type="submit"],
+        [type="button"],
+        [type="reset"],
+        [type="range"],
+        [type="color"],
+        [type="image"]
+      ),
+    textarea,
+    select
+  ) {
+  width: 100%;
+  min-height: var(--control);
+  font: inherit;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background-color: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--inset-field);
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+textarea {
+  resize: vertical;
+  min-height: 4.5rem;
+  line-height: 1.5;
+}
+textarea::placeholder,
+input::placeholder {
+  color: var(--ink-faint);
+}
+:is(input, textarea, select):hover:not(:disabled, :focus) {
+  border-color: var(--ink-faint);
+}
+:is(input, textarea, select):disabled {
+  background-color: var(--sunk);
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(input, textarea, select) {
+    transition: none;
+  }
+}
+
+/* A field narrow enough to hold what it asks for. A two-digit minute and an `HH:MM`
+   do not want the width of the card they sit in, and before the selector above was
+   widened they escaped it only by being unstyled. */
+:is(input, select).short {
+  width: 8rem;
+  min-width: 0;
+}
+
+/* The select's own arrow, drawn rather than the platform's — because the platform's
+   comes with the platform's box, and `appearance: none` is all or nothing. Two copies
+   of the glyph, because a `background-image` cannot inherit `currentColor`. */
+select {
+  appearance: none;
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23787d88' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1rem;
+  cursor: pointer;
+}
+@media (prefers-color-scheme: dark) {
+  select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236e727c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
+}
+
+/* The one input the rules above deliberately skip. A file picker is a button and a
+   filename drawn by the platform in the platform's own idiom — a grey "Choose File" on
+   macOS, a "Browse…" on Windows — and it is the only control on the run page that came
+   from somewhere else. The button half takes this app's button; the filename beside it
+   stays the browser's, because that half is text and not a control. */
+input[type="file"] {
+  max-width: 100%;
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--ink-soft);
+}
+input[type="file"]::file-selector-button {
+  height: var(--control-sm);
+  margin-right: var(--space-3);
+  padding: 0 0.75rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+input[type="file"]::file-selector-button:hover {
+  background: var(--sunk);
+  border-color: var(--ink-faint);
+}
+input[type="file"]:disabled,
+input[type="file"]:disabled::file-selector-button {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  input[type="file"]::file-selector-button {
+    transition: none;
+  }
+}
+
+/* --- ticks --------------------------------------------------------------------------
+ *
+ * A checkbox and a radio, drawn here rather than left native. `accent-color` was doing
+ * this job at two call sites and it only recolours the platform's box — which is a
+ * different size and a different shape on each of the three engines, and in this app a
+ * tick is the control that grants an agent access to somebody's real systems. It should
+ * be the same size everywhere and it should be big enough to hit. */
+input[type="checkbox"],
+input[type="radio"] {
+  appearance: none;
+  flex: none;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--raised);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 0.8rem;
+  cursor: pointer;
+  transition:
+    background-color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+input[type="radio"] {
+  border-radius: 50%;
+}
+input[type="checkbox"]:hover:not(:disabled),
+input[type="radio"]:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+input[type="checkbox"]:checked,
+input[type="radio"]:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+input[type="checkbox"]:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m20 6-11 11-5-5'/%3E%3C/svg%3E");
+}
+input[type="radio"]:checked {
+  /* The dot, as a gradient rather than a pseudo-element: `::before` on a replaced
+     element is not something all three engines agree about. */
+  background-image: radial-gradient(
+    circle at center,
+    var(--accent-ink) 0 0.22rem,
+    transparent 0.23rem
+  );
+}
+@media (prefers-color-scheme: dark) {
+  input[type="checkbox"]:checked {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23101114' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m20 6-11 11-5-5'/%3E%3C/svg%3E");
+  }
+}
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  input[type="checkbox"],
+  input[type="radio"] {
+    transition: none;
+  }
+}
+
+/* --- focus --------------------------------------------------------------------------
+ *
+ * One focus treatment, everywhere. A person tabbing through this app should never have
+ * to work out whether the ring they are looking at means the same thing as the last one.
+ * Two layers: the outline itself, which survives forced-colours mode and a stylesheet
+ * that fails to load, and a soft halo under it that makes the ring visible against a
+ * tinted row without thickening the line. */
+:is(input, textarea, select, .btn, a, button, [tabindex]):focus-visible,
+:is(input, textarea):focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+:is(input, textarea, select):is(:focus, :focus-visible) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+:is(input[type="checkbox"], input[type="radio"]):focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* --- tables ------------------------------------------------------------------------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-md);
+}
+th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--line-strong);
+}
+td {
+  padding: 0.5rem var(--space-2);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+/* A log is read across rather than down, and a long row of small type loses its line
+   somewhere around the fourth column. The tint is the width of the row, not of a cell. */
+tbody tr {
+  transition: background-color var(--fast) var(--ease);
+}
+tbody tr:hover {
+  background: var(--sunk);
+}
+tr:last-child td {
+  border-bottom: none;
+}
+td.num,
+th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  tbody tr {
+    transition: none;
+  }
+}

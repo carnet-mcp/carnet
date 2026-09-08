@@ -1,0 +1,9 @@
+# Normalise line endings in the repository to LF, whatever the checkout platform.
+# Developed on Windows; the migrations and shell snippets are read on Linux.
+* text=auto eol=lf
+
+# Keep SQL and Python explicitly text so a stray editor cannot mark them binary.
+*.py   text eol=lf
+*.sql  text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf

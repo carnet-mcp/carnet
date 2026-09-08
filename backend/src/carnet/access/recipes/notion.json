@@ -1,0 +1,37 @@
+{
+  "id": "notion",
+  "name": "Notion — hosted MCP server",
+  "description": "Notion's hosted MCP server, over OAuth. Notion scopes access to the pages a person picks at the consent screen rather than to their whole workspace, which is the one vendor here whose own consent step narrows reach.",
+  "verified_on": null,
+  "verified_by": "",
+  "verified_against": "",
+  "hosts": [
+    {
+      "host": "mcp.notion.com",
+      "why": "The MCP server itself. Every tool call this connector brokers is dialled here."
+    },
+    {
+      "host": "api.notion.com",
+      "why": "The OAuth token endpoint. Dialled server-side, carrying this deployment's client secret, on every code exchange and refresh."
+    }
+  ],
+  "connector": {
+    "connector_id": "notion",
+    "kind": "http",
+    "url": "https://mcp.notion.com/mcp",
+    "credential_env": "NOTION_TOKEN",
+    "credential_header": null,
+    "credential_prefix": null,
+    "headers": {},
+    "description": "Notion, over its hosted MCP server"
+  },
+  "oauth": {
+    "authorize_endpoint": "https://api.notion.com/v1/oauth/authorize",
+    "token_endpoint": "https://api.notion.com/v1/oauth/token",
+    "revoke_endpoint": "",
+    "scopes": [],
+    "authorize_params": { "owner": "user" },
+    "scope_notes": {}
+  },
+  "tools": []
+}

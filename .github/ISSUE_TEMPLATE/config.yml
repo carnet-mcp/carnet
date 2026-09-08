@@ -1,0 +1,12 @@
+# GitHub requires contact_links to be absolute URLs, so this is the only place
+# in the community files that hardcodes the repository's address. `blob/HEAD/` follows
+# whatever the default branch is called and survives a rename; the owner and repository
+# name do not, and A4 — the identity decision — moves both. Update these when it does.
+
+blank_issues_enabled: false
+contact_links:
+  - name: What Carnet is, and is not
+    url: https://github.com/carnet-mcp/carnet/blob/HEAD/docs/PREMISE.md
+    about: >-
+      Carnet is an MCP tool — a broker in front of your own assistant's tool
+      calls. It does not run agents. Read this before filing a feature request.

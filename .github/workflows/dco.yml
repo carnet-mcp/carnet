@@ -1,0 +1,99 @@
+# Every commit in a pull request certifies the Developer Certificate of Origin.
+#
+# This is its own workflow rather than a tenth job in `tests.yml`, deliberately.
+# `tests.yml` is the test suite — its jobs answer "does this code work", they are the
+# green somebody reads before a merge, and a provenance check is neither a test nor
+# something that should be able to redden that signal. A contributor whose patch is
+# correct and whose sign-off is missing should see exactly one red check, and it should
+# say so in its name.
+#
+# `pull_request` only: a push to a branch is not a contribution, and this repository's
+# own history predates the DCO.
+#
+# Fork-safe, like every job in `tests.yml`: no secret, no token beyond the read-only
+# default, nothing that a pull request from a fork cannot get. The whole point of a DCO
+# over a CLA is that a stranger can satisfy it on their first attempt.
+
+name: DCO
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  signoff:
+    name: commits are signed off
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The whole range between base and head has to be walkable, and a shallow
+          # clone cannot walk it.
+          fetch-depth: 0
+
+      - name: Every commit carries a Signed-off-by
+        env:
+          # Through the environment rather than interpolated into the script. These are
+          # SHAs and are safe, but a workflow that reads pull request fields inline is
+          # one rename away from reading a branch name inline, and that is not.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess, sys
+
+          base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
+
+          # %P is the parent list: a merge commit has more than one, and nobody signs
+          # off a merge they did not write.
+          #
+          # The separators are git's own `%x00`, expanded by git into the output. They
+          # cannot be real NUL bytes in this format string: it is passed as an argv
+          # argument and argv cannot carry a NUL. A commit message cannot contain one
+          # either, so the field split is unambiguous.
+          fmt = "%H%x00%P%x00%an%x00%ae%x00%B%x00---commit---%x00"
+          sep = "\x00---commit---\x00"
+          out = subprocess.run(
+              ["git", "log", f"--format={fmt}", f"{base}..{head}"],
+              capture_output=True, text=True, check=True,
+          ).stdout
+
+          SIGNOFF = re.compile(r"^Signed-off-by: (.+) <([^<>@\s]+@[^<>\s]+)>\s*$", re.M)
+
+          missing, checked = [], 0
+          for record in out.split(sep):
+              if not record.strip():
+                  continue
+              sha, parents, name, email, body = record.lstrip("\n").split("\x00", 4)
+              if len(parents.split()) > 1:
+                  continue                      # a merge commit
+              checked += 1
+              if not SIGNOFF.search(body):
+                  missing.append((sha, name, email, body.strip().split("\n")[0]))
+
+          if not checked:
+              print("No non-merge commits in this pull request.")
+              sys.exit(0)
+
+          if not missing:
+              print(f"All {checked} commit(s) signed off.")
+              sys.exit(0)
+
+          print(f"{len(missing)} of {checked} commit(s) are missing a sign-off:\n")
+          for sha, name, email, subject in missing:
+              print(f"  {sha[:12]}  {subject}")
+              print(f"                {name} <{email}>\n")
+
+          print("Add one to each. `git commit -s` writes it for you; for commits you")
+          print("have already made:\n")
+          print("    git rebase --signoff " + base[:12])
+          print("    git push --force-with-lease\n")
+          print("The line reads exactly:\n")
+          print("    Signed-off-by: Your Name <you@example.com>\n")
+          print("What you are certifying is in the DCO file at the root of this")
+          print("repository. There is nothing to sign up for and no CLA.")
+          sys.exit(1)
+          PY

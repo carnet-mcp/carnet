@@ -1,0 +1,45 @@
+-- An agent's name becomes a shape, because a form is about to start producing them.
+--
+-- `agents.name` has been a free string since migration 002, and that was fine while the
+-- only things writing it were `--seed` and a developer typing a config. It is four
+-- things at once:
+--
+--     the identity the broker enforces against, per agent_name_matches_config
+--     the key the row is stored under            PRIMARY KEY (tenant_id, name)
+--     the path segment in GET /agents/{name}
+--     the string written into every audit record
+--
+-- 10c puts a text box in front of that, in front of somebody who is not thinking about
+-- URLs. `Triage Bot` would be a legal row today: a path needing percent-encoding, an
+-- audit string with a space in it, and a name that differs from `Triage  Bot` by
+-- something nobody can see. The form turns what they type into a slug — but a rule that
+-- lives only in the form is a rule the next caller skips, and there will be a next
+-- caller (a PATCH, an import, a template).
+--
+-- That is the lesson of migration 017 applied one layer down. There, a frozenset was the
+-- whole defence and a test written in the same language as the frozenset would not have
+-- survived somebody widening it. Here the same is true of a regex in Python, so the rule
+-- goes where widening it is a migration somebody has to write and review.
+--
+-- The shape: lowercase alphanumerics in hyphen-separated groups. No leading, trailing or
+-- doubled hyphen, because those are the three ways two names look identical in a list and
+-- are not. No underscore and no dot — a dot in a path segment invites a reader to think
+-- there is an extension, and one spelling is worth more than two.
+--
+-- 64 characters. Long enough that nobody meets it by accident, short enough that the
+-- audit log stays readable in a terminal.
+--
+-- What is deliberately NOT here is the reserved-name rule. `validate` is refused at
+-- create because `POST /agents/validate` exists, and that is a fact about a URL
+-- namespace rather than about the data — a database that knew it would be a database
+-- that has to be migrated when a route is renamed. It lives in agents/, next to the
+-- other things that are true about an agent rather than about a row.
+--
+-- The three agents that exist (`issue-reporter`, `minimal`, `minimal-http`) already
+-- conform, so this validates against existing rows rather than needing NOT VALID. If it
+-- ever fails on somebody's database, the failure is the point: it names a row that a URL
+-- and an audit record disagree about.
+
+ALTER TABLE agents
+    ADD CONSTRAINT agent_name_is_a_slug
+        CHECK (name ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(name) <= 64);

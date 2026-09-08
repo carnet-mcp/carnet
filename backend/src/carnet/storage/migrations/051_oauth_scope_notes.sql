@@ -1,0 +1,73 @@
+-- What a scope actually permits, in words the person granting it can read.
+--
+-- Step 068. `connector_oauth.scopes` (migration 024) is a JSONB array of strings, and it
+-- is the right record of *what we asked for*. It is a poor thing to show somebody. The
+-- Connections page asks a person to complete a consent flow granting `write:jira-work`,
+-- and nothing anywhere in this product says what that permits. The reader at that moment
+-- is a non-administrator clicking Connect — the one person in the whole arc who has not
+-- read a vendor's documentation, and the one being asked to consent.
+--
+-- ## Why this is stored and not read from the recipe that supplied it
+--
+-- Step 068 introduces connector recipes: checked-in presets that pre-fill this
+-- configuration, carrying per-scope prose taken from the vendor. The tempting version
+-- reads that prose from the recipe file at render time and stores nothing.
+--
+-- It is refused for **migration 018's reason, transferred without modification**. That
+-- migration captured a tool's description at vetting time rather than fetching it from
+-- the server, because *text that can change after approval was not part of the approval*.
+-- A scope note is the same class of string with a sharper edge: it is the sentence
+-- somebody read immediately before granting a third party access to their account. A
+-- deployment upgrading to a release with an edited recipe would silently change what the
+-- record says was consented to.
+--
+-- There is a second reason, structural rather than principled. **Nothing links a
+-- configured connector back to a recipe** — 068's rule 1, so that deleting a recipe can
+-- never orphan anything — so at render time there is no recipe to read. The prose has to
+-- land in a row at configure time or it does not land at all.
+--
+-- ## The shape, and why `access` is not `effect`
+--
+--   {"write:jira-work": {"name":        "Create and edit issues",
+--                        "description": "Lets an agent open, edit and transition …",
+--                        "access":      "write"}}
+--
+-- `access` is copied from onecli's `AppDefinition.permissions` array, which is the field
+-- 067 named as the part of their file worth taking most literally. It is deliberately
+-- **not** `vetted_tools.effect`, and collapsing the two would be a real mistake rather
+-- than a tidy-up:
+--
+--   effect   per TOOL. A judgment a vetter made, which the broker ENFORCES on every
+--            call. `permissions.check` reads it.
+--   access   per OAUTH SCOPE. A sentence a vendor wrote, which this platform SHOWS at a
+--            consent screen and enforces nowhere. Nothing reads it to decide anything.
+--
+-- One is a permission. The other is a label on somebody else's permission. Putting a
+-- vendor's string where a vetter's judgment is supposed to be is exactly what
+-- `vetted_tools.effect` exists to refuse, and `readOnlyHint` is the same refusal one
+-- layer down (migration 003).
+--
+-- ## An object rather than three columns, and keyed by the scope
+--
+-- Three parallel arrays would let the scopes and their notes drift out of alignment by
+-- one, silently, and the failure mode is a consent screen describing the wrong
+-- permission. Keyed by the scope string, an absent note is an absent key and a
+-- misalignment is unrepresentable.
+--
+-- **Every key must be a scope this row actually requests**, enforced in
+-- `normalize_scope_notes` rather than here. A note for a scope nobody is asking for is at
+-- best unreachable and at worst a description of a permission this consent flow does not
+-- grant, shown to somebody deciding whether to grant it. That is `redact_args`' rule from
+-- migration 049 in a different column: a policy that reads as applied and is not.
+--
+-- Not every scope needs a note. `offline_access` is bookkeeping and has nothing to say to
+-- a person; a scope with no key renders as it does today, which is the honest default.
+--
+-- `'{}'` rather than NULL, matching `authorize_params` (migration 025) beside it and
+-- `vetted_tools.description`'s `''` before that: every row written before this migration
+-- was configured when there was nowhere to put a sentence, so "nothing was recorded" is
+-- the truth about all of them, and an empty object says it without every reader having to
+-- handle a null.
+
+ALTER TABLE connector_oauth
+    ADD COLUMN scope_notes JSONB NOT NULL DEFAULT '{}';

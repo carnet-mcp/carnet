@@ -1,0 +1,38 @@
+-- A personal token: a machine credential that resolves its access through its owner.
+-- Step 033d, plan 033 decision 7.
+--
+-- 020's token (unchanged, now called a *service* token) holds grants of its own: a
+-- service is not a person, and its access should be stated deliberately rather than
+-- widen when its owner joins a team. The door makes the other caller real: Priya's
+-- editor, which should be able to do what she can do and nothing more, without an
+-- admin action per token. `acts_as_owner` is that choice, made at mint time.
+--
+-- One column and nothing else, and the absences are the decisions:
+--
+--   * **No audit column.** Decision 7 says a personal token's records name both —
+--     "priya@acme.com via priya-cursor" — and that is derived at read time by joining
+--     `principal_id` to this table, never stored per record. Migration 031 already
+--     paid for the join: revocation is a stamp and not a delete *because* this table
+--     is the only place a `machine:m_...` string in an old record resolves to a name
+--     and an owner, `owner_id` has no update path, a token id is never reused (the
+--     recycling index is on `name`), and there is no user-delete path. Copying a
+--     per-token constant into every row of an append-only table is what
+--     `core/credentials.py`'s Credential docstring refused, and it would sit beside
+--     `acting_for`/`identity_source` — two columns whose whole design is that a
+--     per-call claim is never collapsed into anything else.
+--
+--   * **No constraint changes.** The narrow halves 031 left narrow — a machine holds
+--     no platform role, performs no administrative act, is granted nothing above
+--     `user` — are exactly as load-bearing for a personal token, whose owner may be
+--     an administrator: the redirection reads the owner's *grant rows*, and admin
+--     powers are not grant rows. Re-proven by test, not touched by DDL.
+--
+--   * **No backfill.** FALSE is precisely true of every existing token: all of them
+--     were minted under 020's own-grants shape and keep it.
+--
+-- Immutable after mint, like every other column here — there is no token-update path
+-- and this step adds none. To change kind, mint the other kind; the name-recycling
+-- index already makes the replacement able to keep the name.
+
+ALTER TABLE api_tokens
+    ADD COLUMN acts_as_owner BOOLEAN NOT NULL DEFAULT FALSE;

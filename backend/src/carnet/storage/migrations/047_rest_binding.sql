@@ -1,0 +1,33 @@
+-- The request binding of a REST connector's tool. Step 045a.
+--
+-- A second connector kind exists beside MCP: `rest`, a registered base URL plus
+-- per-tool request bindings, producing the same Tool objects MCP vetting produces —
+-- brokered, scoped, credentialed and audited identically. The connector row itself
+-- needs no migration: `connectors.launch` is kind-tagged JSONB (003), so a `rest`
+-- launch is a third value of an existing tag. What a REST tool needs stored is what
+-- MCP discovery would have supplied: how to make the call.
+--
+-- One nullable JSONB column, holding:
+--
+--     method        GET | POST | PUT | PATCH | DELETE
+--     path          a template joined to the launch URL; {argument} segments name
+--                   arguments from the schema below
+--     query, body   which arguments travel where. Everything unmapped is refused at
+--                   vet time rather than guessed at call time.
+--     input_schema  the authored schema — what the model sees, and what resource
+--                   declarations validate against. Authored by the vetter, because a
+--                   REST API describes nothing; that is a real loss of the drift
+--                   detection MCP discovery buys, and the plan states it rather than
+--                   glossing it.
+--     usage_map     optional: where token usage lives in a response. Stored and
+--                   validated by 045a, consumed by 045c's model connector.
+--
+-- NULL on every MCP row — "not applicable", `response_bytes`' precedent (040) — and
+-- the field and the launch kind imply each other, refused in both directions at the
+-- storage boundary (`check_binding_kind`) and at manifest load (`Connector.validate`).
+-- No CHECK constraint duplicating that here: the rule needs the connector's launch,
+-- which lives on another table, and a cross-table CHECK is not a thing Postgres has —
+-- the enforcement funnels through the two writers instead, both stores alike.
+
+ALTER TABLE vetted_tools
+    ADD COLUMN binding JSONB;

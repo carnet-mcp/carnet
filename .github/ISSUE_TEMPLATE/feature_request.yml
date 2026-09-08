@@ -1,0 +1,61 @@
+name: Feature request
+description: Something the door should be able to do and cannot
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Read [PREMISE.md](../blob/HEAD/docs/PREMISE.md) first.** Carnet
+        is an MCP tool: a broker in front of the tool calls your own assistant makes.
+        It does not run agents, it is not an orchestration framework, and it is not a
+        model gateway. Requests to make it one of those get closed with a link, which
+        wastes your time more than ours.
+
+
+        Note also that **"agent" here means a permission list** — a named set of tools,
+        each with a scope, plus limits. It is what a token is granted. If your request
+        is about running one, it is out of scope.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you were trying to do
+      description: >-
+        The situation, not the solution. What were you trying to get an assistant to
+        do, and what stopped you?
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: >-
+        The workaround, or the reason there isn't one. This is the part that tells us
+        how much the gap costs, and it is usually the most persuasive thing in a
+        request.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you think should happen
+      description: Optional. If you have a shape in mind, describe it.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Before you file
+      options:
+        - label: >-
+            I have read PREMISE.md, and this is about brokering a call rather than
+            executing an agent.
+          required: true
+        - label: >-
+            I searched the existing issues, including closed ones. A lot of what looks
+            missing is deliberate, and where it is, the reasoning is usually written
+            down somewhere that a search will find.
+          required: false

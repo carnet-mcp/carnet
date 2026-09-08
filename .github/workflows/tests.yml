@@ -1,0 +1,630 @@
+# The test suite, on every push and every pull request.
+#
+# Nine jobs, because the suite has that many honest configurations and they answer
+# different questions:
+#
+#   versions  every place that states the version states the same one (step 073):
+#             the package, the newest released changelog heading, four places in the
+#             docs page and the frontend manifest. On a tag push the tag must equal
+#             the package too. Thirty lines and the cheapest job here; it exists
+#             because by 2026-09-02 those sources said four different things, and
+#             *what version are we on and does it have the fix* is the first question
+#             a buyer asks.
+#
+#   lint      ruff and mypy over the backend, error classes only. Added in 027. On its
+#             first run it found a contract test that had never executed (two tests
+#             shared a name, so Python kept the second), two places where the `Storage`
+#             protocol had drifted from both implementations, and a manifest field whose
+#             absence crashed instead of refusing. None of those are style.
+#
+#   fast      the suite as a developer runs it — no network, no subprocess, no
+#             database. This is the one that must stay fast, and the one whose speed
+#             is a design constraint rather than a nice-to-have.
+#
+#   postgres  the same suite with CARNET_TEST_DSN set, which lights up the
+#             storage contract against the real engine. The whole risk of having an
+#             in-memory implementation is that it quietly permits what Postgres would
+#             refuse, and this is the job that catches that. Without it, a developer
+#             who never sets a DSN can write a passing test for behaviour production
+#             does not have.
+#
+#   upgrade   the migrations as a customer runs them: the oldest schema, populated in
+#             the shapes of its own era, walked to head one migration at a time, then
+#             the contract suite against that upgraded database. Added in 027, when the
+#             migrations stopped being an internal convenience and became a contract
+#             somebody else's Postgres holds. The `postgres` job builds every schema
+#             from 001 and so can never see a backfill run over real rows; this one
+#             exists for exactly that, and it is the first e2e script to run in CI.
+#
+#   browser   two of the four browser e2e scripts, in real Chromium, against a real
+#             Postgres over real HTTP. Added in 035j, which is the chunk plan 035
+#             assigned the decision to: until it, a green PR was not proof the app
+#             renders — a mocked unit suite cannot see a route that 404s, a CSP that
+#             blocks the bundle, or a sign-in that never completes. The two scripts
+#             here are the two that bring up everything themselves; the roles script
+#             (three coordinated processes by its own docstring) stays hand-run,
+#             with a register row naming what that leaves unproven, and the
+#             deployed-artifact browser script joined the `deploy` job in 054. Its
+#             own job so a browser flake never masks a cheap failure.
+#
+#   deploy    the deployment artifact itself: deploy/compose.yaml built and driven
+#             end to end (e2e_deploy.py — TLS, the rewrite, body limits, the
+#             non-superuser owner, the managed-database BYOC shape), then a real
+#             browser signing into the deployed stack against a non-Okta provider
+#             (e2e_browser_deploy.py — the header-served CSP no meta tag can stand
+#             in for). Added in 054, after plan 049's audit found the 030 register
+#             row's trigger had fired: the scripts were hand-run, had drifted since
+#             042, and the drift hid a real defect (the unreachable spend ceilings,
+#             blocker B4) in plain sight — the least-run files in the repo were the
+#             ones a customer runs first. The most expensive job in the matrix, and
+#             its own job on purpose — the row's own condition, set when `upgrade`
+#             landed — so a deploy flake never masks a cheap failure.
+#
+#   supply-chain
+#             what is actually in the artifact (step 055). pip-audit over the hashed
+#             lockfile the deployment image installs from — the artifact's exact
+#             versions, not whatever the runner resolved — npm audit over the
+#             production half of the frontend tree (the bundle's inputs; the dev
+#             tree's one known unreachable advisory stays a register row, because a
+#             gate that is red on arrival teaches people to ignore red), and a
+#             CycloneDX SBOM for each half uploaded on every run, so "send us an
+#             SBOM" is a download rather than a scramble.
+#
+#   frontend  typecheck, lint, build and the browser-free unit suite. Added in 10b,
+#             after `frontend/` shipped 5,000 lines with no tests and produced two bugs
+#             of exactly the class one assertion catches: the dev proxy claiming two
+#             paths the app also owns, so a *reload* returned JSON where the app should
+#             be; and a sentence that read "One tool that alter a system" on the most
+#             important line of the permissions screen. Both survived a typecheck, a
+#             build and a green backend suite — and neither, it is worth saying, would
+#             have been caught by the lint that arrived in 035m either. That step is the
+#             smallest of the four: `tsconfig` already carries `strict` and the unused
+#             checks, so eslint here is the hook rules and nothing else.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+    # A tag push runs the whole gate as the release preflight, and `versions` refuses
+    # a tag that disagrees with the package.
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  versions:
+    name: versions agree
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Tags, so the newest-tag rule sees them; a shallow clone has none.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Every source states one version
+        # No install: the script is standard library only, on purpose — a version
+        # check that needs the package built first checks a different thing.
+        run: python backend/scripts/check_versions.py
+
+      - name: The tag being pushed names that version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python backend/scripts/check_versions.py --tag "$GITHUB_REF_NAME"
+
+  lint:
+    name: lint and types
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install
+        working-directory: backend
+        # Every extra, because mypy resolves what it can import: without `postgres` the
+        # psycopg calls in `storage/postgres.py` become Any and the file stops being
+        # checked at all, which is worse than not running it.
+        run: pip install -e ".[lint,dev,postgres,api,access]"
+
+      - name: ruff
+        working-directory: backend
+        run: ruff check src tests scripts
+
+      - name: mypy
+        working-directory: backend
+        # Paths come from `[tool.mypy] files`, so the config is the single statement of
+        # what is checked and this stays a bare invocation.
+        run: mypy
+
+  fast:
+    name: fast (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every version's result rather than cancelling the rest on the first
+      # failure — "3.10 broke, 3.12 is fine" is the useful answer.
+      fail-fast: false
+      matrix:
+        # 3.12 is what this is developed on. 3.10 is what pyproject.toml claims to
+        # support, and a claim nothing checks is a claim that stops being true.
+        python: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install
+        working-directory: backend
+        # `api` too: the HTTP entry point is an optional extra so a fresh clone does
+        # not install a web framework to run an agent from a terminal, but its tests
+        # are not optional.
+        run: pip install -e ".[dev,api,access]"
+
+      - name: Run the suite
+        working-directory: backend
+        run: pytest -q
+
+      - name: Assert it really did start nothing
+        working-directory: backend
+        # The suite's defining property is that it touches nothing external. A test
+        # that quietly grew a database dependency would still pass here — but it
+        # would skip, and a silently shrinking suite is worth noticing.
+        run: |
+          pytest -q --collect-only | tail -1
+
+      - name: Fail if an optional-extra suite was skipped
+        working-directory: backend
+        # Same reasoning as the Postgres job below. These files skip themselves when
+        # their extra is absent, which is right for a developer who installed only
+        # `dev` and wrong here — a green build that silently tested nothing is worse
+        # than a red one. `test_oidc.py` especially: it is the only thing standing
+        # between a forged token and a session.
+        run: |
+          for suite in tests/test_api.py tests/test_oidc.py; do
+            if pytest -q "$suite" 2>&1 | tail -1 | grep -q "skipped"; then
+              echo "::error::$suite skipped — an optional extra did not install."
+              exit 1
+            fi
+          done
+
+  postgres:
+    name: storage contract (real Postgres)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: carnet_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d carnet_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install
+        working-directory: backend
+        # Every extra. This job is the one that runs the whole suite against the real
+        # engine, so a missing extra here means a file skipping silently in the only
+        # place it would have been checked properly.
+        run: pip install -e ".[dev,postgres,api,access]"
+
+      - name: Run the suite against Postgres
+        working-directory: backend
+        env:
+          # The contract suite DROPS and rebuilds this schema at session start. It has
+          # to — the audit table refuses DELETE by design, so it cannot be cleaned
+          # between tests. Safe here because the database is created for this run.
+          CARNET_TEST_DSN: postgresql://postgres:test@localhost:5432/carnet_test
+        run: pytest -q
+
+      - name: Fail if the Postgres half was skipped
+        working-directory: backend
+        # A missing DSN makes those tests skip rather than fail, which is right
+        # locally and wrong here: a green build that silently tested nothing is worse
+        # than a red one.
+        env:
+          CARNET_TEST_DSN: postgresql://postgres:test@localhost:5432/carnet_test
+        run: |
+          if pytest -q 2>&1 | tail -1 | grep -q "skipped"; then
+            echo "::error::Postgres tests skipped — the DSN did not reach them."
+            exit 1
+          fi
+
+  upgrade:
+    name: upgrade path (staged history -> head -> contract suite)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # The declared floor, and the reason it is 16 rather than 15: the feature floor
+        # is migration 007's `UNIQUE NULLS NOT DISTINCT`, but a version nothing runs
+        # against is a guess with a number on it. `migrate.apply` refuses anything older.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install
+        working-directory: backend
+        run: pip install -e ".[dev,postgres,api,access]"
+
+      - name: Every released migration, over populated tables, timed
+        working-directory: backend
+        env:
+          # A base DSN with no database name: the script creates its own databases, and
+          # needs CREATEDB, which the image's `postgres` superuser has.
+          CARNET_E2E_PG: postgresql://postgres:test@localhost:5432
+        run: python scripts/e2e_upgrade.py
+
+      - name: The contract suite, against that upgraded database
+        working-directory: backend
+        env:
+          CARNET_TEST_DSN: postgresql://postgres:test@localhost:5432/e2e_upgrade
+          # Keeps the schema the step above just built out of thirty-five migrations.
+          # Without this the fixture drops it and the job tests a fresh database twice.
+          CARNET_TEST_KEEP_SCHEMA: "1"
+        # The suite gets **one** run per built database and the ordering above is what
+        # provides it: per-test tenants are named after their test, so a second run
+        # collides with the first run's rows. That is the same property the `pg_dsn`
+        # docstring records, seen from the other side.
+        #
+        # Two tests are deselected, and only these two. Both assert that the first
+        # instant past the partition horizon is refused — which is true of a database
+        # whose partitions were created by the horizon logic, and false of this one on
+        # purpose: the fixture seeds a row stamped two years ahead, the skewed-clock
+        # hazard that broke the first version of migration 030, and that row's partition
+        # legitimately sits outside the horizon. The property itself is unaffected and
+        # the `postgres` job above proves it on a fresh schema on every run.
+        run: |
+          pytest -q tests/test_storage_contract.py tests/test_concurrency.py \
+            --deselect tests/test_storage_contract.py::test_the_horizon_edge_is_exact \
+            --deselect tests/test_storage_contract.py::test_opening_a_store_repairs_the_horizon
+
+      # Step 082. Runs last in this job because it creates and drops its own databases
+      # and must not be between `e2e_upgrade` and the suite that reads what it built.
+      # It builds a second migration series as a real installed distribution — metadata
+      # on `PYTHONPATH`, discovered through the entry point — and drives the real
+      # `carnet --migrate`, so it is the only thing in CI that runs two series against
+      # one database. Everything else asserts the arithmetic.
+      - name: Two migration series, one ledger, one real database
+        working-directory: backend
+        env:
+          CARNET_E2E_PG: postgresql://postgres:test@localhost:5432
+        run: python scripts/e2e_migration_series.py
+
+      # Step 099. The four journey harnesses the acceptance pass wrote for what nothing
+      # covered — the fileborne editing session, CARNET_OPEN_ADMIN, the four-person team
+      # calling as themselves, the audit stream and offboarding. Each is a few seconds,
+      # needs no browser and no Docker, and creates its own database off the base DSN,
+      # so they sit here after the two scripts above rather than in a job of their own.
+      # They dial `localtest.me` (a public name for loopback) for `egress`'s reason and
+      # skip loudly without DNS, which the guard turns into a failure — a silent skip is
+      # a green run that tested nothing, the same rule as every other guard in this file.
+      - name: The journeys nothing else covered (step 099)
+        working-directory: backend
+        shell: bash
+        env:
+          CARNET_E2E_PG: postgresql://postgres:test@localhost:5432
+        run: |
+          for script in e2e_file_workflows e2e_open_admin e2e_team_journey e2e_audit_stream; do
+            python "scripts/$script.py" | tee "/tmp/$script.log"
+            if grep -q "SKIPPED:" "/tmp/$script.log"; then
+              echo "::error::$script skipped — its world is missing from this job."
+              exit 1
+            fi
+          done
+
+  browser:
+    name: browser e2e (real Chromium, dev bundle + shipped CSP)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # The scripts create their own databases off a base DSN, exactly as the
+        # `upgrade` job's script does, so no POSTGRES_DB here either.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install the frontend
+        # `e2e_browser_admin.py` starts the Vite dev server itself; `e2e_browser_local.py`
+        # builds `frontend/dist`. Both need the dependencies, neither installs them.
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install the backend, with the browser extra
+        working-directory: backend
+        # `browser` is deliberately an extra rather than a base dependency —
+        # `pyproject.toml` says installing a headless browser is a decision somebody
+        # makes. This job is that somebody.
+        run: pip install -e ".[dev,postgres,api,access,browser]"
+
+      - name: Install Chromium
+        working-directory: backend
+        run: playwright install --with-deps chromium
+
+      - name: The administration surface, from an empty database
+        working-directory: backend
+        # 180 checks: the whole admin arc in a real browser — vetting, consent, tokens,
+        # reach, budget, schedules, triggers — plus 035j's six routes, including one
+        # genuine tool call through the MCP door read back off the door-traffic page.
+        # Needs outbound DNS for `localtest.me` (a public name for 127.0.0.1), which
+        # the script's own docstring explains.
+        env:
+          CARNET_E2E_PG: postgresql://postgres:test@localhost:5432
+        run: python scripts/e2e_browser_admin.py
+
+      - name: The shipped CSP and the silent renewal
+        working-directory: backend
+        # 14 checks, and the only ones anywhere that drive the *built* bundle under the
+        # CSP that actually ships — no dev-server relaxation — and exercise silent
+        # renewal for real, because the local provider's session cookie is first-party
+        # in the renewal iframe.
+        env:
+          CARNET_E2E_PG: postgresql://postgres:test@localhost:5432
+        run: python scripts/e2e_browser_local.py
+
+  deploy:
+    name: deploy e2e (the shipped artifact, driven end to end)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install the backend, with the browser extra
+        working-directory: backend
+        # postgres so the managed-database scene can reach in from the host with
+        # psycopg; browser for the second script's Chromium.
+        run: pip install -e ".[dev,postgres,api,access,browser]"
+
+      - name: Install Chromium
+        working-directory: backend
+        run: playwright install --with-deps chromium
+
+      - name: A Postgres outside the stack, for the managed-database scene
+        # Deliberately NOT a `services:` container: the scene attaches this container
+        # to the stack's own compose network by name (`docker network connect`), so
+        # it must be a container the job controls — and the bundled-db scenes need no
+        # database at all, which is their point. 55432 so nothing a runner already
+        # publishes on 5432 can collide.
+        run: |
+          docker run -d --name carnet-pg -e POSTGRES_PASSWORD=test \
+            -p 55432:5432 postgres:16-alpine
+          timeout 60 bash -c \
+            'until docker exec carnet-pg pg_isready -U postgres; do sleep 2; done'
+
+      - name: The deployment artifact, driven end to end
+        working-directory: backend
+        # `shell: bash` for pipefail, so the script's own exit code still fails the
+        # step through the tee.
+        shell: bash
+        env:
+          CARNET_E2E_PG: postgresql://postgres:test@localhost:55432
+        # The scripts skip loudly (always the word `SKIPPED:`) rather than failing
+        # when a piece of their world is absent — right on a laptop, wrong here: this
+        # job exists so nothing in deploy/ is proven only by hand, and a silent skip
+        # is a green build that tested nothing, the same reasoning as every other
+        # skip guard in this file.
+        run: |
+          python scripts/e2e_deploy.py | tee /tmp/e2e_deploy.log
+          if grep -q "SKIPPED:" /tmp/e2e_deploy.log; then
+            echo "::error::a deploy e2e scene skipped — its world is missing from this job."
+            exit 1
+          fi
+
+      - name: A real browser signs into the deployed artifact
+        working-directory: backend
+        shell: bash
+        # CARNET_E2E_ADD_HOST because a bare Linux engine does not resolve
+        # host.docker.internal inside containers; the script wires it itself with a
+        # compose override rather than an edit to the shipped compose.yaml (054).
+        # Reuses the images the step above built — compose names them
+        # carnet-api/carnet-front — so the second build is cache.
+        env:
+          CARNET_E2E_ADD_HOST: "1"
+        run: |
+          python scripts/e2e_browser_deploy.py | tee /tmp/e2e_browser_deploy.log
+          if grep -q "SKIPPED:" /tmp/e2e_browser_deploy.log; then
+            echo "::error::the browser deploy e2e skipped — its world is missing from this job."
+            exit 1
+          fi
+
+      - name: The fileborne door, driven end to end
+        working-directory: backend
+        shell: bash
+        # Step 098: the other artefact from the same image — a file, `docker run`, no
+        # database and no key. Reuses the carnet-api image the steps above built.
+        # The script runs its own tiny MCP server and points the container at it
+        # through host.docker.internal, wired with --add-host for this bare engine.
+        run: |
+          python scripts/e2e_file_door.py | tee /tmp/e2e_file_door.log
+          if grep -q "SKIPPED:" /tmp/e2e_file_door.log; then
+            echo "::error::the fileborne door e2e skipped — its world is missing from this job."
+            exit 1
+          fi
+
+  supply-chain:
+    name: supply chain (audits and SBOMs over what actually ships)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: pip-audit the deployment lockfile
+        # `-r` the lock, not an installed environment: the question is what the
+        # shipped image contains, and deploy/requirements.lock is that by
+        # construction (the Dockerfile installs it with --require-hashes).
+        run: |
+          pip install pip-audit
+          pip-audit --require-hashes -r deploy/requirements.lock
+
+      - name: npm audit the production tree
+        working-directory: frontend
+        # --omit=dev is the scope decision the register's npm-audit row asked for:
+        # the bundle is built FROM the production dependencies, while the known
+        # unreachable advisory lives in the dev tree (vite -> postcss -> nanoid) —
+        # build tooling that ships nothing. The dev half stays recorded in
+        # DEFERRED.md, not silently dropped.
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Generate the SBOMs
+        # CycloneDX for both halves: the backend from the lockfile, the frontend
+        # from npm's own generator (built into npm >= 10.7 — no new dependency).
+        run: |
+          pip install cyclonedx-bom
+          cyclonedx-py requirements deploy/requirements.lock -o sbom-backend.cdx.json
+          cd frontend && npm ci && npm sbom --sbom-format cyclonedx --omit dev > ../sbom-frontend.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom-*.cdx.json
+
+  frontend:
+    name: frontend (typecheck, lint, build, unit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          # jsdom is pinned to ^26 in package.json because 30 needs Node >= 22 and the
+          # machine this was written on runs 20.12 — on 30 the suite does not fail, it
+          # fails to *collect*, with an ERR_REQUIRE_ESM out of a transitive dependency.
+          # 22 here, so CI is not the more permissive of the two.
+          #
+          # **Amended in 035m: that accommodation is now unreachable and the pin is paid
+          # for nobody.** eslint 10 declares `node: ^20.19.0 || ^22.13.0 || >=24`, so the
+          # 20.12 machine the comment describes cannot run `npm run lint` whatever jsdom
+          # is pinned to — and that machine is long gone (this repository's development
+          # host runs 22.23.2). Left pinned rather than upgraded because 035m takes no
+          # dependency upgrades, and because unpinning jsdom is a decision about the test
+          # environment that wants its own chunk. There is still no `engines` field and no
+          # `.nvmrc`: the *only* statement of a Node floor this repository makes is this
+          # comment and the `node-version` below, which is why the floor could move by
+          # accident in the first place.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: frontend
+        # Added in 035m, and in the gate for the reason the `fast` job runs 3.10: a claim
+        # nothing checks is a claim that stops being true. The rule set is deliberately
+        # small — `tsconfig` already runs `strict`, `noUnusedLocals` and
+        # `noFallthroughCasesInSwitch` one step above, so what is left is the class the
+        # typechecker structurally cannot see: a hook behind an early return, a stale
+        # dependency list, and a suppression that has stopped suppressing. The argument
+        # for every rule bought and every rule declined is in `frontend/eslint.config.js`
+        # and `docs/plans/035m-lint.md`.
+        #
+        # After Typecheck, because `tsc` is the cheaper and more fundamental failure and
+        # a tree that does not typecheck makes lint output noise.
+        #
+        # **This is not the browser-e2e decision.** That was 035j's call, and it took
+        # it: the `browser` job below runs two of the four scripts on every PR, so a
+        # green PR is proof the app renders. What it still does not prove is in the
+        # register (the roles script stays hand-run; the deployed-artifact scripts
+        # joined the `deploy` job in 054).
+        run: npm run lint
+
+      - name: Run the unit suite
+        working-directory: frontend
+        # No browser, no server, no network. What it holds in place is the two things
+        # a SPA hides: the URLs it actually puts on the wire, and the words it renders.
+        run: npm test
+
+      - name: Build
+        working-directory: frontend
+        # The build is a test: `tsc -b` runs first, and a bundle that will not build is
+        # a deploy that fails after the backend has already shipped.
+        run: npm run build

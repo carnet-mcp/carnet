@@ -1,0 +1,234 @@
+[project]
+name = "carnet"
+# Read from `carnet.__version__` — see `[tool.setuptools.dynamic]` at the foot of
+# this file. It used to be a literal here *and* in `__init__.py`, which is two places to
+# bump and one of them silently wrong.
+#
+# Not `importlib.metadata`: under an editable install that reports the version recorded
+# at install time, so a bumped checkout keeps printing the old number until somebody
+# reinstalls. A module attribute cannot lag itself.
+dynamic = ["version"]
+description = "The MCP door: a broker in front of your assistant's tool calls — scoped per caller, under a credential it never holds, revocable, metered, audited"
+# Apache-2.0, and the file is the verbatim text rather than a summary of it. The patent
+# grant is the clause this choice is actually about: a permissive licence without one is
+# the thing an enterprise reviewer sends back. See LICENSE and NOTICE.
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+dependencies = [
+    # No model SDK. The door spends no model tokens and holds no model key — step 078
+    # removed the loop that did, and `anthropic` stayed here for six steps as a base
+    # dependency nothing imported, in the lockfile, the image and the SBOM of a product
+    # whose README says it needs none. It is the `harness` extra now, for the one script
+    # that drives a real model as an MCP client.
+    "requests>=2.31.0",
+    # Step 024. A JSON Schema validator is a large specification surface where being
+    # wrong is silent — PyJWT's argument — and it runs on the worker path (every
+    # schema'd run's completion) and the API path (config validation), so an extra
+    # would be an import guard in the module least improved by one: cryptography's
+    # argument, again.
+    "jsonschema>=4.21",
+    # A base dependency rather than an extra, unlike Postgres, the API and access.
+    # Extras exist so a suite can skip itself and CI fails when one does; but
+    # `core/credentials.py` is imported on every path a tool call takes, so an optional
+    # cipher would mean either a skip CI rejects or an import guard in the module least
+    # improved by one. `PyJWT[crypto]` already pulls this in transitively under the
+    # `access` extra — this makes it explicit and unconditional.
+    "cryptography>=42.0",
+    # Step 095. `carnet.yaml` is the whole administration of the fileborne door, and it
+    # is YAML because every neighbour in plan 094's list uses it and a stranger's first
+    # config should look like their last one. Read with `safe_load` only. A base
+    # dependency rather than an extra on `cryptography`'s argument: `bootstrap.configure`
+    # reaches it on every path that starts with `CARNET_FILE` set, and an import guard
+    # there would be the module least improved by one.
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+# Ruff and mypy, **pinned exactly rather than floored**. Every other dependency here
+# takes a `>=` because a newer one is a better one; a linter is the opposite case. Both
+# add rules and sharpen inference on minor releases, so a floor means CI turns red on
+# somebody else's release schedule, on a commit that changed nothing. Raising these is
+# a deliberate act with its own diff — which is the only way the ratchet in
+# `[tool.mypy]` below means anything.
+lint = ["ruff==0.16.3", "mypy==2.3.1"]
+
+# Postgres is optional, and that is the point. Without it the CLI runs against an
+# in-memory store seeded from the shipped modules, so a fresh clone works and the test
+# suite still starts nothing and calls nothing. Install this to point at a real
+# database — and to run the Postgres half of the storage contract suite.
+postgres = ["psycopg[binary]>=3.1", "psycopg-pool>=3.2"]
+
+# The HTTP entry point. An extra rather than a base dependency for the same reason
+# Postgres is one: the CLI is a complete way to use this runtime, and a fresh clone
+# should not install a web framework to run an agent from a terminal.
+#
+# FastAPI here does not contradict hand-writing the MCP client rather than taking the
+# `mcp` SDK. That rejected four dependencies for a three-method protocol subset — a
+# large dependency for a small surface. This is the opposite trade: a large surface,
+# whose OpenAPI generation and request validation are exactly what a UI consumes.
+#
+# `python-multipart` arrives with step 028, and it is worth naming rather than letting
+# it appear as a transitive detail. It is what parses a run's attached file, and it is
+# the *counter*-example to the `mcp` SDK decision above: multipart boundary parsing is a
+# small surface with a long history of parser bugs, and it is reached by unauthenticated
+# bytes before any of our code runs. Hand-writing it to save a dependency would be
+# writing exactly the kind of code this codebase declines to write for sport. FastAPI
+# requires it by name for `UploadFile`, so the alternative is not a smaller dependency
+# but a different door.
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
+
+# Identity. One dependency, and it earns its place the way FastAPI did and the `mcp`
+# SDK did not: verifying a JWT against a published key set is a large, security-critical
+# surface where being wrong is silent. `[crypto]` brings the asymmetric algorithms —
+# without it PyJWT can only do HMAC, which is exactly what this must never accept.
+access = ["PyJWT[crypto]>=2.8"]
+
+# A real browser, for `scripts/e2e_browser_roles.py`. An extra, and deliberately **not**
+# in `dev`: the suite must keep the property that it starts nothing and calls nothing, and
+# CI does not run a headless browser. Installing it is a decision somebody makes when they
+# want the check that finds the class of bug no test can — a screen offering a control
+# that refuses the person it was rendered for.
+#
+#     uv pip install -e ".[browser]" && playwright install chromium
+browser = ["playwright>=1.44"]
+
+# Somebody else's MCP client, for `scripts/e2e_mcp_door.py`. An extra on `browser`'s
+# terms — deliberately not in `dev`, because the suite must keep starting nothing and
+# calling nothing, and CI does not run it.
+#
+# **This does not reverse the decision in `tools/mcp/client.py`.** That one declined the
+# SDK as a *dependency of the product*: four packages for a three-method protocol subset
+# we speak as a client. This is the opposite direction and the opposite trade — step 033b
+# makes this repository an MCP *server*, and every byte on both sides of that protocol is
+# otherwise produced by code sharing all of our assumptions, so an asymmetric reading of
+# the specification is invisible by construction. A client written by other people, with
+# its own models and its own strictness, is the only thing that can see one. It is the
+# same reason `playwright` exists above: the check that finds a class of bug nothing in
+# the suite can.
+#
+#     uv pip install -e ".[mcpclient]"
+mcpclient = ["mcp>=2.0"]
+
+# A real model as the MCP client, for `scripts/use_the_product.py` — the script that
+# spends money on purpose to watch the door being used. Not `dev`, for the reason the two
+# extras above give: the suite starts nothing and calls nothing, and the product itself
+# imports no model SDK at all.
+harness = ["anthropic>=0.121.0"]
+
+# Installs the `carnet` command. Equivalent to `python -m carnet.cli`.
+[project.scripts]
+carnet = "carnet.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# src-layout: the package is only importable once installed, so tests and scripts
+# can never accidentally import a half-configured copy from the working directory.
+[tool.setuptools.dynamic]
+version = {attr = "carnet.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Migrations are data, not code, so they need saying explicitly or an installed
+# package has a storage layer it cannot create a schema for.
+[tool.setuptools.package-data]
+"carnet.storage" = ["migrations/*.sql"]
+# Connector recipes are data for the same reason and with a worse failure mode — step
+# 068. A missing migration is a loud error at start-up; a missing recipe is an **empty
+# catalogue**, and an empty catalogue is indistinguishable from a build that ships none.
+# `--list-recipes` would print "this build ships no connector recipes" on every installed
+# deployment while every test passed from source, which is precisely the shape this line
+# above it exists to prevent.
+"carnet.access" = ["recipes/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# --- ruff --------------------------------------------------------------------------
+#
+# Error classes only, and that is the decision rather than an oversight. This is 40k
+# lines of hand-formatted, comment-heavy code where the comments are the primary
+# artifact; a default rule set reflows it and buries the three real findings inside a
+# thousand-line style diff nobody reads. What is selected here can only ever be a bug.
+#
+# Pinned in the `lint` extra: both tools add rules on minor releases, and an unpinned
+# linter is CI that turns red on somebody else's schedule.
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# F   pyflakes      — undefined names, unused imports, f-string bugs.
+# E9  pycodestyle   — syntax and IO errors only, not style.
+# B   bugbear       — mutable defaults, loop-variable capture, blind excepts.
+# PLE pylint errors — pylint's error tier, nothing advisory.
+select = ["F", "E9", "B", "PLE"]
+
+# B905: `zip()` without `strict=`. Fifty-two call sites, and turning it on is a runtime
+# behaviour change — `strict=True` raises where the code currently truncates — so it is
+# a ratchet candidate to be taken deliberately, not a lint fix to be applied in bulk.
+ignore = ["B905"]
+
+[tool.ruff.lint.flake8-bugbear]
+# B008 fires on every FastAPI route in `api/`, which is the framework's documented
+# calling convention rather than a mutable-default bug. Naming the calls keeps B008
+# live for the real thing instead of switching the rule off.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.Form",
+]
+
+# --- mypy --------------------------------------------------------------------------
+#
+# **A ratchet whose current notch is written down here.** Strictness is raised, never
+# lowered, and every disabled code carries the reason it is off and what turning it on
+# would cost. The notch below is the one that is green on 2026-08-18 with the storage
+# layer typed the way it is: `*_FIELDS` tuples and plain dicts rather than models, which
+# is a deliberate design (`storage/base.py`) and not a gap to be annotated away.
+#
+# The codes left ON are the ones that found real defects in 027's first run: `call-arg`
+# caught `set_connector_oauth`'s protocol drift, `attr-defined` caught `Storage.close`
+# existing on one store and no protocol.
+[tool.mypy]
+files = ["src"]
+python_version = "3.10"
+allow_redefinition = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+# Each of these is a class of finding this codebase produces structurally rather than
+# accidentally. Re-enabling one is a step of work on its own, per module:
+#   arg-type      list-vs-tuple on NamedTuple fields, str-vs-Literal into Pydantic
+#                 models that validate the same constraint at runtime.
+#   union-attr    invariants the code states in a comment and mypy cannot see — the
+#                 broker's `tool` after step 1 refused unregistered tools, and the
+#                 `StdioLaunch | HttpLaunch` pair discriminated by `transport_kind`.
+#   index         dict indexing on heterogeneous literals inferred as Collection[str].
+#   assignment    the same, on the way in.
+#   var-annotated bare `{}` / `set()` module constants.
+#   call-overload third-party overloads (PyJWT) resolved by runtime shape.
+disable_error_code = [
+    "arg-type",
+    "union-attr",
+    "index",
+    "assignment",
+    "var-annotated",
+    "call-overload",
+]
+
+# Untyped third-party packages, named rather than globally ignored so a new untyped
+# dependency is a decision somebody makes here.
+[[tool.mypy.overrides]]
+module = ["psycopg.*", "psycopg_pool.*", "jsonschema.*", "jwt.*", "playwright.*", "yaml.*"]
+ignore_missing_imports = true

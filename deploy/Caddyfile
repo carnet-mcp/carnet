@@ -1,0 +1,115 @@
+# The front door: TLS, the two body limits, the /api rewrite, the SPA fallback.
+#
+# This file is the contract a deployment's own ingress must reproduce if it replaces
+# this container (plan 030, decision 3): terminate TLS, enforce the body limit on
+# serve the bundle with an SPA fallback, forward /api/* with the prefix
+# stripped, and set CARNET_PUBLIC_ORIGIN to the external origin plus /api.
+#
+# And since step 032: let a quiet read finish. GET /api/runs/{id}?wait=… is held by
+# the API for up to ~25s and answers the instant the run changes — live progress
+# without polling. Caddy needs no setting for this (no response timeout by default,
+# no buffering that outlasts one); a replacement ingress that cuts quiet reads under
+# ~30s silently turns live progress back into 2s polling. deploy/README.md item 5.
+#
+# TLS is on by default: a real CARNET_DOMAIN gets an ACME certificate (which needs
+# DNS pointing here and ports 80/443 reachable); `localhost` is signed by Caddy's own
+# internal CA, so a browser warns until that CA is trusted. The default this file
+# exists to abolish is plain HTTP.
+
+{
+	# A config endpoint on a front door is surface nobody asked for.
+	admin off
+}
+
+{$CARNET_DOMAIN}
+
+# Client addresses are recorded here, at the terminating proxy, because the API
+# deliberately reads no forwarded header — PUBLIC_ORIGIN is configuration, not a Host
+# header, and nothing inside consumes X-Forwarded-*. `docker compose logs front` is
+# where "who called" lives.
+log
+
+# The response headers the bundle cannot set for itself.
+#
+# The CSP here is THE app policy, not a supplement (plan 031, decision 2): the
+# bundle's meta tag keeps only the provider-independent directives, because
+# `connect-src`/`frame-src` must name the deployment's identity provider — which only
+# the deployment knows — and two CSPs are enforced as their *intersection*, so a
+# header could never widen a meta directive. The value is composed at container start
+# by frontdoor-entrypoint.sh from CARNET_OIDC_*, the same declaration that writes
+# /config.json, which is what keeps the two halves from ever disagreeing. It also
+# carries `frame-ancestors` — the directive the spec ignores in a meta tag, so until
+# 030 the deployed app had no clickjacking protection at all — as 'self', not 'none':
+# the silent-renewal iframe's last hop is /login/callback framed by this app itself,
+# and 'none' blocks it (found by a real browser; every other origin stays blocked).
+#
+# `Referrer-Policy` answers a hazard `routes_connections.py` names out loud — an OAuth
+# code ending up "in any proxy's access log, and in the Referer".
+header {
+	Content-Security-Policy "{$CARNET_CSP}"
+	X-Content-Type-Options "nosniff"
+	Referrer-Policy "no-referrer"
+}
+
+# HSTS, but never on a `localhost` trial: the policy is keyed by host and ignores the
+# port, so pinning `localhost` would force HTTPS on every other local development
+# server on this machine — a cost paid outside this deployment entirely. A year, and
+# deliberately without `includeSubDomains`: this deployment may share a domain with
+# services that are not ours, and pinning them is the customer's policy call.
+@public not host localhost
+header @public Strict-Transport-Security "max-age=31536000"
+
+# Everything under /api is authenticated. 12MiB is a backstop against the absurd, not
+# a security boundary — the door's own per-call cap (CARNET_MCP_MAX_CALL_BYTES) is
+# far lower — but "unlimited" is not an answer to how large a request may be.
+handle_path /api/* {
+	request_body {
+		max_size 12MiB
+	}
+	reverse_proxy api:8000
+}
+
+# Step 083. The door's OAuth discovery documents — RFC 9728 and RFC 8414 put them at
+# the origin root, not under /api — are the API's, forwarded with the path intact.
+# Before the fallback for /config.json's reason below: answered by the fallback they
+# would be index.html with a 200, and an MCP client would report a JSON parse error
+# about a server that is plainly up.
+handle /.well-known/oauth-* {
+	reverse_proxy api:8000
+}
+
+# How the app finds its identity provider: a file the entrypoint writes from
+# CARNET_OIDC_*, handled *before* the fallback for the same reason as /assets/*
+# below — and here the fallback was not merely confusing, it was the defect: it
+# answered an unconfigured /config.json with index.html and a 200, so the app's
+# "response.ok" was true, the JSON parse failed into a catch written for an ordinary
+# 404, and a deployment where NOBODY could sign in reported nothing anywhere. Absent
+# must be a real 404.
+handle /config.json {
+	root * /srv
+	# Revalidate every time. Nothing here sets a max-age, but a response with only an
+	# ETag is *heuristically* cacheable, so a deployment that changed its provider and
+	# restarted could go on serving the old one to a returning browser — a stale
+	# identity provider being the one kind of staleness that ends in a failed sign-in
+	# nobody can explain. A 304 costs a round trip and settles it.
+	header Cache-Control "no-cache"
+	file_server
+}
+
+# Hashed build output, and it is handled *before* the fallback on purpose: a missing
+# asset must be a 404, not index.html with a 200. Sent through the fallback — which is
+# what a bare `try_files` does — a half-copied or stale build answers every missing
+# script with HTML, and the browser reports a MIME type error pointing nowhere near
+# the cause. Found by the e2e asking for an asset that does not exist.
+handle /assets/* {
+	root * /srv
+	file_server
+}
+
+# The bundle. The fallback is what makes a reload on /runs/abc123 land in the app
+# rather than on a 404 — the same single-entry shape vite.config.ts documents.
+handle {
+	root * /srv
+	try_files {path} /index.html
+	file_server
+}

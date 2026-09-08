@@ -1,0 +1,35 @@
+-- What a vetted tool keeps out of the audit log. Step 045c.
+--
+-- `Tool.redact_args` is the audit's redaction policy and has been since the first
+-- shipped tool: `post_message` hashes its `text` because a message body is user
+-- content, and `core/audit._redact` writes `sha256:<12 hex> (len=N)` in its place. Until
+-- this column **only a hand-written tool could express that**. `Vetted` had no such
+-- field, the manifest had no such key, and neither `--vet` nor the vetting route had a
+-- flag — so every connector tool's arguments landed in `audit.args` verbatim.
+--
+-- That was harmless while a connector's arguments were repo names and channel ids. It
+-- stops being harmless with 045c, whose whole subject is brokering a **model** call: the
+-- interesting argument there is `messages`, which is the entire conversation, and the
+-- door writes one audit row per call with the arguments on it. A governed model call
+-- whose prompts accumulate forever in the one table nobody may UPDATE is a data-handling
+-- position no customer chose and no screen discloses.
+--
+-- **Ordering matters here in a way it usually does not.** This is a property of an
+-- append-only table with a retention window nobody has designed yet, so a prompt written
+-- before this column exists cannot be un-written. That is why `DEFERRED.md` graded the
+-- row *compounding* and dated its trigger at 045c rather than after it.
+--
+-- A JSONB array of argument names, defaulting to the empty array — which is exactly what
+-- every row written before now meant: nothing was redacted, because nothing could be.
+-- NOT NULL with that default, unlike `binding`, because there is no "not applicable"
+-- state for this question. Every tool has an answer and for most of them it is *none*.
+--
+-- No CHECK that the names exist in the tool's input schema: the schema lives on the
+-- server for an MCP tool and inside `binding.input_schema` for a REST one, and the rule
+-- is enforced where the schema is — `tools/validation.validate`, at vet time and again
+-- at every bind, so a vendor renaming an argument out from under a redaction fails
+-- loudly rather than quietly logging what somebody approved hiding. This layer checks
+-- only the shape (`check_vetted_tool`), which is the split every other field here keeps.
+
+ALTER TABLE vetted_tools
+    ADD COLUMN redact_args JSONB NOT NULL DEFAULT '[]'::jsonb;

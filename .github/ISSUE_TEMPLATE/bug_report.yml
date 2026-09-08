@@ -1,0 +1,78 @@
+name: Bug report
+description: Something the door, the broker, the API or the interface does wrong
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead.
+      placeholder: |
+        I called `tools/call` for `github.create_issue` with a token granted the
+        `reporter` agent, and got a refusal naming a scope I thought the grant covered.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: >-
+        The smallest sequence that shows it. A reproduction someone can run is worth
+        much more than a description of one — a `curl`, a script, or a failing test.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: >-
+        `carnet --version`, or the commit you are on. "Latest" is not a version;
+        a lot changes.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where it happens
+      description: Which way in. Pick the closest.
+      options:
+        - The MCP door (/mcp)
+        - The OAuth flow (discovery, registration, consent, token)
+        - The HTTP API
+        - The CLI
+        - The web interface
+        - Migrations or upgrade
+        - Somewhere else, or not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage
+      description: >-
+        The in-memory store and Postgres are held to one contract suite, and a
+        difference between them is itself a bug worth reporting.
+      options:
+        - Postgres
+        - In-memory
+        - Both
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, refusal sentence, or audit row
+      description: >-
+        A refusal names what it refused and why — that sentence is usually the most
+        useful thing in a report. If a door call is involved, the call id comes back
+        in the result's `_meta` and identifies its audit row.
+      render: shell
+    validations:
+      required: false

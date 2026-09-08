@@ -1,0 +1,48 @@
+{
+  "id": "linear",
+  "name": "Linear — hosted MCP server",
+  "description": "Linear's hosted MCP server, over OAuth, so each person's calls go out as their own Linear account.",
+  "verified_on": null,
+  "verified_by": "",
+  "verified_against": "",
+  "hosts": [
+    {
+      "host": "mcp.linear.app",
+      "why": "The MCP server itself. Every tool call this connector brokers is dialled here."
+    },
+    {
+      "host": "api.linear.app",
+      "why": "The OAuth token endpoint. Dialled server-side, carrying this deployment's client secret, on every code exchange and refresh."
+    }
+  ],
+  "connector": {
+    "connector_id": "linear",
+    "kind": "http",
+    "url": "https://mcp.linear.app/mcp",
+    "credential_env": "LINEAR_TOKEN",
+    "credential_header": null,
+    "credential_prefix": null,
+    "headers": {},
+    "description": "Linear, over its hosted MCP server"
+  },
+  "oauth": {
+    "authorize_endpoint": "https://linear.app/oauth/authorize",
+    "token_endpoint": "https://api.linear.app/oauth/token",
+    "revoke_endpoint": "https://api.linear.app/oauth/revoke",
+    "scopes": ["read", "write"],
+    "authorize_params": {},
+    "scope_notes": {
+      "read": {
+        "name": "Read issues, projects and teams",
+        "description": "See everything in Linear you already have access to — issues, comments, projects, cycles and team membership. Changes nothing.",
+        "access": "read"
+      },
+      "write": {
+        "name": "Create and edit issues",
+        "description": "Open, edit, comment on and move issues — anything you could do yourself in Linear, including changes that notify other people.",
+        "access": "write"
+      }
+    }
+  },
+  "tools": []
+}

@@ -1,0 +1,51 @@
+{
+  "id": "atlassian-jira",
+  "name": "Jira — Atlassian hosted MCP server",
+  "description": "Atlassian's hosted MCP server, over OAuth, so each person's calls go out as their own Jira account rather than one shared service user.",
+  "verified_on": null,
+  "verified_by": "",
+  "verified_against": "",
+  "hosts": [
+    {
+      "host": "mcp.atlassian.com",
+      "why": "The MCP server itself. Every tool call this connector brokers is dialled here."
+    },
+    {
+      "host": "auth.atlassian.com",
+      "why": "The OAuth token endpoint. Dialled server-side, carrying this deployment's client secret, on every code exchange and refresh."
+    }
+  ],
+  "connector": {
+    "connector_id": "jira",
+    "kind": "http",
+    "url": "https://mcp.atlassian.com/v1/sse",
+    "credential_env": "JIRA_TOKEN",
+    "credential_header": null,
+    "credential_prefix": null,
+    "headers": {},
+    "description": "Jira, over Atlassian's hosted MCP server"
+  },
+  "oauth": {
+    "authorize_endpoint": "https://auth.atlassian.com/authorize",
+    "token_endpoint": "https://auth.atlassian.com/oauth/token",
+    "revoke_endpoint": "",
+    "scopes": ["read:jira-work", "write:jira-work", "offline_access"],
+    "authorize_params": {
+      "audience": "api.atlassian.com",
+      "prompt": "consent"
+    },
+    "scope_notes": {
+      "read:jira-work": {
+        "name": "Read issues and projects",
+        "description": "See issues, comments, projects and boards you already have access to in Jira. Changes nothing.",
+        "access": "read"
+      },
+      "write:jira-work": {
+        "name": "Create and edit issues",
+        "description": "Open, edit, comment on and transition issues — anything you could do yourself in Jira, including changes other people will be notified about.",
+        "access": "write"
+      }
+    }
+  },
+  "tools": []
+}

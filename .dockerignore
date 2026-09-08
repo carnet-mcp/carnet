@@ -1,0 +1,15 @@
+# What `deploy/Dockerfile` may never see. The build context is the repository root
+# (see deploy/compose.yaml), so this file is what keeps a local checkout's state —
+# dependencies, builds, databases, editor droppings — out of the image and out of the
+# build cache key.
+.git
+var
+**/var
+**/__pycache__
+**/.venv
+**/.pytest_cache
+**/.mypy_cache
+frontend/node_modules
+frontend/dist
+frontend/coverage
+backend/src/carnet.egg-info

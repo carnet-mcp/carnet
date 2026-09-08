@@ -1,0 +1,21 @@
+# Review routing, not permission. The house rules below hold whether or not anybody
+# is looking; these lines only make sure somebody is.
+
+*                                       @psistla132
+
+# Released migrations are checksummed, and the runner refuses a database whose hashes
+# moved. A change to one of these files is an outage for every existing deployment.
+/backend/src/carnet/storage/migrations/  @psistla132
+
+# The premise outranks every other document in the repository, including the README.
+# It has moved twice, and both times the cost was that nobody could find it.
+/docs/PREMISE.md                        @psistla132
+/CLAUDE.md                              @psistla132
+
+# The terms the project is offered under.
+/LICENSE                                @psistla132
+/NOTICE                                 @psistla132
+/DCO                                    @psistla132
+
+# CI is the review floor. A change that weakens a gate should be argued for, not merged.
+/.github/                               @psistla132

@@ -1,0 +1,1187 @@
+/* Shapes that belong to one screen rather than to the design: the tool catalogue, the
+ * create wizard, the administrative surface. Each block says which screen it serves —
+ * when that screen goes, so does the block. */
+
+/* --- the tool catalogue, on an agent's page ------------------------------------------
+ *
+ * Writes are separated and stated first, so the visual weight has to agree with that
+ * rather than fight it: a write row carries the warn edge, a read row does not. Colour
+ * is never the only signal — every row also carries the word, for the reason the badge
+ * does. */
+.card > h3 + .sentence {
+  margin-top: 0;
+}
+.card > h3:not(:first-child) {
+  margin-top: 1.25rem;
+}
+
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.tool {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: var(--space-3) 0.8rem;
+  background: var(--sunk);
+  transition:
+    border-color var(--fast) var(--ease),
+    background-color var(--fast) var(--ease);
+}
+.tool.write {
+  border-left-color: var(--warn);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool {
+    transition: none;
+  }
+}
+.tool-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.tool-head .name {
+  font-weight: 600;
+  color: var(--ink);
+}
+.tool-head .from {
+  margin-left: auto;
+  font-size: var(--text-xs);
+}
+.tool p {
+  margin: 0.35rem 0 0;
+}
+.tool .note {
+  font-size: 0.8rem;
+}
+
+/* --- the wizard ----------------------------------------------------------------------
+ *
+ * Five steps over one draft. The only thing here that is a decision rather than layout is
+ * the tick target: a tool choice is a whole card, because the thing being ticked grants
+ * access to somebody's real systems and a 13px checkbox is the wrong size for that. */
+
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-sm);
+}
+.steps button {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  height: var(--control-sm);
+  padding: 0 0.65rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+.steps button:not(:disabled):hover {
+  background: var(--sunk);
+  color: var(--ink);
+}
+.steps button:disabled {
+  cursor: default;
+}
+.steps .done button {
+  color: var(--ink-soft);
+}
+.steps .on button {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  font-weight: 600;
+}
+.steps .n {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+.steps .on .n {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.steps .done .n {
+  background: var(--good-soft);
+  border-color: var(--good);
+  color: var(--good);
+}
+@media (prefers-reduced-motion: reduce) {
+  .steps button {
+    transition: none;
+  }
+}
+
+.wizard-nav {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+/* A tool, as something to tick. Same block as `.tool` on the detail page — same
+ * information, same write marking — with a target around the whole of it. */
+.tool.pick {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  cursor: pointer;
+}
+.tool.pick:hover {
+  border-color: var(--line-strong);
+  background: var(--paper);
+}
+.tool.pick.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.tool.pick.write.on {
+  border-left-color: var(--warn);
+}
+/* The box itself is drawn in `base.css`, at the size everything else in the app ticks
+   at. What is left here is where it sits: on the first line of the tool's name rather
+   than centred against a two-line block. */
+.tool.pick input {
+  margin-top: 0.15rem;
+}
+.pick-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-3) 0;
+}
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  cursor: pointer;
+}
+.choice input {
+  margin-top: 0.15rem;
+}
+.choice.big {
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--sunk);
+  transition:
+    border-color var(--fast) var(--ease),
+    background-color var(--fast) var(--ease);
+}
+.choice.big:hover {
+  border-color: var(--line-strong);
+  background: var(--paper);
+}
+@media (prefers-reduced-motion: reduce) {
+  .choice.big {
+    transition: none;
+  }
+}
+
+.ids {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: flex-start;
+}
+.id-row {
+  width: 100%;
+}
+
+/* Stacked choices — one decision per row rather than side by side. Used where each
+ * option needs a sentence of its own (the model picker), unlike the two-word radios
+ * in a reach row. */
+.choices.stacked {
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.choices.stacked .choice {
+  width: 100%;
+}
+.choice.big.on,
+.choice.big.on:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* --- a run's evidence ------------------------------------------------------------- */
+
+/* The sequence of calls a run made, as a line of identifiers. Monospace for the reason
+   everything else identifying is: these are compared against a terminal. */
+.chain {
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* --- the administration surface (12c) ---------------------------------------------
+ *
+ * Three classes, and each exists because a screen 12c added needed a shape the app did
+ * not have. All three are inside cards, which is where every administrative form lives.
+ * (There were four: `.subnav` drew the three administrative sections inside the page,
+ * and the sidebar carries them now.)
+ */
+
+/* A group's membership, or a tool's approval form: something that belongs to the row
+   above it. Indented and ruled, so it reads as part of that row rather than as the next
+   one — which matters on a page where the next row is a different group. */
+.nested {
+  margin-top: var(--space-3);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--line);
+}
+
+/* A form that lives inside a card rather than being the card. Every administrative
+   write is one of these — approve a host, register a connector, approve a tool — and
+   they sit under a heading and a table rather than on their own page. */
+.inline-form {
+  margin-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.inline-form input,
+.inline-form select {
+  min-width: 0;
+}
+/* A field in a row shares the row rather than claiming all of it — `width: 100%` is
+   right for a field that is the whole of its line and wrong the moment there are two
+   of them and a button. */
+.inline-form .spread > input,
+.inline-form .spread > select {
+  flex: 1;
+  width: auto;
+}
+.inline-form .spread > .btn {
+  flex: none;
+}
+
+/* A row of controls under a heading, where each control is its own width rather than
+   the card's. `.field` puts every input on a line of its own, which is right for a form
+   and wrong for a `<select>` that holds one word. */
+.field > .spread > :is(input, select) {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+}
+/* …except one that says so. A weekday, a two-digit minute and an `HH:MM` are the only
+   fields in this app whose content has a known width, and they keep it inside a row that
+   would otherwise stretch them. Written here rather than in `base.css` so it outranks
+   the two `flex: 1` rules above it. */
+:is(.field, .inline-form) :is(select, input).short {
+  width: 8rem;
+  flex: none;
+}
+
+/* Facts about a thing, as a two-column list: a connector's URL, a consent flow's
+   endpoints. A table would imply rows that can be compared with each other, and these
+   are one thing's fields. */
+.pairs {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem var(--space-4);
+  margin: var(--space-2) 0 0;
+}
+.pairs dt {
+  color: var(--ink-faint);
+}
+.pairs dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* --- door traffic (035a) ----------------------------------------------------------
+ *
+ * The address and its identity badge on one line, wrapping together. They are one fact
+ * — a name is worth what its proof is worth — so they must not be separated by a column
+ * break into looking like two.
+ */
+.acting-for {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+/* --- the log filters (035b) --------------------------------------------------------
+ *
+ * A row of controls above a log, and a cell value that is also the filter for it. Both
+ * belong to the denial page today and neither knows what a denial is, so they live here
+ * rather than in `primitives.css`: they are a feature's arrangement of existing
+ * primitives, not an eleventh primitive.
+ */
+.log-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+.log-filters select {
+  width: auto;
+  min-width: 9rem;
+}
+
+/* The value in the cell, still reading as the value. It is a button because it changes
+ * what the page is showing rather than where you are — but a table full of buttons
+ * shaped like buttons stops looking like a log, so this one wears the text's own
+ * clothes and shows its hand on hover. */
+.filter-value {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 0.2em;
+  text-decoration-color: var(--ink-faint);
+}
+.filter-value:hover,
+.filter-value:focus-visible {
+  text-decoration-style: solid;
+  text-decoration-color: currentColor;
+}
+
+/* Each narrowing in force reads as one clause with its own way out, so two of them do
+ * not run together into a sentence that looks like it has one exit. */
+.narrowed {
+  margin-right: 0.5rem;
+}
+
+/* --- a folded turn, on a conversation (RunDetailPage) -----------------------------
+ *
+ * A `<details>` whose summary is a status badge and a sentence. It had a class name and
+ * no rules, which left it wearing the platform's disclosure triangle — a marker that is
+ * a different shape, a different size and a different colour on each engine, sitting in
+ * front of a badge this app drew itself.
+ */
+.turn-detail {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  margin-top: var(--space-3);
+}
+.turn-detail > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  cursor: pointer;
+  list-style: none;
+  transition: background-color var(--fast) var(--ease);
+}
+/* Safari draws the triangle through a pseudo-element of its own, which `list-style`
+   does not reach. */
+.turn-detail > summary::-webkit-details-marker {
+  display: none;
+}
+.turn-detail > summary:hover {
+  background: var(--sunk);
+}
+/* The chevron, ours, and it turns. Drawn with a border rather than a glyph so it costs
+   nothing and inherits the summary's colour. */
+.turn-detail > summary::after {
+  content: "";
+  margin-left: auto;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translate(-0.1rem, -0.1rem);
+  transition: transform var(--fast) var(--ease);
+}
+.turn-detail[open] > summary::after {
+  transform: rotate(-135deg) translate(-0.15rem, -0.15rem);
+}
+.turn-detail[open] > summary {
+  border-radius: var(--radius) var(--radius) 0 0;
+  border-bottom: 1px solid var(--line);
+}
+/* Everything the summary reveals, indented off the summary's own padding. */
+.turn-detail > :not(summary) {
+  padding: 0 var(--space-3);
+}
+.turn-detail > :last-child:not(summary) {
+  padding-bottom: var(--space-3);
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn-detail > summary,
+  .turn-detail > summary::after {
+    transition: none;
+  }
+}
+
+/* --- the token table (035c) --------------------------------------------------------
+ *
+ * Three cells here carry a fact and a gloss on the same fact: the name and the id every
+ * record actually writes, the kind and what the kind *means*, the revocation and when it
+ * happened. The gloss is a second line rather than a second column, because a column
+ * would let a reader compare glosses across rows — and *"only its own grants"* is not a
+ * value to scan down, it is an explanation of the badge beside it.
+ *
+ * So: tight to the line above, and unmistakably subordinate to it.
+ */
+.token-note {
+  margin-top: 0.15rem;
+  line-height: 1.3;
+}
+
+/* --- the overview — step 041b ---------------------------------------------------------
+   Figures, legends and the three chart primitives. Everything here is layout and
+   chrome: not one colour in this block is a literal, because the palette lives in
+   `tokens.css` where it was validated against these exact surfaces in both modes. */
+
+.section-head {
+  margin: var(--space-6) 0 var(--space-3);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.section-head:first-of-type {
+  margin-top: var(--space-5);
+}
+
+.figure {
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4);
+  background: var(--paper);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.figure figcaption {
+  display: grid;
+  /* The title and the window total share a row; the lede runs full width beneath. A
+     figure's total is the fact and the chart is the shape, so they sit together at the
+     top rather than the number being something you infer off an axis. */
+  grid-template-columns: 1fr auto;
+  gap: var(--space-1) var(--space-3);
+  align-items: baseline;
+  margin-bottom: var(--space-3);
+}
+.figure-title {
+  font-weight: 600;
+  font-size: var(--text-md);
+}
+.figure-total {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  text-align: right;
+}
+.figure-lede {
+  grid-column: 1 / -1;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  max-width: 68ch;
+}
+
+/* The legend is the dependable identity channel — always present for two or more
+   series, never for one. The swatch carries the colour so the text does not have to:
+   a `--chart-4` label on paper is unreadable, and the answer is ink text beside a
+   coloured mark rather than a darker yellow. */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.legend .swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/* The plot is fluid and the SVG scales to it — `preserveAspectRatio: none` on a
+   viewBox, so the geometry inside stays in one coordinate system whatever the column
+   width. A fixed height keeps every figure on the page the same size, which is most of
+   what makes a stack of them read as one instrument. */
+.figure-plot {
+  width: 100%;
+}
+.chart {
+  display: block;
+  width: 100%;
+  height: 180px;
+  overflow: visible;
+}
+
+.chart-grid {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+}
+.chart-axis {
+  stroke: var(--chart-axis);
+  stroke-width: 1;
+}
+.chart-tick {
+  fill: var(--ink-faint);
+  font-size: 10px;
+  font-family: var(--sans);
+}
+/* `text-anchor: end` on the y ticks alone — the day labels set their own. */
+text.chart-tick[dy] {
+  text-anchor: end;
+}
+.chart-mark {
+  /* A 4px rounded data-end, square at the baseline, is the spec — but SVG `rx` rounds
+     all four corners, and a stacked segment's bottom must stay flush with the segment
+     under it. So the marks are square here and the 2px surface gap does the separating,
+     which is the mechanism that matters. */
+  shape-rendering: crispEdges;
+}
+.chart-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.chart-dot {
+  stroke: var(--paper);
+  stroke-width: 2;
+}
+/* Invisible, and sized to the band rather than to the mark: a 2px line is a game of
+   precision to hover, and the hit target is what makes the tooltip reachable. */
+.chart-hit {
+  fill: transparent;
+}
+
+/* --- a mark that is a link. Step 066 ------------------------------------------------
+   The whole visual cost of the drill-down, and it is deliberately almost nothing: no
+   hover fill, no underline, no lift. A chart where every column reacts to the pointer is
+   a chart that is harder to read, and this page is read at a glance.
+   What is not optional is the focus ring — an `<a>` around a `<rect>` is in the tab
+   order whether or not anybody styled it, and a focusable thing with no visible focus is
+   the accessibility defect that ships most often. */
+.chart-link {
+  cursor: pointer;
+}
+.chart-link:focus-visible {
+  outline: 2px solid var(--focus, var(--ink));
+  outline-offset: 2px;
+}
+/* The one hover affordance: the mark lightens very slightly, enough to confirm the thing
+   under the pointer is the thing that will be followed, and not enough to be a state. */
+.chart-link:hover .chart-mark {
+  opacity: 0.82;
+}
+
+/* The numbers, closed by default. Two things need them: `--chart-3` and `--chart-4`
+   sit under 3:1 against white, which is legal only where the values are legible another
+   way, and a reader usually wants one exact figure to paste into a message. */
+.figure-numbers {
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-2);
+}
+.figure-numbers > summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  list-style-position: inside;
+}
+.figure-numbers > summary:hover {
+  color: var(--ink);
+}
+.figure-numbers table {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+}
+.figure-numbers th {
+  text-transform: capitalize;
+}
+/* Print open: a figure whose numbers are hidden behind a disclosure is a figure whose
+   numbers are missing from the PDF somebody attached to a board pack. */
+@media print {
+  .figure-numbers[open] > summary,
+  .figure-numbers > summary {
+    display: none;
+  }
+  .figure-numbers > div {
+    display: block !important;
+  }
+}
+
+/* A wide table scrolls inside its own box rather than pushing the page sideways. */
+.scroll-x {
+  overflow-x: auto;
+}
+
+.figure-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+/* --- HBar ---------------------------------------------------------------------------
+   A ranked list with the magnitude drawn in. HTML rather than SVG because the names are
+   text of unknown length — they wrap, they ellipsise, they need a title — and that is
+   what HTML is good at. One hue for every bar: these are nominal categories, and
+   colouring them individually would spend the identity channel re-encoding what the
+   length already says. */
+.hbar {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+.hbar li {
+  display: grid;
+  grid-template-columns: minmax(6rem, 12rem) 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+.hbar-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+}
+.hbar-track {
+  display: block;
+  background: var(--sunk);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  height: 1.25rem;
+}
+.hbar-fill {
+  display: block;
+  height: 100%;
+  background: var(--chart-1);
+  border-radius: var(--radius-sm);
+  min-width: 2px;
+  position: relative;
+}
+/* The second number, inset on the same bar rather than beside it — refusals live
+   *inside* a caller's traffic, and two bars would invite reading them as a sum. */
+.hbar-inset {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--ink);
+  opacity: 0.35;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+.hbar-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+.hbar-note {
+  grid-column: 2 / -1;
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+  margin-top: calc(var(--space-1) * -1);
+}
+/* A row's name is a link to that row's calls. Underlined only on hover: fifteen
+   permanently underlined monospace names is a wall of rules where a ranked list should
+   be. */
+.hbar-name a {
+  color: inherit;
+  text-decoration: none;
+}
+.hbar-name a:hover {
+  text-decoration: underline;
+}
+/* What the cap left out. **A line, never a bar** — the remainder is not one thing, and a
+   bar labelled "3 more tools" invites the eye to compare it with the named ones as
+   though it were. Step 066. */
+.hbar-tail {
+  grid-template-columns: 1fr !important;
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+  border-top: 1px dashed var(--line);
+  padding-top: var(--space-2);
+}
+.hbar-tail .hbar-name {
+  font-family: var(--sans);
+  white-space: normal;
+  overflow: visible;
+}
+
+/* --- Spark. Step 066b ---------------------------------------------------------------
+   A row's shape at 48x14, with no axis and no numbers. The bar beside it says how much;
+   this says *when*, which a total cannot. Sits in the note row so it never competes with
+   the bar for width. */
+.spark {
+  grid-column: 3;
+  width: 48px;
+  height: 14px;
+  overflow: visible;
+}
+.spark-line {
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.spark-dot {
+  fill: var(--ink-faint);
+}
+
+/* --- Heat. Step 066b ----------------------------------------------------------------
+   Weekday x hour of day. The one figure here that reads a rhythm rather than a magnitude,
+   and the only one on which a single hour of live traffic is visible beside a heavy
+   month.
+   A grid of fixed-height cells rather than SVG, because the cells are uniform, need no
+   scale and need to reflow on a narrow viewport — which is what CSS grid is for and what
+   a fixed `viewBox` is not. */
+.heat {
+  display: grid;
+  gap: 2px;
+  font-size: var(--text-xs);
+}
+.heat-hours,
+.heat-row {
+  display: grid;
+  /* One label column, then 24 equal hours. `minmax(0, 1fr)` so the cells shrink rather
+     than overflowing the card on a phone. */
+  grid-template-columns: 2.5rem repeat(24, minmax(0, 1fr));
+  gap: 2px;
+  align-items: center;
+}
+.heat-hours span {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+.heat-day {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+/* An empty cell is `--sunk` and **not** the bottom of the ramp: *nothing happened* and
+   *the least that happened* are different facts, and on a quiet deployment almost every
+   cell is the first of the two. */
+.heat-cell {
+  display: block;
+  height: 0.9rem;
+  border-radius: 2px;
+  background: var(--sunk);
+}
+
+/* --- Meter --------------------------------------------------------------------------
+   One number against one limit. Not a chart, and deliberately not drawn as one. */
+.meter-figure {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xl);
+  font-variant-numeric: tabular-nums;
+}
+.meter-figure .muted {
+  font-size: var(--text-md);
+  font-weight: 400;
+}
+.meter-track {
+  display: block;
+  height: 0.5rem;
+  background: var(--sunk);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--good);
+}
+.meter-fill.warn {
+  background: var(--warn);
+}
+.meter-fill.bad {
+  background: var(--bad);
+}
+.meter-caption {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.footnote {
+  margin-top: var(--space-6);
+  font-size: var(--text-xs);
+}
+
+/* On a narrow screen the fixed 720-unit viewBox is squeezed hard; a taller box keeps
+   the day labels from colliding with the marks. */
+@media (max-width: 40rem) {
+  .chart {
+    height: 220px;
+  }
+  .hbar li {
+    grid-template-columns: minmax(4rem, 8rem) 1fr auto;
+    gap: var(--space-2);
+  }
+}
+
+/* --- what a scope permits, at the moment somebody grants it — step 068 ---------------
+ *
+ * A list rather than a paragraph, because a person about to consent is scanning for the
+ * one line that says *write*, and prose hides it. The `write` tag is the existing
+ * primitive: the same mark the catalogue puts on a tool that changes something, so the
+ * two surfaces agree about what deserves attention without a second vocabulary.
+ *
+ * Indented under the scope sentence it elaborates, and not a card: it is a qualification
+ * of the line above rather than a section of its own, and boxing it would make it read
+ * as a separate claim. */
+.scope-notes {
+  margin: var(--space-2) 0 0;
+  padding: 0 0 0 var(--space-4);
+  border-left: 2px solid var(--line);
+  list-style: none;
+  display: grid;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.scope-notes li {
+  color: var(--ink-soft);
+}
+
+/* --- the connectors page — step 091 ------------------------------------------------
+ *
+ * Three shapes, and each replaces a stack of full-width rows that this page had outgrown.
+ * `.rows` is right for a log and for anything read top to bottom; it is wrong for a set of
+ * six or nine peers that a person scans across, because every row is the same rectangle
+ * and the only difference between two of them is the length of a sentence.
+ */
+
+/* What is connected. `auto-fill` rather than a fixed count: this card is inside the app
+   shell, whose width changes when the rail collapses, and a hard three-up leaves a gap
+   there and overflows on a narrow window. */
+.conn-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: var(--space-4);
+  /* Cards stretch to their row. `align-items: start` was tried and is worse: grid rows
+     still take the height of their tallest card, so a short card gets a ragged bottom
+     edge AND the hole underneath it — two problems where stretching has one, and the
+     stretched version at least puts every Open button on one line across the row. */
+}
+.conn-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--pad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--shadow-sm);
+}
+.conn-card > p {
+  margin: 0;
+}
+.conn-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+/* `min-width: 0` so a long connector id wraps instead of setting the width of the whole
+   grid column — the tile and the badge are fixed, and this is the only part that can give. */
+.conn-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.conn-title strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.conn-title .row-sub {
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+.conn-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+/* `Tag` is monospace because a tag is usually a tool name, compared character by
+   character against a terminal. These two are sentences about a count, and monospace
+   makes a sentence look like an identifier. */
+.conn-tags .tag {
+  font-family: var(--sans);
+  font-size: var(--text-xs);
+}
+/* Pushed to the bottom edge, so the Open button sits on one line across the row of cards
+   however many sentences the card above it happens to carry. */
+.conn-foot {
+  margin-top: auto;
+  padding-top: var(--space-2);
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Picking an app. A radio each, hidden the way a radio in a card is always hidden — moved
+   out of view rather than `display: none`, which would take it out of the tab order and
+   out of the accessibility tree with it. The card is the visible control; the input is
+   still the one that is focused, checked and announced. */
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+}
+.pick-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--sunk);
+  cursor: pointer;
+  text-align: center;
+  transition:
+    border-color var(--fast) var(--ease),
+    background-color var(--fast) var(--ease);
+}
+.pick-card input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.pick-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.3;
+}
+.pick-card:hover {
+  border-color: var(--line-strong);
+  background: var(--paper);
+}
+.pick-card.on,
+.pick-card.on:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+/* The focus ring the hidden input can no longer draw for itself. Keyboard only —
+   `:focus-visible`, not `:focus` — so a mouse click does not leave a ring behind. */
+.pick-card:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pick-card {
+    transition: none;
+  }
+}
+
+/* What a chosen preset needs, with the button that grants it. The addresses used to be
+   listed here and allowed from a form in a different card — the question and the answer at
+   opposite ends of a page. */
+.recipe-detail {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+.needs {
+  list-style: none;
+  margin: var(--space-2) 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+.needs-host {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--sunk);
+}
+.needs-name {
+  flex: 1;
+  min-width: 12rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+}
+.needs-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The four controls that matter to somebody registering an API vendor and to nobody else.
+   Folded, never removed — and the asserted-identity box is deliberately not in here. */
+.more > summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: var(--space-2) 0;
+  list-style: none;
+}
+.more > summary::-webkit-details-marker {
+  display: none;
+}
+/* Drawn, not typed. A `▸` is a glyph a font is allowed not to have, and the one that
+   turns up instead is a tofu box in the middle of a control. */
+.more > summary::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 0.45rem;
+  border: 4px solid transparent;
+  border-left-color: currentColor;
+  transition: transform var(--fast) var(--ease);
+}
+.more[open] > summary::before {
+  transform: rotate(90deg) translate(1px, 2px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .more > summary::before {
+    transition: none;
+  }
+}
+.more > summary:hover {
+  color: var(--ink);
+}
+.more-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--line);
+}
+
+/* --- the Create MCP tab — step 092 ---------------------------------------------------
+ *
+ * An agent's card reuses `.conn-card` on purpose: two screens that list the things a
+ * workspace has assembled should list them the same way, and a second grid class would be
+ * a second design nobody chose. What is added here is the whole-card link — a connector
+ * card carries an Open button because it carries a lot, and an agent card is short enough
+ * to be the target itself — and the row of marks that stands in for a vendor tile.
+ */
+a.conn-card {
+  color: inherit;
+  text-decoration: none;
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+a.conn-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-md);
+  text-decoration: none;
+}
+a.conn-card:hover .conn-title strong {
+  color: var(--accent);
+}
+a.conn-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The apps an agent touches, where a connector card puts its vendor tile. Overlapped
+   slightly, the way a stack of avatars is: three marks side by side read as three
+   separate things, and what this is saying is "these, together, are what it reaches".
+   The gap is restored on the last one so the name beside it is not crowded. */
+.agent-apps {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+.agent-apps > .brandmark + .brandmark {
+  margin-left: -0.4rem;
+  /* A rim of the card's own surface, so an overlapped tile has an edge against the one
+     underneath it rather than merging with it. */
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--brand) 16%, transparent),
+    0 0 0 2px var(--paper);
+}
+
+/* A connector group's mark beside the sentence its vetter wrote, on the tools step. The
+   mark alone on a line under the heading read as a stray glyph; beside the description it
+   reads as a label for it. */
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+}
+.group-head > p {
+  margin: 0;
+}
+
+/* --- connections, as cards — step 093 -------------------------------------------------
+ *
+ * The same `.conn-card` the connectors and Create MCP tabs use, with a body that grows and
+ * an action pinned to the bottom edge. A connection card is the tallest of the three: a row
+ * being decided carries the scopes it will ask for and a sentence per scope explaining what
+ * each one permits, and none of that may be cut — it is the paragraph a person reads
+ * immediately before agreeing to it.
+ */
+.conn-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.conn-body > p {
+  margin: 0;
+}
+.conn-body > .scope-notes {
+  margin: 0;
+}
+/* An `unavailable` connection renders no control at all — deliberately, since a Connect
+   button that leads nowhere reads as a bug — so its foot is an empty div holding open a
+   row of padding under a card that has nothing more to say. */
+.conn-foot:empty {
+  display: none;
+}

@@ -1,0 +1,75 @@
+-- One person's spend, in one indexed read. Step 013c, the spend ceiling.
+--
+-- 045 put the token counters on `runs` and 013b bounded them per **tenant**. Per tenant
+-- is the wrong subject for a screen: a person reading their own slice sees a comfortable
+-- figure and is refused because of somebody else's, so the number on the page is never
+-- the number in the refusal. The ceiling is per principal now, and this index is what
+-- makes that affordable.
+--
+-- ## Why neither existing index serves it
+--
+-- The read is *"what has this principal spent since midnight UTC"*:
+--
+--     WHERE tenant_id = ? AND principal_kind = ? AND principal_id = ?
+--       AND finished_at IS NOT NULL AND finished_at >= ?
+--
+-- `runs_by_principal` (034) has the right prefix and the **wrong window column** — it is
+-- keyed on `created_at`, so the planner finds the principal and then walks every run they
+-- have *ever* submitted, filtering `finished_at` in the heap. That cost grows forever.
+--
+-- `runs_finished` (045) has the right window column and **no principal** — it bounds the
+-- day for the whole tenant and filters the person in the heap, so answering a question
+-- about one person reads every run anybody finished today.
+--
+-- Both are the failure 045 wrote down for `runs_recent`: *"a window has no limit, so
+-- ordering by `seq` and filtering on `finished_at` walks every run the tenant has ever
+-- had, forever, and gets slower every week the deployment stays up."*
+--
+-- ## What INCLUDE buys, and why it is not in the key
+--
+-- The gate sums four counters and groups by `model`. Carried as payload the whole read is
+-- **index-only** — no heap fetch per row — which is what keeps a ceiling check off the
+-- table on the hot path of every submission. They are not key columns because nothing
+-- ever searches or orders by them; a wider key would be a larger index for no lookup.
+--
+-- `model` rides along for the same reason and one more: cost is tokens x the rate for the
+-- model that produced them, so the aggregate must group by model or the arithmetic is a
+-- blended rate — the thing `cost_of` refuses one layer up.
+--
+-- ## What this deliberately is not
+--
+-- **Not a counter table**, though `mcp_budget` (040) is the obvious precedent and would
+-- give atomicity across replicas. Three reasons, and the first is this schema's own:
+-- migration 034 chose an index over a counter for the rate limit and wrote down why —
+-- *"derived rather than stored... a COUNT over this index rather than a counter table
+-- with its own retention story and its own store-unreachable policy."*
+--
+-- Second, a counter would hold a **frozen dollar figure**, which is what 013's decision 4
+-- refused twice: *"a stored cost is a frozen guess that reads like an invoice and cannot
+-- be corrected when the number it was computed from changes."* An operator who fixes
+-- their rate table next week can reprice history against `runs`; they could not against a
+-- ledger.
+--
+-- Third, the atomicity a counter would buy is unreachable anyway. `mcp_budget` reserves
+-- before execution because a door call is one unit known in advance; **a run's cost is
+-- unknown until it finishes**, so no storage shape makes the ceiling exact. It gates the
+-- next run, which is stated in `_require_under_spend_ceiling` rather than papered over.
+--
+-- ## Measured rather than argued
+--
+-- 200,000 runs, 200 principals, one principal's three-day window, on Postgres 16:
+--
+--     with this index      Index Only Scan, Heap Fetches: 0, 3 buffers, 0.046 ms
+--     without it           Index Scan using runs_by_principal, 1002 buffers, 1.153 ms,
+--                          "Rows Removed by Filter: 1000"
+--
+-- The thousand removed rows are every run that principal has *ever* submitted, read to
+-- answer a question about one day — which is the cost that grows forever and the reason
+-- this index exists rather than a comment saying the old one is close enough.
+--
+-- One index, no table, no new write path, and nothing on `finish_run`'s statement.
+
+CREATE INDEX runs_principal_finished
+    ON runs (tenant_id, principal_kind, principal_id, finished_at DESC)
+    INCLUDE (model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    WHERE finished_at IS NOT NULL;

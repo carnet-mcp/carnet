@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>carnet</title>
+
+    <!--
+      **The load-bearing half of decision 5's mitigation is this line and a refusal to
+      add third-party scripts.** The access token lives in this page's memory, so any
+      script that runs here can read it. `script-src 'self'` means a script has to come
+      from this origin to run at all, and it travels with the bundle to every deployment,
+      whatever their ingress does.
+
+      **The provider-dependent half is deliberately NOT here** (plan 031, decision 2).
+      `connect-src` and `frame-src` must name the deployment's identity provider, which
+      this file cannot know — and two CSPs (meta + header) are enforced as their
+      *intersection*, so a header can never widen what a meta tag restricts. That rules
+      out keeping them here with any value at all. `default-src` had to leave with them:
+      a directive absent from a policy falls back to that policy's `default-src`, so a
+      meta `default-src 'self'` would go on governing connections at `'self'` no matter
+      what the header said. The front door serves the full policy — including those
+      three and `frame-ancestors`, which a meta tag cannot carry — derived from
+      `CARNET_OIDC_ISSUER` (deploy/Caddyfile; localidp/edge.py in local mode).
+
+      `'unsafe-inline'` is in `style-src` and deliberately not in `script-src`. The dev
+      server relaxes exactly that one directive, because Vite's React plugin injects an
+      inline refresh preamble — see `relaxCspForDev` in vite.config.ts. **This file is
+      what ships.**
+
+      This is not a substitute for the HttpOnly session upgrade — it is what stands in
+      for it until the first enterprise security questionnaire asks. See
+      docs/plans/010-write-path-step.md, decision 5.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; object-src 'none'"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,103 @@
+# carnet.yaml — the whole administration of a fileborne door.
+#
+#   docker run --rm -p 8000:8000 \
+#     -v ./carnet.yaml:/carnet.yaml -e CARNET_FILE=/carnet.yaml \
+#     -e JIRA_TOKEN -e WEATHER_KEY -e CARNET_TOKEN_LAPTOP \
+#     ghcr.io/carnet-mcp/carnet
+#
+# Safe to commit: every secret is a ${VARIABLE} pointer into the environment, and a
+# literal in either place that takes one is REFUSED at startup. Check a file before
+# running it with `carnet --check-file carnet.yaml`; every refusal names the key.
+#
+# Three top-level keys — connectors, agents, tokens — and nothing else. An unknown key
+# anywhere is refused rather than ignored, so a misspelling cannot silently mean the
+# default. Names are lowercase letters, digits and hyphens.
+
+connectors:
+  # An MCP server over HTTP. `kind: http` is the default and may be omitted.
+  jira:
+    url: https://mcp.example.com/mcp/
+    # The shared credential this door presents to the server, as a pointer. The
+    # variable must be set when the door starts. Omit `credential` entirely for a
+    # server that takes no authentication.
+    credential: ${JIRA_TOKEN}
+    description: Jira, over its MCP server
+    # Optional, for a vendor that does not want `Authorization: Bearer <token>`:
+    #   credential_header: x-api-key
+    #   credential_prefix: ""
+    #   headers: {X-Client: carnet}
+    #
+    # The tools this door exposes from that server — and ONLY these. Everything else
+    # the server advertises stays invisible, whatever a future version adds.
+    # `carnet --discover jira` dials the server and prints this block for you, with
+    # every argument name; you decide the effect and the resources.
+    tools:
+      - name: search_issues
+        # `read` or `write`, required. It is the one judgment a server cannot make
+        # for you: it decides which scope line applies and whether the server is
+        # launched read-only.
+        effect: read
+        # What this tool touches, so an agent's scope can bound it: the resource
+        # TYPE a scope names, and the tool ARGUMENT that carries the identifier.
+        resources:
+          - type: jira.project
+            args: [project]
+      - name: create_issue
+        effect: write
+        resources:
+          - type: jira.project
+            args: [project]
+        # Ours, optional: what somebody here should know before granting it.
+        note: Notifies everyone watching the project; it can be deleted, the notification cannot.
+        # Also optional on any tool: `local_name` (the name agents grant, when the
+        # generated `jira_create_issue` is too long or too ugly), `max_response_bytes`,
+        # `redact_args: [body]` (arguments the audit line hashes rather than stores).
+
+  # A plain REST API. It does not describe itself, so each tool is authored here:
+  # the method, the path template, and a JSON Schema for its arguments.
+  weather:
+    kind: rest
+    url: https://api.example.net
+    credential: ${WEATHER_KEY}
+    credential_header: x-api-key
+    credential_prefix: ""
+    tools:
+      - name: forecast
+        effect: read
+        method: GET
+        path: /forecast/{city}
+        schema:
+          type: object
+          properties:
+            city: {type: string}
+          required: [city]
+        # Optional: `query: [units]` / `body: [payload]` say where non-path
+        # arguments travel; `usage_map` and `pricing` meter a model-shaped API.
+
+# An agent is a permission list: the tools a token may call, each bounded by a scope.
+# Tool names are LOCAL names — the connector id (hyphens as underscores), an
+# underscore, then the tool: `jira_search_issues`.
+agents:
+  triage:
+    tools: [jira_search_issues, weather_forecast]
+    scope:
+      # <resource type>: {read: [patterns], write: [patterns]}. `*` is a whole
+      # segment, never a prefix: `ACME` matches the project ACME and nothing else.
+      jira.project: {read: [ACME]}
+  filer:
+    tools: [jira_create_issue]
+    scope:
+      jira.project: {write: [ACME]}
+
+# A token is what a person pastes into their MCP client. `carnet --new-token` prints
+# one; put it in an environment variable and name the variable here. The door stores
+# a hash and re-reads this token's grants on every call, uncached.
+tokens:
+  laptop:
+    secret: ${CARNET_TOKEN_LAPTOP}
+    agents: [triage]
+
+# Running an MCP server on this machine? Its address is private and its scheme is
+# plain http, both of which the door refuses unless you consent to the host:
+#   -e CARNET_EGRESS_INTERNAL_HOSTS=host.docker.internal
+# then `url: http://host.docker.internal:3000/mcp/`.

@@ -1,0 +1,63 @@
+-- Provider-specific parameters on the authorize request.
+--
+-- **Written because the first real provider needed one and there was nowhere to put it.**
+--
+-- Atlassian's OAuth 2.0 (3LO) mandates two query parameters on the authorization request
+-- that no other provider asks for and that RFC 6749 does not define:
+--
+--     audience=api.atlassian.com     which Atlassian product family the token is for
+--     prompt=consent                 forces the consent screen, which is what makes
+--                                    Atlassian issue a refresh token at all
+--
+-- `access/oauth.begin` builds a fixed set of parameters and had no way to express either.
+-- The real consent flow in step 7b worked **only** because `begin` picks its separator
+-- with `"&" if "?" in authorize_endpoint else "?"` — so an administrator could smuggle
+-- them in on the endpoint itself:
+--
+--     --authorize-endpoint "https://auth.atlassian.com/authorize?audience=…&prompt=consent"
+--
+-- That is a URL with a query string wearing an endpoint's name. It survives
+-- `check_oauth_app` and `egress.check` by accident rather than by intent, it makes the
+-- stored `authorize_endpoint` no longer an endpoint, and the next person to read that row
+-- has to know the trick. The first provider we pointed at needed it, which makes
+-- provider-specific parameters the rule rather than the exception — so they get a column.
+--
+-- ## The reserved names, which are the reason this is not just a dict
+--
+-- Every parameter `begin` builds itself is **refused** here: `response_type`,
+-- `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and
+-- `scope`. Two of those are not merely bookkeeping.
+--
+-- `state` is the entire binding between a callback and the person who started it — the
+-- callback is a top-level navigation with no bearer token, so the row `state` names is
+-- the only thing that says whose connection this is. An administrator who could set it
+-- could mint a fixed, guessable one and every consent flow in the tenant would be
+-- forgeable.
+--
+-- `redirect_uri` is where a person's authorization code is delivered. One that could be
+-- overridden per connector is an authorization code sent wherever the row says — and the
+-- only thing standing between that and a stolen grant is the provider validating it
+-- against their own registration, which is somebody else's control and not ours.
+--
+-- So the refusal lives in `check_oauth_app`, in Python, where a sentence can explain it.
+-- A CHECK here could only compare against a hardcoded list of keys and would have nowhere
+-- to say why — and the list is a fact about what `begin` constructs, which is code.
+--
+-- ## Why a column rather than more JSONB in `launch`
+--
+-- Same answer as `connector_oauth` itself: `connectors.launch` is what an operator reads
+-- to find out where a connector points, and it is returned inside a manifest. These are
+-- facts about the *consent flow*, they are read on every connect, and they belong beside
+-- the client id that is also only read then.
+--
+-- Not a secret, unlike the client secret two columns over — `audience` and `prompt` end
+-- up in a browser's address bar every time somebody consents. Stored in the clear, and
+-- recorded in the administrative record for `connector.oauth.configure`, which is where
+-- *"what exactly did we ask this provider for"* should be answerable.
+
+ALTER TABLE connector_oauth
+    -- `{"audience": "api.atlassian.com", "prompt": "consent"}`. An object rather than an
+    -- array of pairs: a repeated query parameter is legal in a URL and meaningless here,
+    -- because a provider reading two `audience` values has no defined behaviour and
+    -- `urlencode` would emit both. One value per name, decided by the shape.
+    ADD COLUMN authorize_params JSONB NOT NULL DEFAULT '{}';

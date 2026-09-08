@@ -1,0 +1,300 @@
+"""Storage — the bottom layer. Rows in, rows out.
+
+```
+cli / (api)   entry points — construct the principal, carry the tenant
+agents/       who exists and what they may do   (config only)
+core/         the tiers and the broker          (knows no tool, no agent)
+tools/        what can actually be done         (knows no agent, no policy)
+storage/      rows in, rows out                 (knows no agent, no tool, no policy)
+config.py     paths, defaults, limits           (knows nothing)
+```
+
+This sits *below* `tools/` rather than inside `core/`, and that placement is forced:
+`core/` is forbidden from knowing what an agent is, while the agent loader needs the
+store. Putting storage underneath everything keeps every import pointing downward,
+including the one `core/audit.py` grows when the audit trail becomes a table.
+
+One active implementation per process, set once at startup by the entry point:
+
+    storage.configure(InMemoryStorage())        # tests
+    storage.configure(PostgresStorage(dsn))     # everything else
+
+`active()` raises when nothing has been configured rather than quietly defaulting to
+an in-memory store. A process that silently accepted writes into a dict that vanishes
+on exit is a worse failure than one that will not start.
+"""
+
+from .base import (
+    AGENT_RENAME_TO_SELF,
+    ADMIN_ACTIONS,
+    ADMIN_ACTOR_KINDS,
+    ADMIN_AUDIT_FIELDS,
+    ADMIN_AUDIT_V,
+    ADMIN_TARGET_KINDS,
+    AGENT_FIELDS,
+    AGENT_ROLES,
+    AGENT_VERSION_FIELDS,
+    AGENT_VERSION_SUMMARY_FIELDS,
+    API_TOKEN_FIELDS,
+    API_TOKEN_PREFIX,
+    API_TOKEN_SEPARATOR,
+    API_TOKEN_PUBLIC_FIELDS,
+    SCIM_TOKEN_FIELDS,
+    SCIM_TOKEN_PUBLIC_FIELDS,
+    CONNECTION_DETAIL_KEYS,
+    CONNECTOR_FIELDS,
+    CREDENTIAL_KINDS,
+    LOCAL_ISSUER_WILDCARD_OK,
+    NO_SUCH_CONNECTOR,
+    NO_SUCH_CONNECTOR_TO_VET,
+    OAUTH_APP_FIELDS,
+    OAUTH_APP_PUBLIC_FIELDS,
+    OAUTH_CREDENTIAL,
+    OAUTH_CLIENT_FIELDS,
+    OAUTH_CODE_FIELDS,
+    PENDING_AUTHORIZATION_FIELDS,
+    PLATFORM_ROLE_FIELDS,
+    PLATFORM_ROLES,
+    ADMIN_ROLE,
+    RESERVED_AUTHORIZE_PARAMS,
+    STATIC_CREDENTIAL,
+    BUDGET_REFUSAL_MARKER,
+    CEILING_REFUSAL_MARKER,
+    SPEND_REFUSAL_MARKER,
+    check_audit_tokens,
+    LEADERBOARD,
+    DENIAL_FIELDS,
+    DENIAL_RESOURCE_KINDS,
+    DENIAL_V,
+    DERIVED_CONNECTOR_FIELDS,
+    DOOR_CALL_ID_PREFIX,
+    EGRESS_HOST_FIELDS,
+    GRANT_FIELDS,
+    GRANTEE_KINDS,
+    GROUP_FIELDS,
+    GROUP_MEMBER_FIELDS,
+    GROUP_ROLES,
+    MACHINE_ROLES,
+    OWNER_ROLE,
+    PRINCIPAL_KINDS,
+    DECISIONS,
+    OUTCOMES,
+    IDENTITY_SOURCES,
+    RUN_FIELDS,
+    RUN_STATUSES,
+    USAGE_COUNTERS,
+    USAGE_FIELDS,
+    SYSTEM_ACTOR,
+    RETAINED_LOG_TABLES,
+    NO_SUCH_AGENT_TO_SCHEDULE,
+    NO_SUCH_AGENT_TO_TRIGGER,
+    NO_SUCH_TOKEN_TO_TRIGGER,
+    RESERVED_KEY_PREFIXES,
+    check_idempotency_key,
+    compose_run_fingerprint,
+    normalize_activity,
+    SCHEDULE_CADENCES,
+    SCHEDULE_FIELDS,
+    SCHEDULE_KEY_PREFIX,
+    SCHEDULE_PATCH_FIELDS,
+    check_sealed_secret,
+    normalize_schedule_changes,
+    schedule_key_prefix,
+    schedule_update_detail,
+    TRIGGER_FIELDS,
+    TRIGGER_KEY_PREFIX,
+    WEEKDAYS,
+    TENANT_BLOCKING_TABLES,
+    TENANT_GUC,
+    TENANT_ROLE,
+    TENANT_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    TOMBSTONE_FIELDS,
+    USER_STATUSES,
+    VETTED_TOOL_DEFAULTS,
+    VETTED_TOOL_FIELDS,
+    VETTING_FIELDS,
+    BINDING_WITHOUT_REST,
+    REST_LAUNCH_KIND,
+    REST_WITHOUT_BINDING,
+    check_binding_kind,
+    LIVE_CHILD_STATUSES,
+    AgentNameTaken,
+    ConnectorExistsError,
+    ConnectorInUseError,
+    FollowUpConflict,
+    IssuerConflictError,
+    NoSuchConnectorError,
+    NoSuchGroupError,
+    Storage,
+    StorageError,
+    TenantDeleted,
+    TenantDeletionRefused,
+    UnknownConnectorError,
+    UnknownTenantError,
+    ValueRefused,
+    check_agent_name,
+    check_cadence,
+    check_return_to,
+    check_timezone,
+    describe_cadence,
+    normalize_host,
+    normalize_trigger,
+    schedule_fire_key,
+    trigger_fire_key,
+)
+from . import tenancy
+from .memory import InMemoryStorage
+
+_active: Storage | None = None
+
+
+def configure(storage: Storage) -> Storage:
+    """Set the process-wide store. Returns it, so a caller can keep a handle."""
+    global _active
+    _active = storage
+    return storage
+
+
+def active() -> Storage:
+    """The configured store, or a loud failure."""
+    if _active is None:
+        raise StorageError(
+            "no storage configured. An entry point must call storage.configure() "
+            "before anything loads an agent, binds a connector, or writes an audit "
+            "record."
+        )
+    return _active
+
+
+def reset() -> None:
+    """Drop the active store. For tests and for a process that reconfigures."""
+    global _active
+    _active = None
+
+
+__all__ = [
+    "ADMIN_ACTIONS",
+    "ADMIN_ACTOR_KINDS",
+    "ADMIN_AUDIT_FIELDS",
+    "ADMIN_AUDIT_V",
+    "ADMIN_TARGET_KINDS",
+    "AGENT_FIELDS",
+    "AGENT_ROLES",
+    "AGENT_VERSION_FIELDS",
+    "AGENT_VERSION_SUMMARY_FIELDS",
+    "API_TOKEN_FIELDS",
+    "API_TOKEN_PREFIX",
+    "API_TOKEN_SEPARATOR",
+    "API_TOKEN_PUBLIC_FIELDS",
+    "SCIM_TOKEN_FIELDS",
+    "SCIM_TOKEN_PUBLIC_FIELDS",
+    "CONNECTION_DETAIL_KEYS",
+    "CONNECTOR_FIELDS",
+    "CREDENTIAL_KINDS",
+    "LOCAL_ISSUER_WILDCARD_OK",
+    "NO_SUCH_CONNECTOR",
+    "NO_SUCH_CONNECTOR_TO_VET",
+    "OAUTH_APP_FIELDS",
+    "OAUTH_APP_PUBLIC_FIELDS",
+    "OAUTH_CREDENTIAL",
+    "OAUTH_CLIENT_FIELDS",
+    "OAUTH_CODE_FIELDS",
+    "PENDING_AUTHORIZATION_FIELDS",
+    "PLATFORM_ROLE_FIELDS",
+    "PLATFORM_ROLES",
+    "ADMIN_ROLE",
+    "RESERVED_AUTHORIZE_PARAMS",
+    "STATIC_CREDENTIAL",
+    "BUDGET_REFUSAL_MARKER",
+    "CEILING_REFUSAL_MARKER",
+    "SPEND_REFUSAL_MARKER",
+    "check_audit_tokens",
+    "LEADERBOARD",
+    "DENIAL_FIELDS",
+    "DENIAL_RESOURCE_KINDS",
+    "DENIAL_V",
+    "DERIVED_CONNECTOR_FIELDS",
+    "DOOR_CALL_ID_PREFIX",
+    "EGRESS_HOST_FIELDS",
+    "GRANT_FIELDS",
+    "GRANTEE_KINDS",
+    "GROUP_FIELDS",
+    "GROUP_MEMBER_FIELDS",
+    "GROUP_ROLES",
+    "MACHINE_ROLES",
+    "OWNER_ROLE",
+    "PRINCIPAL_KINDS",
+    "DECISIONS",
+    "OUTCOMES",
+    "IDENTITY_SOURCES",
+    "RUN_FIELDS",
+    "RUN_STATUSES",
+    "USAGE_COUNTERS",
+    "USAGE_FIELDS",
+    "CANCELLABLE_RUN_STATUSES",
+    "SYSTEM_ACTOR",
+    "TENANT_STATUSES",
+    "TERMINAL_RUN_STATUSES",
+    "USER_STATUSES",
+    "VETTED_TOOL_DEFAULTS",
+    "VETTED_TOOL_FIELDS",
+    "BINDING_WITHOUT_REST",
+    "REST_LAUNCH_KIND",
+    "REST_WITHOUT_BINDING",
+    "check_binding_kind",
+    "VETTING_FIELDS",
+    "LIVE_CHILD_STATUSES",
+    "AgentNameTaken",
+    "ConnectorExistsError",
+    "ConnectorInUseError",
+    "FollowUpConflict",
+    "InMemoryStorage",
+    "IssuerConflictError",
+    "NoSuchConnectorError",
+    "ValueRefused",
+    "NoSuchGroupError",
+    "UnknownConnectorError",
+    "Storage",
+    "StorageError",
+    "TenantDeleted",
+    "TenantDeletionRefused",
+    "RETAINED_LOG_TABLES",
+    "NO_SUCH_AGENT_TO_SCHEDULE",
+    "NO_SUCH_AGENT_TO_TRIGGER",
+    "NO_SUCH_TOKEN_TO_TRIGGER",
+    "SCHEDULE_CADENCES",
+    "SCHEDULE_FIELDS",
+    "RESERVED_KEY_PREFIXES",
+    "check_idempotency_key",
+    "compose_run_fingerprint",
+    "normalize_activity",
+    "SCHEDULE_KEY_PREFIX",
+    "SCHEDULE_PATCH_FIELDS",
+    "check_sealed_secret",
+    "normalize_schedule_changes",
+    "schedule_key_prefix",
+    "schedule_update_detail",
+    "TRIGGER_FIELDS",
+    "TRIGGER_KEY_PREFIX",
+    "WEEKDAYS",
+    "TENANT_BLOCKING_TABLES",
+    "TENANT_GUC",
+    "TENANT_ROLE",
+    "tenancy",
+    "TOMBSTONE_FIELDS",
+    "UnknownTenantError",
+    "active",
+    "AGENT_RENAME_TO_SELF",
+    "check_agent_name",
+    "check_cadence",
+    "check_return_to",
+    "check_timezone",
+    "describe_cadence",
+    "normalize_trigger",
+    "schedule_fire_key",
+    "trigger_fire_key",
+    "configure",
+    "normalize_host",
+    "reset",
+]
