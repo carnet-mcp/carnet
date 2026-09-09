@@ -86,6 +86,45 @@ A refusal is an answer the caller can read and explain, not a crash. And it is r
 so *what tried to reach a project it should not* is a question with an answer — whether
 the caller was a person's assistant or an unattended agent at 3am.
 
+Which looks like this. Every call, who made it, **whose account it went out as**, what
+was allowed, what was refused and why:
+
+![The door traffic log: every call, the agent that carried it, the account it acted for, the decision and the reason](docs/screenshots/readme/door-traffic.png)
+
+And a month of it, summarised:
+
+![The overview: calls per day, refusals, writes, share on a verified identity, callers and spend](docs/screenshots/readme/overview.png)
+
+## Why this one
+
+There are several MCP gateways. Aggregating servers, filtering tools and writing an audit
+line are table stakes now — assume every one of them does that. Two things are worth
+comparing on.
+
+**Whose account the call goes out as.** Almost every gateway forwards one shared
+credential, so the vendor's own audit log records `svc-ai-bot` for all fifty of your
+people. Carnet resolves the credential per caller: each person connects their own
+account, and Jira records *them*. That is the `acting for` column above, and it is the
+difference between an audit trail and a log that says a robot did everything.
+
+| | Aggregates servers | Tool vetting | Audit log | Per-person credentials |
+| --- | --- | --- | --- | --- |
+| Docker MCP Gateway | yes | yes | yes | one shared key |
+| Portkey | yes | yes | paid | one shared key |
+| Obot | yes | yes | yes | enterprise tier |
+| Lunar MCPX | yes | yes | yes | enterprise tier |
+| MintMCP | yes | yes | yes | yes, hosted only |
+| **Carnet** | **yes** | **yes** | **yes** | **yes, and free** |
+
+**Where the line is drawn.** Most of these keep identity, or the audit log, or SSO for
+the paid tier. Everything on this page is in this repository under Apache 2.0 — including
+per-person identity, groups, roles, spend ceilings and the browser. What is not here is
+the operational plane: hosting it for you, connectors for Entra and Okta, SCIM, SOC 2 and
+support.
+
+If you want the one-line version: **it is the gateway where each person's calls go out as
+their own account, and you do not have to buy that.**
+
 ## What your team gets
 
 **Control**
@@ -205,6 +244,8 @@ pip install -e ".[dev,postgres,access]"
 
 carnet --local            # then open the URL it prints
 ```
+
+![Connections: each person connects their own account, and sees what it will ask for](docs/screenshots/readme/connections.png)
 
 That starts Postgres, the API, the built frontend and a local email-and-password identity
 provider. The first account you create becomes the administrator. The provider is a real

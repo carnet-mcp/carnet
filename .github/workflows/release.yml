@@ -81,6 +81,7 @@ jobs:
             org.opencontainers.image.title=carnet
             org.opencontainers.image.description=An MCP tool. Every tool call your assistants make, brokered - scoped per caller, under a credential they never hold, revocable, metered, audited.
             org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
       - name: Build and push
         id: build
@@ -138,12 +139,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Pull the image the way a stranger does — anonymously
+        # **Deliberately not logged in.** The whole point of publishing is that somebody
+        # who has never heard of us can run the README's first line. A logged-in pull
+        # here would go green while `docker run` failed for every actual reader, which is
+        # the exact defect this workflow exists to prevent: the first run of this job
+        # caught the package defaulting to private.
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io || true
+          TAG="${{ github.event_name == 'workflow_dispatch' && (inputs.tag || 'edge') || 'latest' }}"
+          echo "IMAGE_REF=${{ env.IMAGE }}:${TAG}" >> "$GITHUB_ENV"
+          if ! docker pull "${{ env.IMAGE }}:${TAG}"; then
+            echo "::error::anonymous pull of ${{ env.IMAGE }}:${TAG} failed. If this says 'unauthorized', the GHCR package is private — make it public at https://github.com/orgs/carnet-mcp/packages/container/carnet/settings"
+            exit 1
+          fi
+
       - name: Mint a token and write a file, the way the README says
         run: |
           set -euo pipefail
-          TAG="${{ github.event_name == 'workflow_dispatch' && (inputs.tag || 'edge') || 'latest' }}"
-          echo "IMAGE_REF=${{ env.IMAGE }}:${TAG}" >> "$GITHUB_ENV"
-          docker pull "${{ env.IMAGE }}:${TAG}"
           TOKEN=$(docker run --rm "${{ env.IMAGE }}:${TAG}" carnet --new-token | head -1)
           echo "::add-mask::$TOKEN"
           echo "CARNET_TOKEN_LAPTOP=$TOKEN" >> "$GITHUB_ENV"
