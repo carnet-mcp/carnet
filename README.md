@@ -3,25 +3,28 @@
 [![tests](https://github.com/carnet-mcp/carnet/actions/workflows/tests.yml/badge.svg)](https://github.com/carnet-mcp/carnet/actions/workflows/tests.yml)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 
-**One safe door between your team's AI assistants and your company's tools.**
+**One safe door between everything AI in your company and the tools it reaches.**
 
 ## The problem
 
-Your engineers use assistants like Claude Code or Cursor. To let one read your Jira or
-open a pull request, each person installs a connector on their own laptop and pastes in
-their own API token.
+Things in your company now call tools on their own. A coding assistant like Claude Code
+or Cursor. An agent your team built. A workflow in n8n or LangChain. A script with an
+LLM in the middle. Anything that speaks MCP, and increasingly everything does.
 
-That token now sits on a laptop. Nobody knows it exists, nobody can take it back, and
-nothing records what it did.
+To let one read your Jira or open a pull request, somebody installs a connector and
+pastes in an API token — on a laptop, in a container, in a CI secret.
+
+That token now sits somewhere nobody tracks. Nobody knows it exists, nobody can take it
+back, and nothing records what it did.
 
 ```mermaid
 flowchart LR
     subgraph L[" Today "]
         direction LR
         A1["Ana's laptop<br/>Jira token"] --> J[(Jira)]
-        A2["Ben's laptop<br/>Jira token"] --> J
-        A3["Cass's laptop<br/>Jira token"] --> J
-        A4["…47 more"] --> J
+        A2["your agent, in a container<br/>Jira token"] --> J
+        A3["a nightly automation<br/>Jira token"] --> J
+        A4["…and everything else"] --> J
     end
     style L fill:#fff5f5,stroke:#e88
 ```
@@ -31,16 +34,17 @@ When somebody leaves, their token keeps working.
 
 ## What Carnet does
 
-Carnet puts one endpoint in the middle. Everyone points their assistant at it instead.
-The credential lives in Carnet, not on the laptop.
+Carnet puts one endpoint in the middle. Every assistant, agent and automation points at
+it instead of at the tool. The credential lives in Carnet, not wherever the thing is
+running.
 
 ```mermaid
 flowchart LR
     subgraph R[" With Carnet "]
         direction LR
-        B1["Ana"] --> D
-        B2["Ben"] --> D
-        B3["Cass"] --> D
+        B1["Ana in Claude Code"] --> D
+        B2["your own agent"] --> D
+        B3["an automation"] --> D
         D{{"Carnet<br/>one door"}} --> J[(Jira)]
         D --> G[(GitHub)]
         D --> S[(your API)]
@@ -53,8 +57,9 @@ Now you can answer the questions you could not answer before: **who can reach wh
 **what did they actually do**, and **how do I turn this off for one person** — without
 touching anybody's machine.
 
-**It does not run agents.** The assistant is still theirs and still runs where it always
-did. Carnet only handles the tool calls it makes.
+**It does not run your agents.** They stay where they are — a laptop, your cluster, a
+vendor's cloud. Carnet only handles the tool calls they make, which is why it works the
+same for a coding assistant you did not build and an agent you did.
 
 ## What happens on a single call
 
@@ -62,7 +67,7 @@ Every call takes the same path, and every one of them is written down.
 
 ```mermaid
 flowchart LR
-    C["Assistant asks<br/>for a tool"] --> T{"granted<br/>this tool?"}
+    C["anything calls<br/>a tool"] --> T{"granted<br/>this tool?"}
     T -- no --> X["Refused,<br/>with a reason"]
     T -- yes --> S{"inside<br/>its scope?"}
     S -- no --> X
@@ -77,9 +82,9 @@ flowchart LR
     style W fill:#f5fff7,stroke:#8c8
 ```
 
-A refusal is an answer the assistant can read and explain, not a crash. And it is
-recorded, so *somebody tried to reach a project they should not* is a question with an
-answer.
+A refusal is an answer the caller can read and explain, not a crash. And it is recorded,
+so *what tried to reach a project it should not* is a question with an answer — whether
+the caller was a person's assistant or an unattended agent at 3am.
 
 ## What your team gets
 
@@ -92,6 +97,8 @@ answer.
 - Each person's calls can go out as **their own account**, not a shared one. They connect
   it themselves, in a browser, and you never hold their password or token.
 - Or use one company account for a tool, if that is what you want.
+- Unattended agents get their own token with their own scope, so a service is not
+  indistinguishable from the person who deployed it.
 
 **Off-boarding**
 - One command cuts somebody off. Their access stops at their next call, on every device,
@@ -114,8 +121,8 @@ The complete list, down to every flag and setting, is
 
 | You are | Start with |
 | --- | --- |
-| One developer wanting your own tools behind one endpoint | the file below, five minutes, no database |
-| A small team sharing a few company accounts | the file below, then the platform when you want per-person identity |
+| One developer putting your own tools behind one endpoint | the file below, five minutes, no database |
+| A team shipping agents that need company credentials | the file below, one token per agent, scoped |
 | A company where each person's access must be their own, and audited | the platform below |
 
 ---
@@ -142,9 +149,10 @@ docker run --rm -p 8000:8000 \
   ghcr.io/carnet-mcp/carnet
 ```
 
-Give your assistant `http://localhost:8000/mcp` with `Authorization: Bearer <the token>`
-— Claude Code, Cursor, anything that takes a header. `tools/list` returns exactly what
-that token is granted; ask for anything else and the call is refused with a reason.
+Point anything at `http://localhost:8000/mcp` with `Authorization: Bearer <the token>` —
+Claude Code, Cursor, an agent framework, your own code, anything that speaks MCP and can
+send a header. `tools/list` returns exactly what that token is granted; ask for anything
+else and the call is refused with a reason.
 
 Three commands worth knowing:
 
