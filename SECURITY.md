@@ -63,9 +63,6 @@ Anything that breaks one of the properties the product is *for*:
 - [docs/PREMISE.md](docs/PREMISE.md) — what is governed, and what is explicitly not.
 - [docs/DESIGN.md](docs/DESIGN.md) — the trust boundary, tenancy, permissions and the
   audit log, with the reasoning behind each.
-- [docs/LIMITS.md](docs/LIMITS.md) — what is known to be missing or weak. If you are
-  about to report something, it is worth a look; if it is listed there, we already know,
-  and a report that tells us the *consequence* is still worth having.
 
 ## Supported versions
 

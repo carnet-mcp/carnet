@@ -208,7 +208,6 @@ they already have, and mints the token at the end. Nothing is pasted.
 | [docs/GUIDE.md](docs/GUIDE.md) | reaching your own server, credentials you do not hold, brokering a model |
 | [docs/API.md](docs/API.md) | the HTTP API, and the reasoning behind it |
 | [docs/DESIGN.md](docs/DESIGN.md) | why it is shaped this way: layering, tenancy, permissions, the audit log |
-| [docs/LIMITS.md](docs/LIMITS.md) | what is not done, and what is known to be wrong |
 | [docs/UPGRADING.md](docs/UPGRADING.md) | what an upgrade preserves, and how far back it works from |
 | [docs/runbooks/](docs/runbooks/) | offboarding, key rotation and tenant deletion, each run at least once |
 
