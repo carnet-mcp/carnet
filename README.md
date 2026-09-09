@@ -133,44 +133,66 @@ Everything above is what it does. Everything below is how to run it.
 
 ## A file and `docker run`
 
-No database, no sign-in, no browser. One `carnet.yaml` is the whole configuration. Every
-secret is a `${VARIABLE}` pointer into the environment — a literal is refused — so the
-file is safe to commit.
+**You need Docker and nothing else.** No clone, no Python, no database, no sign-in.
+Copy all four lines:
 
 ```bash
-cp carnet.example.yaml carnet.yaml       # edit: your servers, your tools
-carnet --new-token                       # prints a token once; put it in a variable
-export CARNET_TOKEN_LAPTOP=art_m_…       # the variable carnet.yaml names
-export JIRA_TOKEN=…                      # the credential the door presents to Jira
+curl -O https://raw.githubusercontent.com/carnet-mcp/carnet/main/carnet.example.yaml
+mv carnet.example.yaml carnet.yaml
+export CARNET_TOKEN_LAPTOP=$(docker run --rm ghcr.io/carnet-mcp/carnet carnet --new-token)
+export JIRA_TOKEN=… WEATHER_KEY=…        # whatever your carnet.yaml points at
 
 docker run --rm -p 8000:8000 \
   -v ./carnet.yaml:/carnet.yaml -e CARNET_FILE=/carnet.yaml \
-  -e JIRA_TOKEN -e CARNET_TOKEN_LAPTOP \
+  -e JIRA_TOKEN -e WEATHER_KEY -e CARNET_TOKEN_LAPTOP \
   ghcr.io/carnet-mcp/carnet
 ```
 
-Point anything at `http://localhost:8000/mcp` with `Authorization: Bearer <the token>` —
-Claude Code, Cursor, an agent framework, your own code, anything that speaks MCP and can
-send a header. `tools/list` returns exactly what that token is granted; ask for anything
-else and the call is refused with a reason.
+That file is the whole configuration: the servers you front, the tools you expose from
+each, the permission lists that bound them, and the tokens that may call them. Every
+secret is a `${VARIABLE}` pointer into the environment — a literal is refused — so the
+file is safe to commit. Edit it to point at your own servers.
 
-Three commands worth knowing:
+Then point anything at `http://localhost:8000/mcp` with
+`Authorization: Bearer $CARNET_TOKEN_LAPTOP` — Claude Code, Cursor, an agent framework,
+your own code, anything that speaks MCP and can send a header. `tools/list` returns
+exactly what that token is granted; ask for anything else and the call is refused with a
+reason.
+
+Three more commands, all of which run in the image with no install:
 
 ```bash
-carnet --check-file carnet.yaml    # validate it; every refusal names the key
-carnet --discover jira             # dial a server, print the tools: block to paste
-carnet --new-token                 # mint a token, offline, no database
+docker run --rm -v ./carnet.yaml:/f.yaml ghcr.io/carnet-mcp/carnet \
+  carnet --check-file /f.yaml        # validate it; every refusal names the key
+
+docker run --rm -e CARNET_FILE=/f.yaml -v ./carnet.yaml:/f.yaml \
+  ghcr.io/carnet-mcp/carnet carnet --discover jira   # print the tools: block to paste
+
+docker run --rm ghcr.io/carnet-mcp/carnet carnet --new-token   # another token
 ```
 
 A server on your own machine needs one more line, because the door refuses plain HTTP and
 private addresses unless you say so:
 `-e CARNET_EGRESS_INTERNAL_HOSTS=host.docker.internal`.
 
-Until the first image is published, build it from the checkout:
+<details>
+<summary>Verifying the image, or building it yourself</summary>
+
+Every published image is signed with cosign, keyless, by the release workflow in this
+repository:
 
 ```bash
-docker build -t ghcr.io/carnet-mcp/carnet --target api -f deploy/Dockerfile .
+cosign verify ghcr.io/carnet-mcp/carnet:latest \
+  --certificate-identity-regexp '^https://github.com/carnet-mcp/carnet/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+Or build it from a checkout:
+
+```bash
+docker build -t carnet --target api -f deploy/Dockerfile .
+```
+</details>
 
 ## The whole product, one machine
 

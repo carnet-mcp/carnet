@@ -1,0 +1,193 @@
+# Publishing the image, which is the difference between a README somebody can run and a
+# README somebody closes.
+#
+# The first line of the quickstart is `docker run … ghcr.io/carnet-mcp/carnet`. Until this
+# workflow existed that line failed with `manifest unknown`, and the fix was buried forty
+# lines further down: *build it yourself from the checkout*. Nobody evaluating a new
+# project does that. They spend about five minutes, and a first command that errors spends
+# all of it.
+#
+# Two triggers, and the second one matters as much as the first:
+#
+#   a tag `v*`         the release. Tagged with the version and `latest`.
+#   workflow_dispatch  a manual publish, so `edge` can exist before anybody is ready to
+#                      cut a release — and so this can be proven without inventing a tag.
+#
+# **Multi-architecture is not a nicety here.** The people most likely to try this in five
+# minutes are on Apple Silicon. A linux/amd64-only image either refuses to start or runs
+# under emulation slowly enough to look broken, and both readings end the trial. So the
+# build is `linux/amd64,linux/arm64` even though it roughly doubles the build time.
+#
+# The image is signed with cosign keyless — no key to hold, the identity is this workflow
+# in this repository, verifiable with `cosign verify --certificate-identity-regexp`. An
+# SBOM is attached as an attestation rather than uploaded as an artefact, so *what is in
+# this image* is answerable from the registry rather than from a build somebody has to go
+# and find.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Extra tag to publish (default: edge)"
+        required: false
+        default: "edge"
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write      # cosign keyless signing
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    name: build, push and sign the image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU so one runner can produce the arm64 half. Slower than a native arm runner and
+      # available to everybody, which is the trade a public project should take.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Sign in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out the tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # `latest` only on a real version tag — never on a manual `edge` publish, or a
+          # dispatch would quietly become what everybody pulls.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ inputs.tag || 'edge' }},enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.title=carnet
+            org.opencontainers.image.description=An MCP tool. Every tool call your assistants make, brokered - scoped per caller, under a credential they never hold, revocable, metered, audited.
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: api
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image
+        # By digest, not by tag: a tag can be moved afterwards and a digest cannot, so a
+        # signature against a tag proves less than it appears to.
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Say what was published
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo
+            echo "Verify the signature:"
+            echo '```bash'
+            echo "cosign verify ${{ env.IMAGE }}@${{ steps.build.outputs.digest }} \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  smoke:
+    name: the published image runs
+    needs: image
+    runs-on: ubuntu-latest
+    # The point of the whole workflow is that somebody else's `docker run` works. So pull
+    # what was just pushed — from the registry, by tag, as a stranger would — and run the
+    # README's own first command against a minimal file.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mint a token and write a file, the way the README says
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event_name == 'workflow_dispatch' && (inputs.tag || 'edge') || 'latest' }}"
+          echo "IMAGE_REF=${{ env.IMAGE }}:${TAG}" >> "$GITHUB_ENV"
+          docker pull "${{ env.IMAGE }}:${TAG}"
+          TOKEN=$(docker run --rm "${{ env.IMAGE }}:${TAG}" carnet --new-token | head -1)
+          echo "::add-mask::$TOKEN"
+          echo "CARNET_TOKEN_LAPTOP=$TOKEN" >> "$GITHUB_ENV"
+          cat > /tmp/carnet.yaml <<'YAML'
+          connectors:
+            demo:
+              kind: rest
+              url: https://example.invalid
+              tools:
+                - name: ping
+                  effect: read
+                  method: GET
+                  path: /ping
+                  schema: {type: object, properties: {}}
+          agents:
+            reader:
+              tools: [demo_ping]
+              scope: {}
+          tokens:
+            laptop:
+              secret: ${CARNET_TOKEN_LAPTOP}
+              agents: [reader]
+          YAML
+
+      - name: docker run, then a real tools/list over the wire
+        run: |
+          set -euo pipefail
+          docker run -d --name carnet -p 8000:8000 \
+            -v /tmp/carnet.yaml:/carnet.yaml -e CARNET_FILE=/carnet.yaml \
+            -e CARNET_TOKEN_LAPTOP \
+            "$IMAGE_REF"
+          for i in $(seq 1 40); do
+            curl -fsS http://localhost:8000/health >/dev/null 2>&1 && break || sleep 2
+          done
+          curl -fsS http://localhost:8000/health >/dev/null
+          echo "health: ok"
+
+          body='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+          got=$(curl -fsS -X POST http://localhost:8000/mcp \
+            -H "Authorization: Bearer $CARNET_TOKEN_LAPTOP" \
+            -H "Content-Type: application/json" -d "$body")
+          echo "$got"
+          echo "$got" | grep -q "demo_ping" || { echo "::error::tools/list did not return the granted tool"; docker logs carnet; exit 1; }
+          echo "tools/list: ok — the published image serves the file it was given"
+
+      - name: The architectures that were published
+        run: docker buildx imagetools inspect "$IMAGE_REF" | grep -E "Name|Platform" | head -20
