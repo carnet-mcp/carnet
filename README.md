@@ -1,34 +1,134 @@
 # carnet
 
 [![tests](https://github.com/carnet-mcp/carnet/actions/workflows/tests.yml/badge.svg)](https://github.com/carnet-mcp/carnet/actions/workflows/tests.yml)
+[![licence](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 
-**Carnet is an MCP tool.** Connect your assistant to `/mcp`, and every tool call it makes
-goes through a broker — scoped to that caller, under a credential the caller never holds,
-revocable, metered and audited.
+**One safe door between your team's AI assistants and your company's tools.**
 
-What it displaces is fifty personal tokens on fifty laptops. Each engineer installs the
-GitHub or Jira MCP server locally, under a credential nobody can revoke and nothing
-records. Carnet is one endpoint instead: per-caller scope, a budget, an audit trail, and a
-token you can kill without moving the URL.
+## The problem
 
-**Distribution, not capability.** Every call it admits was already possible in the
-assistant's own chat. The door is not a new power; it is the same power, brokered.
+Your engineers use assistants like Claude Code or Cursor. To let one read your Jira or
+open a pull request, each person installs a connector on their own laptop and pastes in
+their own API token.
 
-> **Read [docs/PREMISE.md](docs/PREMISE.md) before filing anything.** It outranks every
-> other document here, and it exists to keep two things straight: an **agent** is a
-> *permission list* — a named set of tools and scopes, not something that runs — and
-> Carnet **executes no agents**. It brokers the calls your assistant makes.
+That token now sits on a laptop. Nobody knows it exists, nobody can take it back, and
+nothing records what it did.
 
-## Run
+```mermaid
+flowchart LR
+    subgraph L[" Today "]
+        direction LR
+        A1["Ana's laptop<br/>Jira token"] --> J[(Jira)]
+        A2["Ben's laptop<br/>Jira token"] --> J
+        A3["Cass's laptop<br/>Jira token"] --> J
+        A4["…47 more"] --> J
+    end
+    style L fill:#fff5f5,stroke:#e88
+```
 
-One image, two shapes. Start with the first.
+Fifty people means fifty credentials you did not issue, cannot revoke and cannot audit.
+When somebody leaves, their token keeps working.
 
-### A file and `docker run`
+## What Carnet does
 
-No database, no sign-in, no browser. One `carnet.yaml` is the whole configuration: the
-servers you front, the tools you expose from each, the permission lists that bound them,
-and the tokens that may call them. Every secret is a `${VARIABLE}` pointer into the
-environment — a literal is refused — so the file is safe to commit.
+Carnet puts one endpoint in the middle. Everyone points their assistant at it instead.
+The credential lives in Carnet, not on the laptop.
+
+```mermaid
+flowchart LR
+    subgraph R[" With Carnet "]
+        direction LR
+        B1["Ana"] --> D
+        B2["Ben"] --> D
+        B3["Cass"] --> D
+        D{{"Carnet<br/>one door"}} --> J[(Jira)]
+        D --> G[(GitHub)]
+        D --> S[(your API)]
+    end
+    style R fill:#f5fff7,stroke:#8c8
+    style D fill:#eef4ff,stroke:#88a,stroke-width:2px
+```
+
+Now you can answer the questions you could not answer before: **who can reach what**,
+**what did they actually do**, and **how do I turn this off for one person** — without
+touching anybody's machine.
+
+**It does not run agents.** The assistant is still theirs and still runs where it always
+did. Carnet only handles the tool calls it makes.
+
+## What happens on a single call
+
+Every call takes the same path, and every one of them is written down.
+
+```mermaid
+flowchart LR
+    C["Assistant asks<br/>for a tool"] --> T{"granted<br/>this tool?"}
+    T -- no --> X["Refused,<br/>with a reason"]
+    T -- yes --> S{"inside<br/>its scope?"}
+    S -- no --> X
+    S -- yes --> B{"within today's<br/>limit?"}
+    B -- no --> X
+    B -- yes --> W["presents the right credential:<br/>the shared one, or this person's own"]
+    W --> J[(your tool)]
+    J --> L["one audit record"]
+    X --> L
+    style X fill:#fff0f0,stroke:#e88
+    style L fill:#eef4ff,stroke:#88a
+    style W fill:#f5fff7,stroke:#8c8
+```
+
+A refusal is an answer the assistant can read and explain, not a crash. And it is
+recorded, so *somebody tried to reach a project they should not* is a question with an
+answer.
+
+## What your team gets
+
+**Control**
+- Approve tools one at a time. Adding a server approves nothing by itself.
+- Limit each tool to specific projects, repositories or accounts.
+- Mark each tool read-only or allowed-to-write, and grant them separately.
+
+**Identity**
+- Each person's calls can go out as **their own account**, not a shared one. They connect
+  it themselves, in a browser, and you never hold their password or token.
+- Or use one company account for a tool, if that is what you want.
+
+**Off-boarding**
+- One command cuts somebody off. Their access stops at their next call, on every device,
+  with nothing to uninstall.
+
+**Visibility**
+- Every call is one record: who, which tool, which arguments, allowed or refused, and how
+  long it took.
+- A dashboard over the last month, and one JSON line per call to whatever already reads
+  your logs.
+
+**Cost**
+- Daily ceilings per person on calls, on tokens and in dollars.
+- Ask *would this be allowed* before anything runs.
+
+The complete list, down to every flag and setting, is
+[docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+
+## Who it is for
+
+| You are | Start with |
+| --- | --- |
+| One developer wanting your own tools behind one endpoint | the file below, five minutes, no database |
+| A small team sharing a few company accounts | the file below, then the platform when you want per-person identity |
+| A company where each person's access must be their own, and audited | the platform below |
+
+---
+
+# Running it
+
+Everything above is what it does. Everything below is how to run it.
+
+## A file and `docker run`
+
+No database, no sign-in, no browser. One `carnet.yaml` is the whole configuration. Every
+secret is a `${VARIABLE}` pointer into the environment — a literal is refused — so the
+file is safe to commit.
 
 ```bash
 cp carnet.example.yaml carnet.yaml       # edit: your servers, your tools
@@ -44,13 +144,9 @@ docker run --rm -p 8000:8000 \
 
 Give your assistant `http://localhost:8000/mcp` with `Authorization: Bearer <the token>`
 — Claude Code, Cursor, anything that takes a header. `tools/list` returns exactly what
-that token's permission lists grant. Ask for anything else and the call is refused with a
-reason.
+that token is granted; ask for anything else and the call is refused with a reason.
 
-**Every call and every refusal is one JSON line on stdout** — who, which tool, which
-arguments, the decision, the latency — for whatever already reads your logs.
-
-Three commands worth knowing before you run it:
+Three commands worth knowing:
 
 ```bash
 carnet --check-file carnet.yaml    # validate it; every refusal names the key
@@ -68,11 +164,10 @@ Until the first image is published, build it from the checkout:
 docker build -t ghcr.io/carnet-mcp/carnet --target api -f deploy/Dockerfile .
 ```
 
-### The whole product, one machine
+## The whole product, one machine
 
 The file above speaks for one shared account per server. This is the other shape: the
-same image with a database, where people sign in and connect **their own** accounts, so
-each person's calls go out as them.
+same image with a database, where people sign in and connect their own accounts.
 
 ```bash
 cd backend
@@ -90,51 +185,11 @@ and the same checks it would use on Okta, so it is not a bypass. State lives in
 For a real deployment, `deploy/` holds a compose stack with TLS, a front door, and a
 migration step that runs before the API starts. See [deploy/README.md](deploy/README.md).
 
-## What you can do with it
+## A client that speaks OAuth
 
-[**docs/CAPABILITIES.md**](docs/CAPABILITIES.md) is the complete list — every command-line
-flag, HTTP route, `carnet.yaml` key, setting and screen, with a test that fails if the
-code grows one the document does not name. The short version:
-
-- **Front several MCP servers and REST APIs behind one endpoint**, with one token per
-  person instead of one credential per laptop.
-- **Vet tools one at a time.** Registering a connector approves nothing. You approve each
-  tool, mark it read or write, and say which arguments carry the resources a scope can
-  bound.
-- **Scope by resource.** A permission list says `jira.project: {read: [ACME]}`, and a call
-  outside it is refused by the broker before the server is dialled.
-- **Let people connect their own accounts**, by pasting a token or through an OAuth
-  consent flow you configure once. Their calls then go out as them rather than as a
-  shared service account.
-- **See what happened.** Every brokered call is one audit row and one JSON line: who,
-  what, under which permission list, the decision, and the reason when it was refused.
-- **Ask before you act.** `carnet --simulate` gives the verdict the door would give,
-  without dialling anything or recording anything.
-- **Bound the spend.** Daily ceilings per token on calls, on model tokens and in dollars,
-  counted in the database so replicas agree.
-
-## How it works
-
-```
-your assistant  ──►  /mcp  ──►  the broker  ──►  the server or API you vetted
-                      │            │
-                      │            ├── is this token granted this tool?
-                      │            ├── does its scope admit these arguments?
-                      │            ├── which credential — the shared one, or this
-                      │            │   person's own connected account?
-                      │            └── has it spent past its ceiling today?
-                      │
-                      └── one audit row per call, whose id comes back in _meta
-```
-
-The broker is the only path from a caller to a tool. There is no dispatch helper and no
-way around it, which is what makes *every call routed through the door is governed* a
-sentence the audit log can prove.
-
-**Governed means routed.** Calls your assistant makes on its own — a direct vendor hit,
-its own model call — are outside the door's sight. Making that impossible would mean
-running the agent inside infrastructure that blocks its egress, which Carnet does not do
-and does not claim to.
+Claude Desktop, Claude.ai and Cursor connect with the URL alone. The door serves the
+discovery documents, registers the client, sends the person to sign in with the provider
+they already have, and mints the token at the end. Nothing is pasted.
 
 ## Where to go next
 
@@ -151,21 +206,17 @@ and does not claim to.
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md), and the
-[code of conduct](CODE_OF_CONDUCT.md) that goes with it. Every commit needs a
-[DCO](DCO) sign-off (`git commit -s`); there is no CLA. The gates are `pytest`, `ruff`,
-`mypy` and the frontend build, and every one of them runs locally with no secrets and no
-network.
-
-What changed between releases is in the [changelog](CHANGELOG.md), and what an upgrade
-preserves is in [docs/UPGRADING.md](docs/UPGRADING.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md), and the [code of conduct](CODE_OF_CONDUCT.md)
+that goes with it. Every commit needs a [DCO](DCO) sign-off (`git commit -s`); there is
+no CLA. The gates are `pytest`, `ruff`, `mypy` and the frontend build, and every one of
+them runs locally with no secrets and no network.
 
 Security issues go through GitHub's private vulnerability reporting rather than a public
 issue — see [SECURITY.md](SECURITY.md).
 
+What changed between releases is in the [changelog](CHANGELOG.md); what an upgrade
+preserves is in [docs/UPGRADING.md](docs/UPGRADING.md).
+
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
-
-Free brokers a person's own account safely; a paid tier is what an organisation needs to
-administer many of them. Everything described in this repository is in this repository.
