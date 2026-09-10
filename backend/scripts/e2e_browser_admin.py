@@ -550,9 +550,10 @@ def drive():
         say("she types a zero into the response ceiling")
         tool_row = page.locator("div.row:has-text('list_issues')")
         tool_row.locator("input[type='number']").fill("0")
-        # **Exact, and scoped to the row.** The submit is the one word "Approve"; the
-        # other rows' toggles say "Approve…" and a re-approval says "Approve again", all
-        # of which a `has-text` substring would also match.
+        # **Exact, and scoped to the row.** The submit is the one word "Approve"; an
+        # unapproved row's toggle says "Approve…", an approved one's says "Edit
+        # approval", and a re-approval submit says "Approve again" — all of which a
+        # `has-text` substring would also match.
         tool_row.locator("button:text-is('Approve')").click()
         page.wait_for_timeout(800)
         says(
@@ -629,7 +630,11 @@ def drive():
         say("she opens the approved tool again, and finds her own review in the form")
         page.click("button:has-text('Discover')")
         page.wait_for_selector("text=acme-mcp-server v4.1.0", timeout=30000)
-        page.click("div.row:has-text('list_issues') button:has-text('Approve…')")
+        # **"Edit approval", not "Approve…"** — the words pass (107a) made the row's
+        # toggle say which of the two things it does, and `list_issues` was approved two
+        # scenes ago. The other two call sites in this file are first approvals and still
+        # read "Approve…"; the submit inside the open form is still "Approve again".
+        page.click("div.row:has-text('list_issues') button:has-text('Edit approval')")
         page.wait_for_timeout(500)
         again = page.locator("div.row:has-text('list_issues')")
         check(
