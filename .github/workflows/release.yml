@@ -158,7 +158,7 @@ jobs:
       - name: Mint a token and write a file, the way the README says
         run: |
           set -euo pipefail
-          TOKEN=$(docker run --rm "${{ env.IMAGE }}:${TAG}" carnet --new-token | head -1)
+          TOKEN=$(docker run --rm "$IMAGE_REF" carnet --new-token | head -1)
           echo "::add-mask::$TOKEN"
           echo "CARNET_TOKEN_LAPTOP=$TOKEN" >> "$GITHUB_ENV"
           cat > /tmp/carnet.yaml <<'YAML'
