@@ -72,6 +72,10 @@ class Run:
         return sum(1 for r in self.records if r.get("outcome") == "oversize")
 
     @property
+    def aborted(self) -> int:
+        return sum(1 for r in self.records if r.get("outcome") == "aborted")
+
+    @property
     def unknown(self) -> int:
         """Writes that reached an external system and never answered.
 

@@ -62,6 +62,7 @@ from . import (
     routes_groups,
     routes_mcp,
     routes_oauth,
+    routes_openai,
     routes_tools,
 )
 from .schemas import Health, Ready
@@ -302,6 +303,15 @@ async def lifespan(_app: FastAPI):
     maintainer.sweep_once()
     maintainer.start()
 
+    # Step 108, decision 14. Every route is sync `def`, so one open model stream is one
+    # thread in this pool for the life of the completion, and Starlette's default of
+    # forty would cap a company at forty engineers mid-completion. Set here rather than
+    # at import because the limiter belongs to the running loop, which is what a
+    # lifespan is. The 201st stream waits for a thread rather than being refused.
+    import anyio
+
+    anyio.to_thread.current_default_thread_limiter().total_tokens = config.THREADS
+
     try:
         yield
     finally:
@@ -366,6 +376,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(TenantScopeMiddleware)
     errors.install(app)
+    routes_openai.install(app)
     app.include_router(routes_agents.router)
     app.include_router(routes_tools.router)
     app.include_router(routes_connections.router)
@@ -390,6 +401,7 @@ def create_app() -> FastAPI:
     # through `principal_from_request` like everything above it and calls the same
     # broker, which is the whole reason decision 4 could say a door is one route.
     app.include_router(routes_mcp.router)
+    app.include_router(routes_openai.router)
     # 083. The door as an OAuth resource server: the two `.well-known` documents,
     # registration, consent and the exchange. Its own file because four of its routes
     # carry no principal — see `deps.OPEN_SURFACE` — and a file whose docstring says

@@ -604,6 +604,70 @@ client row is invented for tokens minted before the door spoke OAuth, and
 touched; a token minted through the flow is an ordinary row there, named for the client.
 Lock time is the two `CREATE TABLE`s, which is none.
 
+### Migration 054 makes a personal token's name and daily allowance its owner's
+
+Step 108. Two changes, and the second rewrites rows:
+
+```sql
+DROP INDEX api_tokens_one_live_name;
+CREATE UNIQUE INDEX api_tokens_one_live_personal_name
+    ON api_tokens (tenant_id, owner_id, name) WHERE revoked_at IS NULL AND acts_as_owner;
+CREATE UNIQUE INDEX api_tokens_one_live_service_name
+    ON api_tokens (tenant_id, name) WHERE revoked_at IS NULL AND NOT acts_as_owner;
+
+ALTER TABLE mcp_budget DROP CONSTRAINT mcp_budget_tenant_id_token_id_fkey;
+ALTER TABLE mcp_budget RENAME COLUMN token_id TO subject;
+INSERT INTO mcp_budget ... SELECT owner_id, window_start, SUM(calls) ... WHERE acts_as_owner;
+DELETE FROM mcp_budget ... WHERE the row's token acts_as_owner;
+```
+
+**The names.** A personal token's name is now unique among *its owner's* live personal
+tokens rather than among the whole customer's, so the second person whose assistant
+mints `claude-code` is admitted rather than refused. Service tokens keep the
+customer-wide rule. Both new indexes are weaker than the one they replace, so no
+existing row can fail them and the build cannot stop on data.
+
+**The allowance.** `mcp_budget` is keyed on a *subject*: the owner's user id for a
+personal token, the token's own id for a service token. Every window a personal token
+had already spent is re-keyed under its owner and **summed**, so a person whose two
+machines had each spent part of today continues from the total rather than from zero.
+Service rows are untouched. The foreign key to `api_tokens` goes with the rename, because
+a user id is not a token id; `tenant_id` stays in the primary key and under the same
+row-level policy.
+
+**What it changes for you.** `CARNET_MCP_CALLS_PER_DAY`, `CARNET_MCP_TOKENS_PER_DAY` and
+`CARNET_MCP_USD_PER_DAY` are per person for personal tokens from this migration on. A
+person with several machines who was relying on several allowances now has one, and the
+refusal says so. `GET /me/tokens/{id}/budget` carries `keyed_by` naming the subject, and
+`--reach` prints a line about it.
+
+Lock time: four index statements over `api_tokens`, one row per token; the `mcp_budget`
+rewrite is one row per token per day of history. `scripts/e2e_upgrade.py`'s `before_054`
+stage populates both kinds of token and both kinds of window and asserts the sums.
+
+### Migration 055 adds `aborted` to the audit outcomes, and scans nothing
+
+Step 108. One statement, on the pattern 031 used for `principal_kind` on the same table:
+
+```sql
+ALTER TABLE audit DROP CONSTRAINT IF EXISTS audit_outcome_check;
+ALTER TABLE audit DROP CONSTRAINT IF EXISTS audit_outcome_check1;
+ALTER TABLE audit ADD CONSTRAINT audit_outcome_check
+    CHECK (outcome IN ('', 'ok', 'error', 'oversize', 'unknown', 'aborted')) NOT VALID;
+```
+
+`aborted` is a *streamed* call the caller walked away from mid-answer — an engineer's
+Ctrl-C during a completion. The broker closes the upstream so the vendor stops billing
+and writes a row for what had been counted. `NOT VALID` because `audit` is partitioned,
+append-only and unbounded: the check is cloned onto every partition, present and future,
+enforced on every new row, and never a scan of history that no code path could have
+written. Both spellings of the old constraint's name are dropped, because 030's
+rename-aside left the inline check as `audit_outcome_check1`.
+
+**What it changes for you.** Nothing on existing rows. To finish the job where the scan
+is affordable, outside a transaction: `ALTER TABLE audit VALIDATE CONSTRAINT
+audit_outcome_check`. Lock time is a catalogue update.
+
 ---
 
 ## What `--seed` will and will not touch

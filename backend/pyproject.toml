@@ -125,7 +125,7 @@ mcpclient = ["mcp>=2.0"]
 # spends money on purpose to watch the door being used. Not `dev`, for the reason the two
 # extras above give: the suite starts nothing and calls nothing, and the product itself
 # imports no model SDK at all.
-harness = ["anthropic>=0.121.0"]
+harness = ["anthropic>=0.121.0", "openai>=1.50"]
 
 # Installs the `carnet` command. Equivalent to `python -m carnet.cli`.
 [project.scripts]

@@ -82,17 +82,19 @@ grants checked below are the token's, before and after.
 import logging
 import uuid
 from datetime import datetime, time, timedelta, timezone
+from typing import cast
 
 from . import agents, config, storage, tools
 from .access import acting, denials, grants, oauth
 from .access.users import AccessDenied
-from .core import Principal, RunContext, broker, credentials, permissions
+from .core import Principal, RunContext, audit, broker, credentials, permissions
 from .core.principal import ActingFor
 from .core.credentials import DELEGATED
 from .core.permissions import ALLOW, Decision
 from .core.usage import RATES as usage_RATES
 from .core.usage import day_window, metered, price_buckets, rates
 from .storage import SPEND_REFUSAL_MARKER
+from .storage.base import UNSTORABLE_CONFIG, ValueRefused, check_config_is_storable
 from .tools import mcp
 
 log = logging.getLogger(__name__)
@@ -230,7 +232,40 @@ def rates_for(tenant_id: str) -> dict:
     return composed
 
 
-def door_spend_today(principal, *, now=None) -> dict:
+# Not yet looked up. A sentinel rather than `None`, because `None` is an answer here —
+# *this token has no owner to pool under* — and a default that means "go and find out"
+# must not be spelled the same as one of the things it can find.
+_UNRESOLVED = object()
+
+
+def budget_owner(principal: Principal) -> Principal | None:
+    """The person a *personal* token's allowances belong to, or None. Step 108, decision 7.
+
+    The rule is exactly the `acts_as_owner` bit, and this is `credentials.personal_owner`
+    under the name the budget uses for it — the same seam `grants.runnable_names` and
+    the broker's credential read already go through, so which tokens are somebody's is
+    decided in one place. A service token answers None and keeps an allowance of its
+    own: a CI bot with three tokens for three pipelines was given three on purpose.
+
+    One primary-key read per call, uncached, on the same argument `_granted_agents` makes
+    for the grant re-read: a token whose `acts_as_owner` could not change is a token
+    whose owner could still be disabled, and the row is where both facts live.
+    """
+    return credentials.personal_owner(principal)
+
+
+def budget_subject(principal: Principal, owner: Principal | None) -> str:
+    """The key `mcp_budget` counts this principal's calls under. Migration 054.
+
+    The owner's user id for a personal token, the token's own id for anything else —
+    stated once so `TokenBudget.reserve`, the budget route and the CLI cannot key the
+    same window three ways. `owner` is `budget_owner(principal)`, passed rather than
+    re-read so a caller that already holds it does not pay the lookup twice.
+    """
+    return owner.id if owner is not None else principal.id
+
+
+def door_spend_today(principal, *, now=None, owner=_UNRESOLVED) -> dict:
     """What this principal's door calls have spent since midnight UTC. Step 045b.
 
     `runs.spend_today`'s sibling on the product's side of the door, and deliberately its
@@ -238,6 +273,14 @@ def door_spend_today(principal, *, now=None) -> dict:
     same *"one function, two readers"* argument: the gate below refuses from this and
     `GET /me/tokens/{id}/budget` renders from it, so nobody is shown one number and
     refused by another.
+
+    **For a personal token the principal is the owner**, and the figure is what every
+    personal token they hold has spent together (step 108, decision 7). `TokenSpend`'s
+    docstring claimed this from 045b — *"minting another one does not buy another
+    budget"* — while the read underneath was keyed on the token presented; the claim is
+    true now, through `owner_door_spend_since`. A service token's figure is its own.
+    `owner` is `budget_owner(principal)` when the caller already holds it, and looked up
+    here when it does not.
 
     The premise's own rule: a door call's tokens live on `audit`, because **a door call
     writes no `runs` row** — the table is a leftover of a runtime this tree no longer
@@ -255,12 +298,19 @@ def door_spend_today(principal, *, now=None) -> dict:
     the person who registered a vendor's key can price it without a file on the server.
     """
     since = day_window(now)
-    buckets = storage.active().door_spend_since(
-        principal.tenant_id,
-        since,
-        principal_kind=principal.kind,
-        principal_id=principal.id,
-    )
+    if owner is _UNRESOLVED:
+        owner = budget_owner(principal)
+    if owner is not None:
+        buckets = storage.active().owner_door_spend_since(
+            principal.tenant_id, since, owner_id=owner.id
+        )
+    else:
+        buckets = storage.active().door_spend_since(
+            principal.tenant_id,
+            since,
+            principal_kind=principal.kind,
+            principal_id=principal.id,
+        )
     usd, tokens, unpriced = price_buckets(buckets, rates_for(principal.tenant_id))
     return {
         # The date, matching `budget_window()` and `TokenSpend.window`, rather than the
@@ -299,7 +349,7 @@ class TokenBudget:
     keeping two code paths in step.
     """
 
-    __slots__ = ("principal", "ceiling", "window")
+    __slots__ = ("principal", "ceiling", "window", "_owner")
 
     def __init__(self, principal: Principal, ceiling: int, window=None):
         self.principal = principal
@@ -309,6 +359,18 @@ class TokenBudget:
         # for tests, which is the only way to assert a window boundary without waiting
         # for one.
         self.window = window or budget_window()
+        # Whose allowance this is — resolved on first use rather than here, so an
+        # unmetered deployment, which returns from `reserve` before touching storage,
+        # keeps paying nothing for the check. Step 108.
+        self._owner = _UNRESOLVED
+
+    def owner(self) -> Principal | None:
+        """`budget_owner(self.principal)`, read once. See `budget_subject`."""
+        if self._owner is _UNRESOLVED:
+            self._owner = budget_owner(self.principal)
+        # The slot holds the sentinel until first use, which is the one shape the
+        # annotation cannot say; past this line it is always the answer.
+        return cast("Principal | None", self._owner)
 
     @staticmethod
     def metered(ceiling: int) -> bool:
@@ -357,17 +419,26 @@ class TokenBudget:
             # already says what every call did.
             return ALLOW
 
+        owner = self.owner()
         spent = storage.active().spend_mcp_call(
             self.principal.tenant_id,
-            self.principal.id,
+            budget_subject(self.principal, owner),
             self.window,
             ceiling=self.ceiling,
         )
         if spent is None:
+            # Two subjects, two sentences. An engineer refused on the laptop because the
+            # desktop spent the morning needs to be told that, or the refusal reads as
+            # a count they can see is wrong.
+            who = (
+                "this token has made"
+                if owner is None
+                else "this token's owner has made, across every personal token they hold,"
+            )
             return Decision(
                 False,
-                f"this token has made {self.ceiling} {CEILING_REFUSAL_MARKER}, "
-                "which is its ceiling. Nothing was called. The window is the UTC day, so "
+                f"{who} {self.ceiling} {CEILING_REFUSAL_MARKER}, "
+                "which is the ceiling. Nothing was called. The window is the UTC day, so "
                 "it frees at midnight UTC — or raise CARNET_MCP_CALLS_PER_DAY if this "
                 "rate is legitimate.",
             )
@@ -423,7 +494,8 @@ class TokenBudget:
             return None
 
         now = now or datetime.now(timezone.utc)
-        spent = door_spend_today(self.principal, now=now)
+        owner = self.owner()
+        spent = door_spend_today(self.principal, now=now, owner=owner)
 
         over_usd = metered(usd_ceiling) and spent["usd"] >= usd_ceiling
         over_tokens = metered(token_ceiling) and spent["tokens"] >= token_ceiling
@@ -459,9 +531,18 @@ class TokenBudget:
                 "which the price list cannot value — which is what this ceiling is for."
             )
 
+        # The subject the figure is about, in the sentence: for a personal token that is
+        # the person, across every personal token they hold, and saying so is what
+        # stops a refusal on one machine reading as a count the other machine can see
+        # is wrong.
+        whose = (
+            f"{self.principal.kind}:{self.principal.id}"
+            if owner is None
+            else f"{owner} — this token's owner, across every personal token they hold —"
+        )
         return Decision(
             False,
-            f"{self.principal.kind}:{self.principal.id} has spent {reached}. Nothing "
+            f"{whose} has spent {reached}. Nothing "
             f"was called.{short} The allowance frees at midnight UTC, in {retry_after}s "
             f"— or raise {dial} if this spend is legitimate.",
         )
@@ -1278,6 +1359,112 @@ def call_tool(
     problem, the broker answers it, and the refusal is audited (033b's edge-case
     lesson, kept).
     """
+    ctx, chosen = _admit_call(principal, tool_name, arguments, acting_for_raw, call_id)
+    return broker.call(ctx, chosen, tool_name, arguments)
+
+
+# The tail of `UNSTORABLE_CONFIG`, derived from the constant rather than retyped so it
+# cannot drift from the sentence it trims. What is left is the half that names the
+# position and the reason — the half a caller can act on — and each door appends its
+# own ending in its own dialect.
+_STORABLE_TAIL = UNSTORABLE_CONFIG.split("{why}. ", 1)[1]
+
+
+def unstorable_call(
+    principal: Principal,
+    tool_name: str,
+    arguments: dict,
+    acting_for_raw: dict | None = None,
+    *,
+    extra_redact: frozenset = frozenset(),
+) -> str | None:
+    """The sentence for a call the audit row could not hold, or None. Step 108's edge pass.
+
+    **A call this door admits is a call it writes down**, and until this existed a caller
+    could break the second half without touching the first. `\\ud800` is legal JSON
+    syntax — `json.loads` produces a lone surrogate from it, and so does any file read
+    with `errors="surrogateescape"` — and Postgres refuses one in a `jsonb` or `text`
+    column outright. Driven against a real database, such a call **executed**: the grant
+    was checked, the vendor was dialled and paid, and the audit insert then failed and
+    was diverted to step 060's degraded-mode file. The table had a gap, and any caller
+    could open one at will.
+
+    So it is refused at the edge, before anything is dialled, on the same argument the
+    two size caps at `api/routes_mcp.py` already make: what an authenticated caller may
+    write into the append-only log is bounded, and *writable* is the first bound.
+
+    **What is checked is what will be stored, not what was sent.** The recorded form is
+    `audit.redact_arguments`' output, so an argument the vetting redacts — a prompt, a
+    document, anything a tool marked as content — is a digest by the time it reaches a
+    column and may hold whatever it likes. That is not a detail: a coding agent's prompt
+    legitimately carries undecodable bytes, and refusing those would refuse the
+    customer's real traffic to protect a column they never reach.
+
+    `check_config_is_storable` is the decision rather than a copy of it: what a jsonb
+    column can hold is the storage layer's rule, and this asks it.
+
+    The acting-for claim is checked beside them because it lands in `audit.acting_for`,
+    a text column, by the same route and with the same consequence.
+
+    `extra_redact` is what a *surface* hashes on top of the tool's own vetting — the
+    OpenAI-compatible one strips the prompt from every model call whatever the tool was
+    vetted with — and it must be the same set that surface hands `broker.stream`, or
+    this refuses a value that would in fact have been stored as a digest.
+
+    Returns the position and the reason, without the storage layer's closing sentence
+    about jsonb: each caller ends it in its own dialect.
+    """
+    tool = tools.describe(tool_name, principal.tenant_id)
+    redact = (tool.redact_args if tool is not None else frozenset()) | frozenset(extra_redact)
+    recorded = {
+        "arguments": audit.redact_arguments(arguments, redact),
+        # As given. `access/acting.py` decides what it is *worth*; what it cannot decide
+        # is whether it can be written, and an asserted email is recorded verbatim.
+        "acting-for": acting_for_raw,
+    }
+    try:
+        check_config_is_storable(recorded, what="tool call")
+    except ValueRefused as exc:
+        return str(exc).replace(_STORABLE_TAIL, "").strip()
+    return None
+
+
+def stream_tool(
+    principal: Principal,
+    tool_name: str,
+    arguments: dict,
+    acting_for_raw: dict | None = None,
+    *,
+    call_id: str | None = None,
+    redact: frozenset = frozenset(),
+) -> "broker.Streamed":
+    """`call_tool`, with the answer handed on while it arrives. Step 108.
+
+    Every door step `call_tool` runs — the machine check, the grant, the name, the bind,
+    the acting-for, the adjudication — through the one function both share, and then
+    `broker.stream` instead of `broker.call`, which runs every *broker* step `call` runs
+    before the first byte goes out. The OpenAI-compatible surface is the one caller;
+    the MCP door stays JSON-only (033b) and never reaches this.
+
+    `redact` widens the audit row's redaction for this call — the surface strips the
+    prompt regardless of how the tool was vetted (decision 10). The same two bounds
+    `call_tool` does not apply are not applied here either: the body's size is the
+    route's to measure, in `config.MODEL_MAX_REQUEST_BYTES`.
+    """
+    ctx, chosen = _admit_call(principal, tool_name, arguments, acting_for_raw, call_id)
+    return broker.stream(ctx, chosen, tool_name, arguments, redact=redact)
+
+
+def _admit_call(
+    principal: Principal,
+    tool_name: str,
+    arguments: dict,
+    acting_for_raw: dict | None,
+    call_id: str | None,
+) -> "tuple[RunContext, dict]":
+    """The door's own steps, shared by `call_tool` and `stream_tool`: the context the
+    broker will run under, and the granted agent the call attributes to. Raises exactly
+    what `call_tool` documents raising; the broker's own refusals come later, as data."""
     require_machine(principal)
 
     granted = _granted_agents(principal)
@@ -1363,7 +1550,7 @@ def call_tool(
         call_id or new_call_id(),
         acting_for=acting_for,
     )
-    return broker.call(ctx, chosen, tool_name, arguments)
+    return ctx, chosen
 
 
 def _refresh_delegated(principal: Principal, tool, acting_for: ActingFor | None) -> None:
@@ -1494,8 +1681,12 @@ __all__ = [
     "DoorRefused",
     "TokenBudget",
     "ToolUnavailable",
+    "budget_owner",
+    "budget_subject",
     "call_tool",
     "list_tools",
     "new_call_id",
     "require_machine",
+    "stream_tool",
+    "unstorable_call",
 ]

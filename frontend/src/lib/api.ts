@@ -465,6 +465,8 @@ export const api = {
       principalId?: string;
       principalKind?: string;
       actingFor?: string;
+      /** The person, by email, across every personal token they hold. Step 108. */
+      owner?: string;
       decision?: string;
       outcome?: string;
       effect?: string;
@@ -488,6 +490,7 @@ export const api = {
       ["principal_id", options.principalId],
       ["principal_kind", options.principalKind],
       ["acting_for", options.actingFor],
+      ["owner", options.owner],
       ["decision", options.decision],
       ["effect", options.effect],
       ["identity_source", options.identitySource],

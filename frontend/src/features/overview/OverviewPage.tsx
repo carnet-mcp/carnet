@@ -280,6 +280,12 @@ const pct = (part: number, whole: number) =>
  *
  *  Blank values are omitted rather than sent — the server refuses a closed vocabulary it
  *  does not recognise, which is correct and is not what an empty string means here. */
+/** How the door log finds this bar's rows: by the person's email when the bar is a
+ *  person, by the principal id otherwise. Step 108. */
+function callerFilter(caller: { owner: string; principal_id: string }) {
+  return caller.owner ? { owner: caller.owner } : { principal_id: caller.principal_id };
+}
+
 function toDoorLog(
   window: { since: string; until: string },
   filters: Record<string, string | undefined> = {},
@@ -713,7 +719,11 @@ function Body({ data }: { data: Overview }) {
         {data.callers.length ? (
           <HBar
             rows={data.callers.map((caller) => ({
-              name: caller.principal_id,
+              // The person's email when the bar is their personal tokens pooled
+              // together (step 108); the principal id otherwise. And the link filters
+              // the log the same way, because the log's rows still name the machine —
+              // a filter by the owner's id would find nothing.
+              name: caller.owner || caller.principal_id,
               value: caller.calls,
               inset: caller.denied,
               insetLabel: "denied",
@@ -721,11 +731,8 @@ function Body({ data }: { data: Overview }) {
               // page threw it away. A person and a machine are different readings of the
               // same bar — one is somebody's laptop, the other is a pipeline.
               note: `${caller.principal_kind} · ${caller.tools} ${caller.tools === 1 ? "tool" : "tools"} · last ${on(caller.last_seen)}`,
-              href: toDoorLog(win, { principal_id: caller.principal_id }),
-              insetHref: toDoorLog(win, {
-                principal_id: caller.principal_id,
-                decision: "deny",
-              }),
+              href: toDoorLog(win, callerFilter(caller)),
+              insetHref: toDoorLog(win, { ...callerFilter(caller), decision: "deny" }),
             }))}
             tail={tailLine(data.caller_tail, "caller", toDoorLog(win))}
           />

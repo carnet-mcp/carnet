@@ -23,6 +23,9 @@ arrives from the broker as the keyword-only `token` the schema never contains �
 exactly the way MCP's proxy receives it.
 """
 
+import json
+import logging
+import time
 from dataclasses import replace
 from string import Formatter
 from urllib.parse import quote
@@ -68,6 +71,15 @@ USAGE_COUNTER_NAMES = (
 # error body can be as attacker-sized as a success body and the broker's response cap
 # only measures what we return — this keeps the quote small before that.
 ERROR_FRAGMENT_BYTES = 500
+
+# The two response headers a streamed answer carries back to the caller verbatim. The
+# content type because the caller's SDK branches on it (SSE or JSON); `Retry-After`
+# because a vendor's 429 is only actionable with it. Nothing else — a vendor's request
+# ids, rate-limit accounting and server banner are facts about *our* call to the
+# vendor, and the caller's relationship is with this door.
+RELAYED_HEADERS = ("Content-Type", "Retry-After")
+
+log = logging.getLogger("carnet.tools.rest")
 
 
 def path_arguments(path: str) -> tuple:
@@ -288,6 +300,10 @@ def bind(tenant_id: str, connector, http=None) -> list:
             description=vetted.description,
             input_schema=vetted.binding["input_schema"],
             impl=_impl(tenant_id, connector, vetted.binding, http=http),
+            # Every REST tool can be read as it arrives — step 108. Same binding, same
+            # checks, same credential; the difference is that the bytes are handed on
+            # while the vendor is still sending them. `broker.stream` is the one reader.
+            stream_impl=_stream_impl(tenant_id, connector, vetted.binding, http=http),
         )
         validate(tool)
         tools.append(tool)
@@ -302,27 +318,40 @@ class _RefusedArgument(RuntimeError):
     """
 
 
-def _impl(tenant_id: str, connector, binding: dict, http=None):
-    """The generated implementation: one bounded request, JSON in, JSON out.
+class _Prepared:
+    """One request, rendered from a binding and a call's arguments. Step 108.
 
-    By the time this runs the broker has authorized the call, charged the budget and
-    fetched the credential; `token` arrives keyword-only, reserved, never in the
-    schema. The response is size-bounded by the broker's `_bound_response` — not
-    duplicated here.
+    The half of `impl` that is not the network: argument vetting, the URL, the query,
+    the body and the headers. Pulled out so the streamed closure and the buffered one
+    build *the same request* from the same checks — a second copy of the preamble is a
+    place for the two to disagree about which argument is refused.
     """
+
+    __slots__ = ("url", "params", "body", "headers", "method", "has_body")
+
+    def __init__(self, method, url, params, body, headers, has_body):
+        self.method = method
+        self.url = url
+        self.params = params
+        self.body = body
+        self.headers = headers
+        self.has_body = has_body
+
+
+def _prepare(tenant_id: str, connector, binding: dict):
+    """The closure both implementations share: arguments in, `_Prepared` or a tool error out."""
     launch = connector.launch
     method = binding["method"]
     path = binding["path"]
     in_path = path_arguments(path)
     in_query = tuple(binding.get("query") or ())
     in_body = tuple(binding.get("body") or ())
-    usage_map = binding.get("usage_map") or {}
     # Every argument the vetter mapped somewhere, which — because `check_binding`
     # refuses a schema property that travels nowhere — is exactly the schema's
     # properties. Computed once at bind rather than per call.
     mapped = frozenset(in_path) | frozenset(in_query) | frozenset(in_body)
 
-    def impl(*, token=None, **arguments):
+    def prepare(token, arguments, *, accept: str):
         # **An argument nobody vetted is refused, not dropped.** Step 045c, and it is
         # the fail-closed half of 045a's vet-time rule: there, a schema property mapped
         # nowhere is a lie in the schema; here, an argument arriving that the schema
@@ -365,7 +394,27 @@ def _impl(tenant_id: str, connector, binding: dict, http=None):
             if name in arguments and arguments[name] is not None
         }
         body = {name: arguments[name] for name in in_body if name in arguments}
-        headers = {"Accept": "application/json", **launch.headers_for(token)}
+        headers = {"Accept": accept, **launch.headers_for(token)}
+        return _Prepared(method, url, params, body, headers, bool(in_body))
+
+    return prepare
+
+
+def _impl(tenant_id: str, connector, binding: dict, http=None):
+    """The generated implementation: one bounded request, JSON in, JSON out.
+
+    By the time this runs the broker has authorized the call, charged the budget and
+    fetched the credential; `token` arrives keyword-only, reserved, never in the
+    schema. The response is size-bounded by the broker's `_bound_response` — not
+    duplicated here.
+    """
+    prepare = _prepare(tenant_id, connector, binding)
+    usage_map = binding.get("usage_map") or {}
+
+    def impl(*, token=None, **arguments):
+        prepared = prepare(token, arguments, accept="application/json")
+        if isinstance(prepared, dict):
+            return prepared
 
         # Resolved per call rather than closed over, so the module-level seam is
         # still the one in force for a tool bound before a test (or a future
@@ -373,11 +422,11 @@ def _impl(tenant_id: str, connector, binding: dict, http=None):
         send = http or _request
         try:
             response = send(
-                method=method,
-                url=url,
-                params=params,
-                json=body if in_body else None,
-                headers=headers,
+                method=prepared.method,
+                url=prepared.url,
+                params=prepared.params,
+                json=prepared.body if prepared.has_body else None,
+                headers=prepared.headers,
                 timeout=config.REQUEST_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001 - a network failure is the model's answer
@@ -386,6 +435,296 @@ def _impl(tenant_id: str, connector, binding: dict, http=None):
         return _lift_usage(_result(connector.id, response), usage_map)
 
     return impl
+
+
+# --- the answer while it arrives -----------------------------------------------------
+#
+# Step 108, decisions 2 and 3. A model call is the one REST call whose caller wants the
+# first byte before the last one exists, and the buffered `impl` above cannot give it:
+# `requests` reads the body whole, the broker bounds it whole, the route returns it
+# whole. What follows is the same request read as it arrives, with three things the
+# buffered path does at the end done on the way past — the usage counters lifted from
+# whichever chunk carries them, the failure noticed mid-body, and the bytes counted so
+# the broker's cap can close the upstream rather than measure a completed download.
+#
+# **Nothing here parses the answer for the caller.** The bytes are handed on unmodified,
+# chunk for chunk, and the only reading done is a scan for the `usage_map`'s paths. That
+# is what keeps tool-call deltas, content-filter annotations and whatever a vendor adds
+# next year working without a release here.
+
+
+class _UsageScanner:
+    """Reads a vendor's usage counters off a response as it passes. Step 108.
+
+    Two body shapes, decided by the content type on arrival. **`text/event-stream`**:
+    each event's `data:` lines are joined, decoded as JSON and the `usage_map`'s paths
+    read from the object — the last value seen per counter wins, which is where OpenAI
+    and Azure put theirs: one usage object in the final chunk, on every earlier chunk
+    `null`. **Anything else**: the body is kept and decoded once at the end, which is the
+    buffered path's `_lift_usage` done late — a non-streamed model call through the
+    streamed broker is the ordinary case for a client that did not ask to stream.
+
+    A chunk that will not decode, an event with no `data:`, the `[DONE]` sentinel — all
+    skipped. Nothing here validates a number; `core.usage.parse_report` in the broker is
+    the one place that decides what to believe, exactly as for the buffered path.
+
+    Bounded by the broker rather than here: the broker closes the stream at the tool's
+    byte cap, so the buffer this holds is never more than that plus one chunk.
+    """
+
+    def __init__(self, usage_map: dict, content_type: str):
+        self._map = usage_map
+        self._sse = content_type.split(";")[0].strip().lower() == "text/event-stream"
+        self._buffer = b""
+        self._found: dict = {}
+
+    def feed(self, chunk: bytes) -> None:
+        if not self._map:
+            return
+        self._buffer += chunk
+        if not self._sse:
+            return
+        # Events end at a blank line; either line ending, because a proxy in the path
+        # may normalise one into the other.
+        while True:
+            cut = _event_end(self._buffer)
+            if cut is None:
+                return
+            event, self._buffer = self._buffer[: cut[0]], self._buffer[cut[1] :]
+            self._scan_event(event)
+
+    def _scan_event(self, event: bytes) -> None:
+        data = b"\n".join(
+            line[5:].lstrip(b" ")
+            for line in event.replace(b"\r\n", b"\n").split(b"\n")
+            if line.startswith(b"data:")
+        )
+        if not data or data.strip() == b"[DONE]":
+            return
+        try:
+            decoded = json.loads(data)
+        except ValueError:
+            return
+        self._lift(decoded)
+
+    def _lift(self, body) -> None:
+        for counter, path in self._map.items():
+            found = _at_path(body, path)
+            if found is not None:
+                self._found[counter] = found
+
+    def report(self) -> "dict | None":
+        """What was seen, in `REPORTED_USAGE`'s shape — or None for nothing."""
+        if not self._map:
+            return None
+        if not self._sse and self._buffer:
+            try:
+                self._lift(json.loads(self._buffer))
+            except ValueError:
+                pass
+            self._buffer = b""
+        return dict(self._found) or None
+
+
+def _event_end(buffer: bytes):
+    """Where the first complete SSE event ends: `(event_end, next_start)` or None."""
+    candidates = [
+        (buffer.find(b"\n\n"), 2),
+        (buffer.find(b"\r\n\r\n"), 4),
+    ]
+    found = [(at, width) for at, width in candidates if at >= 0]
+    if not found:
+        return None
+    at, width = min(found)
+    return at, at + width
+
+
+class Upstream:
+    """One vendor response being read as it arrives. What `stream_impl` returns.
+
+    The broker iterates `chunks()` and reads the rest afterwards: `status` and
+    `headers` to relay, `error` for the audit row's reason when the call did not
+    succeed, `report()` for what it spent. **The broker never parses the bytes**; this
+    object never bounds them — the cap is the broker's, applied as they pass, exactly
+    where `_bound_response` applies it to a whole body.
+
+    `relay_body` is False for a 401 or 403, on `_result`'s rule: a vendor's refusal of
+    *our* credential tends to quote the URL and the header, and neither belongs in a
+    caller's hands. The status still travels so the route can say *upstream refused the
+    connector's credential* in the caller's dialect; the body does not.
+
+    `may_have_completed` carries `_failure`'s bias for the broker's `unknown` outcome
+    when the request failed before a byte arrived. A failure *after* bytes arrived is an
+    `error` with a sentence naming where it stopped — the request plainly reached the
+    vendor, and what a mid-answer stall means for a completion is *it was cut short*,
+    which the caller already knows from the bytes stopping.
+    """
+
+    def __init__(
+        self,
+        connector_id: str,
+        response=None,
+        usage_map: "dict | None" = None,
+        *,
+        error: "str | None" = None,
+        may_have_completed: bool = False,
+    ):
+        self.connector_id = connector_id
+        self._response = response
+        self.status = response.status_code if response is not None else None
+        self.headers = {}
+        if response is not None:
+            for name in RELAYED_HEADERS:
+                value = response.headers.get(name)
+                if value:
+                    self.headers[name] = value
+        self.error = error
+        self.may_have_completed = may_have_completed
+        self.relay_body = True
+        self.closed = False
+        self._started = time.monotonic()
+        self._scanner = _UsageScanner(
+            usage_map or {}, self.headers.get("Content-Type", "")
+        )
+
+        if response is not None and error is None:
+            status = int(self.status or 0)
+            if status in (401, 403):
+                self.error = (
+                    f"'{connector_id}' did not accept this call's credential "
+                    f"(HTTP {self.status}). The connector's credential may be missing, "
+                    "expired or short a permission — an administrator can rotate it."
+                )
+                self.relay_body = False
+            elif not 200 <= status < 300:
+                # No fragment: the body is the caller's to read, chunk by chunk, and
+                # quoting it here would mean buffering what is about to be relayed.
+                self.error = f"'{connector_id}' answered HTTP {self.status}."
+
+    def chunks(self):
+        """The body, as it arrives. Empty when there is nothing to relay.
+
+        The read timeout on the socket is per chunk (`config.MODEL_CHUNK_TIMEOUT`), so a
+        stream that is still producing is healthy however long it has run; the wall
+        clock (`config.MODEL_MAX_SECONDS`) is checked between chunks so a stream that
+        has produced *anything* for ten minutes is closed rather than held. Either
+        failure sets `error` and stops — the broker reads `error` after the last chunk.
+        """
+        if self.closed or self._response is None or not self.relay_body:
+            self.close()
+            return
+        try:
+            for chunk in self._response.iter_content(chunk_size=None):
+                if not chunk:
+                    continue
+                if time.monotonic() - self._started > config.MODEL_MAX_SECONDS:
+                    self.error = (
+                        f"'{self.connector_id}' was still answering after "
+                        f"{config.MODEL_MAX_SECONDS}s, which is the ceiling on one call "
+                        "(CARNET_MODEL_MAX_SECONDS); the stream was closed."
+                    )
+                    return
+                self._scanner.feed(chunk)
+                yield chunk
+        except Exception as exc:  # noqa: BLE001 - a broken stream is the caller's answer
+            self.error = _mid_stream_failure(self.connector_id, exc)
+        finally:
+            self.close()
+
+    def report(self) -> "dict | None":
+        return self._scanner.report()
+
+    def close(self) -> None:
+        """Close the upstream request. Idempotent, and the one thing a caller that stops
+        early must do — an open response is a completion Azure keeps generating and
+        billing for a listener that has gone."""
+        if self.closed:
+            return
+        self.closed = True
+        if self._response is None:
+            return
+        try:
+            self._response.close()
+        except Exception:  # noqa: BLE001 - closing is best-effort by definition
+            log.debug("closing the response from %s raised", self.connector_id, exc_info=True)
+        session = getattr(self._response, "carnet_session", None)
+        if session is not None:
+            try:
+                session.close()
+            except Exception:  # noqa: BLE001
+                log.debug("closing the session to %s raised", self.connector_id, exc_info=True)
+
+
+def _mid_stream_failure(connector_id: str, exc: Exception) -> str:
+    """A sentence for a stream that broke after it began.
+
+    A read timeout *before* the first byte is `requests.ReadTimeout`; one *during*
+    `iter_content` surfaces as `requests.ConnectionError` wrapping urllib3's
+    `ReadTimeoutError` — found by the e2e, whose stalled fake produced the second and
+    was reported as a generic break. The chain is walked for the urllib3 class.
+    """
+    import requests
+
+    def timed_out(err) -> bool:
+        try:
+            from urllib3.exceptions import ReadTimeoutError
+        except ImportError:  # pragma: no cover - urllib3 ships with requests
+            return False
+        seen = set()
+        while err is not None and id(err) not in seen:
+            seen.add(id(err))
+            if isinstance(err, ReadTimeoutError):
+                return True
+            for inner in getattr(err, "args", ()):
+                if isinstance(inner, BaseException) and timed_out(inner):
+                    return True
+            err = err.__cause__ or err.__context__
+        return False
+
+    if isinstance(exc, requests.exceptions.ReadTimeout) or timed_out(exc):
+        return (
+            f"'{connector_id}' stopped sending for {config.MODEL_CHUNK_TIMEOUT}s "
+            "mid-answer (CARNET_MODEL_CHUNK_TIMEOUT); the stream was closed."
+        )
+    return f"the stream from '{connector_id}' broke mid-answer: {type(exc).__name__}."
+
+
+def _stream_impl(tenant_id: str, connector, binding: dict, http=None):
+    """The generated streamed implementation. Returns an `Upstream`, never raises for
+    a network failure — a failure is an `Upstream` with `error` set and no chunks, so
+    the broker writes the same row it would for the buffered path."""
+    prepare = _prepare(tenant_id, connector, binding)
+    usage_map = binding.get("usage_map") or {}
+
+    def stream_impl(*, token=None, **arguments):
+        # Both, in preference order: a vendor asked to stream answers SSE, one that was
+        # not answers JSON, and the caller's SDK reads the content type to know which.
+        prepared = prepare(token, arguments, accept="text/event-stream, application/json")
+        if isinstance(prepared, dict):
+            return Upstream(connector.id, error=prepared["error"])
+
+        send = http or _request
+        try:
+            response = send(
+                method=prepared.method,
+                url=prepared.url,
+                params=prepared.params,
+                json=prepared.body if prepared.has_body else None,
+                headers=prepared.headers,
+                timeout=config.MODEL_CHUNK_TIMEOUT,
+                stream=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - a network failure is the caller's answer
+            failure = _failure(connector.id, exc)
+            return Upstream(
+                connector.id,
+                error=failure["error"],
+                may_have_completed=bool(failure.get(MAY_HAVE_COMPLETED)),
+            )
+
+        return Upstream(connector.id, response, usage_map)
+
+    return stream_impl
 
 
 def _render_url(base: str, path: str, in_path: tuple, arguments: dict) -> str:
@@ -614,8 +953,9 @@ def _request(**kwargs):
     method = kwargs.pop("method")
     url = kwargs.pop("url")
     headers = kwargs.pop("headers")
-    with requests.Session() as session:
-        return egress.dial(
+    session = requests.Session()
+    try:
+        response = egress.dial(
             session,
             method,
             url,
@@ -623,3 +963,14 @@ def _request(**kwargs):
             timeout=(timeout, timeout),
             **kwargs,
         )
+    except BaseException:
+        session.close()
+        raise
+    if kwargs.get("stream"):
+        # The body is still on the wire, so the session lives as long as the response
+        # does — `Upstream.close` closes both. Closing it here would be closing the
+        # pool the connection belongs to under a read that has not happened yet.
+        response.carnet_session = session
+        return response
+    session.close()
+    return response

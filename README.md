@@ -163,6 +163,7 @@ The complete list, down to every flag and setting, is
 | One developer putting your own tools behind one endpoint | the file below, five minutes, no database |
 | A team shipping agents that need company credentials | the file below, one token per agent, scoped |
 | A company where each person's access must be their own, and audited | the platform below |
+| A company with its own coding agent on an Azure OpenAI (or OpenAI) key | the platform below, then *Put Carnet in front of Azure OpenAI* in the guide: the agent changes its base URL and its key, and every call is metered per engineer |
 
 ---
 

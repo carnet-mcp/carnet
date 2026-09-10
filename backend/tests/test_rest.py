@@ -1062,3 +1062,258 @@ def test_an_unknown_binding_key_is_still_refused(registered):
     key nothing reads would read as honoured, so both layers had to agree to it."""
     with pytest.raises(tools.RegistrationRefused, match="unknown keys"):
         vet("answer", effect="write", binding=dict(USAGE_BINDING, prices={}))
+
+
+# --- the answer while it arrives: `stream_impl` --------------------------------------
+#
+# Step 108, decisions 2 and 3. The same binding, the same checks and the same credential
+# as `impl`, read chunk by chunk instead of whole. What the tests pin is the contract the
+# broker's `stream()` leans on: the bytes come through untouched, the usage counters are
+# lifted off whichever chunk carries them, a refusal of *our* credential relays no body,
+# a failure before the first byte is an `Upstream` with `error` and no chunks, and a stall
+# mid-answer becomes a sentence rather than an exception.
+
+
+class FakeStream:
+    """A `requests.Response` being read as it arrives, as the seam sees it."""
+
+    def __init__(self, chunks=(), *, status=200, content_type="text/event-stream",
+                 headers=None, raise_after=None):
+        self.status_code = status
+        self.headers = {"Content-Type": content_type, **(headers or {})}
+        self._chunks = list(chunks)
+        self._raise_after = raise_after
+        self.closed = False
+
+    def iter_content(self, chunk_size=None):
+        for chunk in self._chunks:
+            yield chunk
+        if self._raise_after is not None:
+            raise self._raise_after
+
+    def close(self):
+        self.closed = True
+
+
+def sse(*objects, done=True):
+    """OpenAI's wire shape: one `data:` event per object, `[DONE]` last."""
+    events = [f"data: {json.dumps(obj)}\n\n".encode() for obj in objects]
+    if done:
+        events.append(b"data: [DONE]\n\n")
+    return events
+
+
+CHAT_BINDING = {
+    "method": "POST",
+    "path": "/deployments/{model}/chat/completions",
+    "body": ["messages", "stream", "stream_options"],
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "model": {"type": "string"},
+            "messages": {"type": "array"},
+            "stream": {"type": "boolean"},
+            "stream_options": {"type": "object"},
+        },
+        "required": ["model", "messages"],
+    },
+    "usage_map": {
+        "model": "model",
+        "input_tokens": "usage.prompt_tokens",
+        "output_tokens": "usage.completion_tokens",
+    },
+}
+MODEL = Resource("azure.deployment", "model")
+
+
+def streamed(http, **arguments):
+    vet("chat", effect="write", resources=(MODEL,), binding=CHAT_BINDING)
+    (tool,) = rest.bind(TEST_TENANT, mcp.get_connector(TEST_TENANT, "tracker"), http=http)
+    assert tool.stream_impl is not None
+    return tool.stream_impl(
+        token="t", **({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}],
+                       "stream": True} | arguments)
+    )
+
+
+def test_a_rest_tool_has_a_stream_impl_and_an_mcp_tool_does_not(registered):
+    vet("list_issues")
+    (tool,) = rest.bind(TEST_TENANT, mcp.get_connector(TEST_TENANT, "tracker"))
+    assert tool.stream_impl is not None
+    # `Tool`'s default is None; MCP's bind never sets it, which is the decision.
+    from carnet.tools.base import Tool
+    assert Tool.__dataclass_fields__["stream_impl"].default is None
+
+
+def test_the_chunks_come_through_untouched_in_order(registered):
+    """Not parsed, not reassembled, not reordered. A tool-call delta, a content-filter
+    annotation and whatever the vendor adds next year survive because nothing here
+    reads the bytes for the caller."""
+    chunks = [b"data: {\"choices\": [{\"delta\": {\"content\": \"he", b"llo\"}}]}\n\n",
+              b"data: [DONE]\n\n"]
+    http = FakeHttp(FakeStream(chunks))
+
+    upstream = streamed(http)
+
+    assert upstream.status == 200
+    assert upstream.error is None
+    assert list(upstream.chunks()) == chunks
+    assert http.calls[-1]["stream"] is True
+    assert http.calls[-1]["timeout"] == config.MODEL_CHUNK_TIMEOUT
+    assert http.calls[-1]["headers"]["Accept"].startswith("text/event-stream")
+
+
+def test_usage_is_lifted_from_the_final_chunk_of_a_stream(registered):
+    """Where OpenAI and Azure put it: `usage: null` on every content chunk, the object
+    on the last one, then `[DONE]`. The last value seen per counter wins."""
+    http = FakeHttp(FakeStream(sse(
+        {"model": "gpt-4o-2024-08-06", "choices": [{"delta": {"content": "hi"}}], "usage": None},
+        {"model": "gpt-4o-2024-08-06", "choices": [], "usage": {"prompt_tokens": 12, "completion_tokens": 3}},
+    )))
+
+    upstream = streamed(http)
+    for _ in upstream.chunks():
+        pass
+
+    assert upstream.report() == {"model": "gpt-4o-2024-08-06", "input_tokens": 12, "output_tokens": 3}
+
+
+def test_an_event_split_across_chunks_is_still_read(registered):
+    """The vendor's chunking is the network's, not the event's: one JSON object can
+    arrive in three pieces, and a scanner that decoded per chunk would miss it."""
+    (event,) = sse({"model": "m", "usage": {"prompt_tokens": 7, "completion_tokens": 1}}, done=False)
+    pieces = [event[:10], event[10:25], event[25:]]
+    http = FakeHttp(FakeStream(pieces + [b"data: [DONE]\r\n\r\n"]))
+
+    upstream = streamed(http)
+    assert list(upstream.chunks()) == pieces + [b"data: [DONE]\r\n\r\n"]
+    assert upstream.report() == {"model": "m", "input_tokens": 7, "output_tokens": 1}
+
+
+def test_a_chunk_that_is_not_json_is_skipped_rather_than_fatal(registered):
+    http = FakeHttp(FakeStream([b": keep-alive\n\n", b"data: not json\n\n",
+                                *sse({"usage": {"prompt_tokens": 2}})]))
+
+    upstream = streamed(http)
+    assert len(list(upstream.chunks())) == 4
+    assert upstream.report() == {"input_tokens": 2}
+
+
+def test_a_json_body_is_scanned_once_at_the_end(registered):
+    """A client that did not ask to stream, through the streamed path: the vendor
+    answers one JSON document and the counters are lifted exactly as `impl` would."""
+    body = json.dumps(a_reply(usage={"prompt_tokens": 5, "completion_tokens": 9})).encode()
+    http = FakeHttp(FakeStream([body[:20], body[20:]], content_type="application/json"))
+
+    upstream = streamed(http, stream=False)
+    assert b"".join(upstream.chunks()) == body
+    assert upstream.report() == {"model": "claude-opus-5", "input_tokens": 5, "output_tokens": 9}
+
+
+def test_a_binding_with_no_usage_map_reports_nothing_from_a_stream(registered):
+    vet("list_issues")
+    http = FakeHttp(FakeStream(sse({"usage": {"prompt_tokens": 100}})))
+    (tool,) = rest.bind(TEST_TENANT, mcp.get_connector(TEST_TENANT, "tracker"), http=http)
+
+    upstream = tool.stream_impl(token="t", owner="acme", repo="sdk")
+    list(upstream.chunks())
+    assert upstream.report() is None
+
+
+def test_a_credential_refusal_relays_no_body(registered):
+    """`_result`'s rule at the streamed door: a 401 from the vendor tends to quote the
+    URL and the header, and neither is the caller's. The status travels; the body does
+    not; the sentence names the connector and never the key."""
+    http = FakeHttp(FakeStream([b'{"error": "bad key sk-secret"}'], status=401,
+                               content_type="application/json"))
+
+    upstream = streamed(http)
+
+    assert upstream.status == 401
+    assert upstream.relay_body is False
+    assert list(upstream.chunks()) == []
+    assert "did not accept this call's credential" in upstream.error
+    assert "sk-secret" not in upstream.error
+
+
+def test_a_vendor_refusal_relays_its_body_and_its_retry_after(registered):
+    """A 429 or a content-filter 400 is the caller's to read — the SDK's own backoff and
+    its own error class work only on the vendor's body. `Retry-After` rides along; the
+    vendor's request ids and banner do not."""
+    body = b'{"error": {"code": "429", "message": "slow down"}}'
+    http = FakeHttp(FakeStream([body], status=429, content_type="application/json",
+                               headers={"Retry-After": "7", "x-ms-request-id": "abc"}))
+
+    upstream = streamed(http)
+
+    assert upstream.status == 429
+    assert upstream.headers == {"Content-Type": "application/json", "Retry-After": "7"}
+    assert upstream.relay_body is True
+    assert list(upstream.chunks()) == [body]
+    assert upstream.error == "'tracker' answered HTTP 429."
+
+
+def test_a_failure_before_the_first_byte_is_an_upstream_with_no_chunks(registered):
+    import requests
+
+    http = FakeHttp(requests.exceptions.ConnectTimeout())
+
+    upstream = streamed(http)
+
+    assert upstream.status is None
+    assert list(upstream.chunks()) == []
+    assert upstream.error == "'tracker' did not accept a connection in time."
+    assert upstream.may_have_completed is False
+
+
+def test_a_stall_mid_answer_is_a_sentence_naming_the_dial(registered, monkeypatch):
+    """S11. The read timeout is per chunk, so a stream that stops producing for the
+    dial's length is closed with a sentence — not an exception up the stack, and not a
+    silent end that reads as a short answer."""
+    import requests
+
+    monkeypatch.setattr(config, "MODEL_CHUNK_TIMEOUT", 61)
+    response = FakeStream([b"data: {}\n\n"], raise_after=requests.exceptions.ReadTimeout())
+    upstream = streamed(FakeHttp(response))
+
+    assert list(upstream.chunks()) == [b"data: {}\n\n"]
+    assert "stopped sending for 61s" in upstream.error
+    assert "CARNET_MODEL_CHUNK_TIMEOUT" in upstream.error
+    assert response.closed is True
+
+
+def test_the_wall_clock_closes_a_stream_that_will_not_end(registered, monkeypatch):
+    """A stream that has produced *anything* for the ceiling's length is a thread held
+    open, not a completion. Checked between chunks, so the one in hand is not sent."""
+    monkeypatch.setattr(config, "MODEL_MAX_SECONDS", -1)
+    response = FakeStream([b"a", b"b"])
+    upstream = streamed(FakeHttp(response))
+
+    assert list(upstream.chunks()) == []
+    assert "still answering after -1s" in upstream.error
+    assert "CARNET_MODEL_MAX_SECONDS" in upstream.error
+    assert response.closed is True
+
+
+def test_an_unvetted_argument_is_refused_before_anything_is_dialled(registered):
+    """The buffered impl's rule, through the shared preamble: `_prepare` is one
+    function, so the streamed path cannot accept an argument the buffered one refuses."""
+    http = FakeHttp(FakeStream())
+
+    upstream = streamed(http, temperature=0.2)
+
+    assert upstream.status is None
+    assert "does not accept temperature" in upstream.error
+    assert list(upstream.chunks()) == []
+    assert http.calls == []
+
+
+def test_closing_an_upstream_closes_the_response_once(registered):
+    response = FakeStream(sse({}))
+    upstream = streamed(FakeHttp(response))
+
+    upstream.close()
+    upstream.close()
+
+    assert response.closed is True
+    assert list(upstream.chunks()) == []

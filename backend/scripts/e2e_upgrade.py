@@ -332,6 +332,54 @@ def before_053(conn, now):
     )
 
 
+def before_054(conn, now):
+    """Tokens of both kinds under the customer-wide name index, with windows of both
+    kinds under the per-token budget key. Step 108.
+
+    054 does two things to rows that exist, and this stage is what makes each of them
+    checkable rather than merely applied. **The names:** a personal token and a service
+    token — 053's `m_pre053` is one already — minted the old way, so the walk proves the
+    two new partial indexes build over rows the old index admitted. **The allowance:**
+    one person with two machines, each having spent part of today and one of them part
+    of yesterday, beside a service token with its own count. What the upgrade owes is
+    that the person wakes up at the *sum* — an engineer whose two machines had each
+    spent half the day must not find the ceiling reset — and that the service token's
+    row is not touched.
+
+    The second personal token belongs to another owner and carries a name 054 is about
+    to make legal for a second person (`coding-agent`, the one the first-run exchange
+    would choose). It cannot share the name *before* 054 — the old index refuses it —
+    so it is minted under a different one here, and the survival check below mints the
+    clash after the walk, at the upgraded schema.
+    """
+    today = now.date()
+    yesterday = today - dt.timedelta(days=1)
+    for token_id, name, owner, personal in (
+        ("m_pre054_laptop", "coding-agent", OWNER, True),
+        ("m_pre054_desktop", "coding-agent-desktop", OWNER, True),
+        ("m_pre054_tom", "toms-coding-agent", "u-tom", True),
+        ("m_pre054_nightly", "nightly-ci", OWNER, False),
+    ):
+        conn.execute(
+            "INSERT INTO api_tokens (id, tenant_id, name, owner_id, acts_as_owner,"
+            " secret_hash, created_by)"
+            " VALUES (%s, %s, %s, %s, %s, %s, 'system:cli') ON CONFLICT DO NOTHING",
+            (token_id, TENANT, name, owner, personal, "sha256$" + "b" * 64),
+        )
+    for token_id, window, calls in (
+        ("m_pre054_laptop", today, 3),
+        ("m_pre054_desktop", today, 4),
+        ("m_pre054_laptop", yesterday, 2),
+        ("m_pre054_tom", today, 1),
+        ("m_pre054_nightly", today, 5),
+    ):
+        conn.execute(
+            "INSERT INTO mcp_budget (tenant_id, token_id, window_start, calls)"
+            " VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            (TENANT, token_id, window, calls),
+        )
+
+
 STAGES = [
     ("029", before_029),
     ("032", before_032),
@@ -339,6 +387,7 @@ STAGES = [
     ("036", before_036),
     ("051", before_051),
     ("053", before_053),
+    ("054", before_054),
 ]
 
 # What must come through the upgrade byte-identical. Each is `(label, query)` and the
@@ -368,6 +417,11 @@ SURVIVORS = [
     ("pre-053 tokens",
      "SELECT id, tenant_id, name, owner_id, acts_as_owner, secret_hash, revoked_at"
      " FROM api_tokens WHERE id = 'm_pre053'"),
+    # Step 108. The tokens 054 re-indexed, unchanged as rows — the migration swaps the
+    # index over them and rewrites nothing on the table itself.
+    ("pre-054 tokens",
+     "SELECT id, tenant_id, name, owner_id, acts_as_owner, secret_hash, revoked_at"
+     " FROM api_tokens WHERE id LIKE 'm_pre054%' ORDER BY id"),
 ]
 
 COUNTS = [
@@ -591,6 +645,79 @@ def everything_survived(psycopg, snapshots, counts):
         ghost = conn.execute(
             "SELECT agent_id FROM runs WHERE run_id = 'r_ghost'").fetchone()[0]
         check("and the run whose agent was gone stayed NULL", ghost, None)
+
+        say("and 054 pooled each person's day without resetting it")
+        check("mcp_budget is keyed on a subject now",
+              column_exists(conn, "mcp_budget", "subject"), True)
+        check("and no longer carries token_id",
+              column_exists(conn, "mcp_budget", "token_id"), False)
+        today = dt.datetime.now(dt.timezone.utc).date()
+        rows = dict(
+            ((subject, window), calls)
+            for subject, window, calls in conn.execute(
+                "SELECT subject, window_start, calls FROM mcp_budget"
+                " WHERE tenant_id = %s", (TENANT,)).fetchall()
+        )
+        check("the laptop's 3 and the desktop's 4 became the owner's 7 today",
+              rows.get((OWNER, today)), 7)
+        check("yesterday's 2 followed the owner too",
+              rows.get((OWNER, today - dt.timedelta(days=1))), 2)
+        check("the other person's day is their own", rows.get(("u-tom", today)), 1)
+        check("the service token's 5 stayed on the token",
+              rows.get(("m_pre054_nightly", today)), 5)
+        check("and no row is keyed on a personal token any more",
+              [key for key in rows if key[0] in ("m_pre054_laptop", "m_pre054_desktop",
+                                                  "m_pre054_tom")], [])
+        check("four rows in all — nothing invented, nothing dropped", len(rows), 4)
+
+        indexes = {
+            row[0] for row in conn.execute(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'api_tokens'"
+            ).fetchall()
+        }
+        check("the customer-wide name index is gone",
+              "api_tokens_one_live_name" in indexes, False)
+        check("and the per-owner and service indexes replace it",
+              {"api_tokens_one_live_personal_name",
+               "api_tokens_one_live_service_name"} <= indexes, True)
+
+        say("and 055 widened the outcome vocabulary without a scan")
+        definition = conn.execute(
+            "SELECT pg_get_constraintdef(oid), convalidated FROM pg_constraint"
+            " WHERE conrelid = 'audit'::regclass AND conname = 'audit_outcome_check'"
+        ).fetchone()
+        check("the audit outcome check admits 'aborted'",
+              definition is not None and "'aborted'" in definition[0], True)
+        check("and was added NOT VALID, so no partition was scanned",
+              definition[1] if definition else None, False)
+        check("and the rename-aside spelling is gone",
+              conn.execute("SELECT count(*) FROM pg_constraint WHERE conrelid = 'audit'::regclass"
+                           " AND conname = 'audit_outcome_check1'").fetchone()[0], 0)
+
+        # S2 of plan 108, at the upgraded schema: the second person may now hold a
+        # personal token by the name the first person's agent chose, and the first
+        # person may not hold two by it.
+        conn.execute(
+            "INSERT INTO api_tokens (id, tenant_id, name, owner_id, acts_as_owner,"
+            " secret_hash, created_by)"
+            " VALUES ('m_post054_tom', %s, 'coding-agent', 'u-tom', TRUE, %s, 'system:cli')",
+            (TENANT, "sha256$" + "c" * 64),
+        )
+        check("a second owner minted 'coding-agent' — names are per owner now",
+              conn.execute("SELECT count(*) FROM api_tokens WHERE name = 'coding-agent'"
+                           " AND revoked_at IS NULL").fetchone()[0], 2)
+        try:
+            conn.execute(
+                "INSERT INTO api_tokens (id, tenant_id, name, owner_id, acts_as_owner,"
+                " secret_hash, created_by)"
+                " VALUES ('m_post054_dup', %s, 'coding-agent', %s, TRUE, %s, 'system:cli')",
+                (TENANT, OWNER, "sha256$" + "d" * 64),
+            )
+            check("the same owner minting 'coding-agent' twice is refused", "inserted",
+                  "api_tokens_one_live_personal_name")
+        except psycopg.errors.UniqueViolation as exc:
+            check("the same owner minting 'coding-agent' twice is refused",
+                  exc.diag.constraint_name, "api_tokens_one_live_personal_name")
 
 
 def main():

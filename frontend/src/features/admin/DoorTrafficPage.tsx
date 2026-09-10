@@ -79,6 +79,7 @@ const FILTERS: { key: string; label: (value: string) => string }[] = [
   { key: "principal_id", label: (v) => `Only calls from ${v}` },
   { key: "principal_kind", label: (v) => `Only ${v} callers` },
   { key: "acting_for", label: (v) => `Only calls on behalf of ${v}` },
+  { key: "owner", label: (v) => `Only calls by ${v}, on any of their personal tokens` },
   { key: "decision", label: (v) => (v === "deny" ? "Only denied calls" : "Only allowed calls") },
   { key: "outcome", label: (v) => (v ? `Only calls that ended ${v}` : "Only calls with no recorded outcome") },
   { key: "effect", label: (v) => `Only ${v} calls` },
@@ -104,6 +105,7 @@ export default function DoorTrafficPage() {
         principalId: get("principal_id"),
         principalKind: get("principal_kind"),
         actingFor: get("acting_for"),
+        owner: get("owner"),
         decision: get("decision"),
         outcome,
         effect: get("effect"),
@@ -209,7 +211,7 @@ export default function DoorTrafficPage() {
                   <th>When</th>
                   <th>Tool</th>
                   <th>Agent</th>
-                  <th>Actor</th>
+                  <th>Called by</th>
                   <th>On behalf of</th>
                   <th>Decision</th>
                   <th>Outcome</th>
@@ -231,7 +233,21 @@ export default function DoorTrafficPage() {
                       <Tag write={record.effect === "write"}>{record.tool}</Tag>
                     </td>
                     <td className="mono">{record.agent}</td>
-                    <td className="mono">{record.principal_id}</td>
+                    <td>
+                      {/* The person where there is one — step 108, and the one
+                          question a customer opens this page with — with the token id
+                          beneath, because *which machine* is still a real question
+                          during an incident. A service token, a session and the system
+                          have no person and show the id alone, as before. */}
+                      {record.owner ? (
+                        <>
+                          <div>{record.owner}</div>
+                          <div className="muted mono small">{record.principal_id}</div>
+                        </>
+                      ) : (
+                        <span className="mono">{record.principal_id}</span>
+                      )}
+                    </td>
                     <td>
                       <ActingFor record={record} />
                     </td>

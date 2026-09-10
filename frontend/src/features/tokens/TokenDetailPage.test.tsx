@@ -119,6 +119,9 @@ function spend(overrides: Partial<TokenSpend> = {}): TokenSpend {
   const history = overrides.history ?? week();
   return {
     token_id: "m_8f2c1a",
+    // A service token, which is what every test below was written against; the
+    // personal case has its own test and overrides this.
+    keyed_by: "token",
     window: history[history.length - 1].window_start,
     calls: history[history.length - 1].calls,
     ceiling: 1000,
@@ -336,6 +339,24 @@ describe("what it has spent", () => {
     expect(await screen.findByText("Allowed requests only.")).toBeInTheDocument();
     expect(screen.getByText(/costs nothing and is not counted here/)).toBeInTheDocument();
     expect(screen.getByText(/denied requests on the access denied log/)).toBeInTheDocument();
+  });
+
+  it("says whose day it is: a personal token shares the owner's, a service token has its own", async () => {
+    // Step 108, decision 7. The number on this laptop includes the desktop's morning for
+    // a personal token, and a reader told nothing would see a count they can tell is
+    // wrong. A service token is the other case and is said too, so neither is assumed.
+    show([token()], reach(), CATALOGUE, spend({ keyed_by: "owner", history: week([0, 0, 0, 0, 0, 0, 3]) }));
+
+    expect(await screen.findByText("Shared with your other personal tokens.")).toBeInTheDocument();
+    expect(screen.getByText(/A second machine draws on the same allowance/)).toBeInTheDocument();
+    expect(screen.queryByText("This token's own allowance.")).not.toBeInTheDocument();
+  });
+
+  it("says a service token's allowance is its own", async () => {
+    show([token()], reach(), CATALOGUE, spend({ keyed_by: "token", history: week([0, 0, 0, 0, 0, 0, 3]) }));
+
+    expect(await screen.findByText("This token's own allowance.")).toBeInTheDocument();
+    expect(screen.queryByText("Shared with your other personal tokens.")).not.toBeInTheDocument();
   });
 
   it("renders the week as seven rows including the quiet days", async () => {

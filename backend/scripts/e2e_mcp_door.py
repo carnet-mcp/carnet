@@ -1018,13 +1018,16 @@ def main():
         # 035e at the other credential, and the one that matters most for an offboarding
         # review: what a *personal* token spent, read after its owner was disabled and the
         # token revoked. `_spent()` is the enforcing statement; the route is the browser.
+        # Under the owner's key since migration 054 — a personal token's day is its
+        # owner's, and the page says so.
         her = httpx.get(
             f"{API}/me/tokens/{personal_id}/budget", headers=boss, timeout=10
         )
         check("a disabled owner's revoked token still reports what it spent",
               her.status_code, 200)
         check("and the number is the store's, not a second count",
-              her.json()["calls"], _spent(store, personal_id))
+              her.json()["calls"], _spent(store, OWNER))
+        check("and it says whose day that is", her.json()["keyed_by"], "owner")
 
         # --- 035a: the traffic above, read back by an administrator ----------------
         #

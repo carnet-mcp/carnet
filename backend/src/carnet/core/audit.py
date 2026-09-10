@@ -50,8 +50,14 @@ def emit(kind: str, tenant_id: str, entry: dict) -> None:
     _line.info(json.dumps({"type": kind, "tenant_id": tenant_id, **entry}, default=str))
 
 
-def _redact(tool_input: dict, redact_args: frozenset) -> dict:
+def redact_arguments(tool_input: dict, redact_args: frozenset) -> dict:
     """Copy tool_input, hashing any argument that must not be stored raw.
+
+    **Public since step 108's edge pass**, and the reason is worth stating: the door
+    needs to know what a call *will write down* before it makes it, so that an argument
+    the audit column could not hold is refused rather than executed and then lost. The
+    answer to that question is exactly this function's output, so the question is asked
+    of this function rather than of a second implementation of the redaction rule.
 
     Two sources of redaction:
       - `redact_args`, the tool's own policy (free text, user content)
@@ -63,7 +69,16 @@ def _redact(tool_input: dict, redact_args: frozenset) -> dict:
     out = {}
     for key, value in tool_input.items():
         if key in to_redact:
-            digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+            # `surrogatepass`, and it is not a nicety. A lone surrogate is legal JSON
+            # syntax (`\ud800`) and Python produces one from any file read with
+            # `errors="surrogateescape"` — which is how a coding agent's prompt comes
+            # to hold one after reading a file with undecodable bytes. A plain
+            # `.encode("utf-8")` raises there, and it raises *here*, inside the
+            # record of a call that has already executed: the tool ran, the money was
+            # spent, and the process answers 500 on the way to writing it down.
+            # A hash is a hash whichever encoder produced it; what matters is that
+            # the redaction cannot be the thing that loses the row.
+            digest = hashlib.sha256(str(value).encode("utf-8", "surrogatepass")).hexdigest()[:12]
             out[key] = f"sha256:{digest} (len={len(str(value))})"
         else:
             out[key] = value
@@ -139,10 +154,13 @@ def record(
                the principal is the one place it lives.
     effect:    "read" | "write" | "" (empty when the tool wasn't in the registry)
     decision:  "allow" | "deny"
-    outcome:   "ok" | "error" | "oversize" | "unknown" | "" (empty when denied)
-               "unknown" is reserved for a WRITE that reached an external system
-               and never answered: it may or may not have taken effect, and this
-               record is the only place that will ever say so.
+    outcome:   "ok" | "error" | "oversize" | "unknown" | "aborted" | "" (empty when
+               denied). "unknown" is reserved for a WRITE that reached an external
+               system and never answered: it may or may not have taken effect, and
+               this record is the only place that will ever say so. "aborted" is a
+               *streamed* call the caller walked away from mid-answer (step 108,
+               migration 055): the upstream was closed, and the counters are what
+               had been reported by then.
     credential: "delegated" | "shared" | None — how the secret this call went out
                with was obtained. `delegated` means the caller's own connected
                account; `shared` means one organisational secret, the same for
@@ -199,7 +217,7 @@ def record(
         "agent": agent,
         "tool": tool,
         "effect": effect,
-        "args": _redact(tool_input, redact_args),
+        "args": redact_arguments(tool_input, redact_args),
         "decision": decision,
         "reason": reason,
         "outcome": outcome,

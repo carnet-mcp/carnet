@@ -7,6 +7,140 @@ preserves, how far back it works from, what a failure leaves behind — is
 Versions are `MAJOR.MINOR.PATCH` while below 1.0: a minor is a step of work, a patch is
 a fix between steps, and neither is allowed to break an upgrade path.
 
+## Unreleased
+
+**A personal token's name and daily allowance are its owner's** (step 108, sequencing
+item 1, migration 054). Two corrections found by walking plan 108's journey — a
+company's own coding agent minting a personal token on every engineer's machine — end to
+end. The second engineer whose agent chose the obvious name was refused, because token
+names were unique per customer; a personal token's name is now unique among its owner's
+live personal tokens, and the refusal says *this owner* rather than *this customer*.
+Service tokens keep the customer-wide rule. And the daily ceilings were per token, so an
+engineer with a laptop and a desktop had two allowances; `mcp_budget` is now keyed on the
+owner for personal tokens and every window already spent is re-keyed under them, summed,
+so nobody's day resets on upgrade. The money and model-token ceilings pool the same way,
+through a new `owner_door_spend_since` read. `GET /me/tokens/{id}/budget` gains
+`keyed_by`, the tokens page says whose day the figures are, and `--reach` prints the
+same line. See `docs/UPGRADING.md`.
+
+**The broker learns to stream** (step 108, sequencing item 2, migration 055).
+`core.broker.stream` runs every check `call` runs — grant, scope, ceiling, credential —
+before the first byte goes upstream, then hands back an iterator the caller relays while
+the answer is still arriving. The audit row is written when the iteration ends, and
+`outcome` says how: `ok`, `oversize` (the per-tool byte cap, applied as the bytes pass,
+closing the upstream there), `error` (a non-2xx relayed whole, a stall, a break),
+`unknown` (`call`'s bias for a write that may have landed) or the new `aborted` — the
+caller walked away and the upstream was closed so the vendor stops billing. Every REST
+tool gains a `stream_impl` beside `impl`, built from the same request preamble so neither
+can accept an argument the other refuses; usage counters are lifted from whichever chunk
+carries them, SSE or JSON. Four settings arrive for the surface item 3 builds:
+`CARNET_MODEL_MAX_REQUEST_BYTES`, `CARNET_MODEL_CHUNK_TIMEOUT`, `CARNET_MODEL_MAX_SECONDS`
+and `CARNET_THREADS`. The MCP door stays JSON-only.
+
+**An OpenAI-compatible surface** (step 108, sequencing item 3). `POST /v1/chat/completions`
+and `/v1/embeddings` in `OpenAI(base_url=…)`'s shape, `/openai/deployments/{deployment}/…`
+in `AzureOpenAI(azure_endpoint=…)`'s, `GET /v1/models` and `/openai/models`, with the token
+taken from either `Authorization: Bearer` or `api-key`. A company's own coding agent
+changes its base URL and its key, once, and every call goes through the door as a call on
+a vetted REST model tool: scoped to the deployment, under the connector's credential the
+engineer never holds, metered per person, audited without the prompt. The vendor's answer
+comes back byte for byte, streamed chunk for chunk when asked with
+`stream_options.include_usage` injected so the row is never zero; every refusal is
+`{"error": {"message", "type", "code"}}` under the status an SDK expects; a vendor's own
+429 or 400 is relayed whole with its `Retry-After`; a vendor refusing Carnet's key is a
+502 that names the connector and quotes nothing. Everything else under the two prefixes
+is refused with a sentence. The API's threadpool is `CARNET_THREADS` wide, because one
+open stream is one thread. The recipe that vets the tools and the guide's fifteen lines
+are the next items.
+
+**The person, on the row and on the screen** (step 108, sequencing item 4). Every door
+call row carries `owner` — the email of the person whose personal token made it, `''`
+for a service token — resolved at read time by joining the token's owner to `users`,
+never written to the audit table. The door-traffic page's *called by* column shows the
+person with the machine beneath, and `?owner=` filters the log by email across every
+personal token the person holds. The overview's callers panel groups a person's personal
+tokens under the person (one bar per engineer, labelled with their email) and links to
+the log by owner; the caller count is counted the same way, so the tile and the list
+agree. 041 wrote that *one person's several personal tokens are one caller* six steps
+before it was true.
+
+**The `azure-openai` recipe, and the admin's hour** (step 108, sequencing item 5).
+`carnet --add-connector foundry --from-recipe azure-openai --url https://<resource>.openai.azure.com`
+fills the `api-key` header, and `--vet foundry --tool chat_completions --from-recipe
+azure-openai` (and `embeddings`, `list_models`) fills each tool's binding: every
+documented chat parameter, the deployment as the `azure.deployment` resource, the
+`usage_map` with cached tokens, the redaction of `messages`, `tools`, `functions` and
+`prediction`, a 4 MiB response cap, and a price table as of 2026-09-09 that an operator
+overrides with `--pricing` or `CARNET_MODEL_RATES`. Found on the way: a recipe's
+`max_response_bytes` was declared in the format and ignored at vet time; it applies now,
+under the flag. The guide gains *Put Carnet in front of Azure OpenAI* — the agent's
+fifteen lines, the Entra app registration to ask for and the identity-provider spelling
+(`--subject-claim oid --email-claim preferred_username`), the private-endpoint note and
+the first week's rollout.
+
+**The journey, end to end, with the real SDK** (step 108, sequencing item 6).
+`scripts/e2e_openai_surface.py` builds the company: Carnet on its own database, an
+Entra-shaped identity provider, a fake Foundry on `localtest.me` that streams,
+rate-limits, content-filters, refuses the key and stalls on demand, the admin's hour
+through the real CLI, and the guide's fifteen lines **executed from the guide's own
+text**. Then the real `openai` package, as `AzureOpenAI` and as `OpenAI`, drives every
+scenario in plan 108's table that needs no real vendor — 105 checks. Three things it
+found: a scope refusal decided by the route left no row (the door decides now); a
+read timeout mid-stream arrives from urllib3 wrapped in a different class and was
+reported as a generic break; and Starlette never closes a sync body iterator whose
+client has gone, so an engineer's Ctrl-C left Azure generating and the `aborted` row
+unwritten until process exit — the surface now pulls the stream from the threadpool
+and closes it under a shielded scope within one chunk. `openai` joins the `harness`
+extra. The harness runs in CI's journeys job and in the acceptance runner's api tier.
+
+**The edge pass, and three defects it found** (step 108, after item 7). Driving the
+surface as a company's agent drives it — rather than as a test does — found three things
+the green suite could not:
+
+- **A brokered call could spend its budget and write no audit row.** Three paths reached
+  the broker and left the log empty: a vendor that never answered, streamed and not, and
+  an argument the vetted schema does not carry. `Streamed` writes its row when the
+  iteration ends, and `_relay` raised on those paths without iterating or closing, so
+  `_finalize` never ran. The route now closes the `Streamed` on every exit, and
+  `Streamed.close()` records `error` rather than `aborted` when the upstream had already
+  failed — nothing was there for the caller to walk away from.
+- **A lone surrogate in a recorded argument diverted the row to the degraded-mode file.**
+  `\ud800` is legal JSON and Postgres refuses it in jsonb, so such a call executed, the
+  vendor was paid, and the audit insert then failed — a gap in the table any caller could
+  open. The surface refuses it with a 400 naming the position, asking
+  `check_config_is_storable` rather than copying its rules. The prompt stays exempt,
+  because it is hashed rather than stored and a coding agent's file context legitimately
+  contains undecodable bytes.
+- **Redacting such a prompt raised inside the record of a call that had already run.**
+  `_redact` hashed with a plain `.encode("utf-8")`; it uses `surrogatepass` now. A hash
+  is a hash whichever encoder produced it, and the redaction must not be the thing that
+  loses the row. This one reached every route, not just the new one.
+
+**The same class at the MCP door, closed** (step 108's edge pass, second half). The
+fourth finding was older than this step, so it was measured before it was touched: five
+positions can carry a lone surrogate to a column, and four of them could reach one.
+
+- **A caller's argument** executed the call and then lost its audit row to the
+  degraded-mode file. `door.unstorable_call` is the gate, at `routes_mcp._call` beside
+  the two size caps and on their argument: what an authenticated caller may write into
+  an append-only log is bounded, and *writable* is the first bound. It checks the
+  **recorded** form — `audit.redact_arguments`' output, now public for exactly this —
+  so an argument the vetting redacts stays free to hold anything, because it is a digest
+  by the time it reaches a column. The model surface asks the same function with the
+  keys it hashes on top, so there is one rule and two dialects.
+- **A vendor's response body** killed Starlette's render and turned a completed, paid-for
+  call into a 500. `tools/call` results are the connector's own bytes, so the door
+  renders through `AsciiJSONResponse` — moved out of `errors.py` into `api/responses.py`,
+  since `errors.py` imports the door and the door could not import back. Its docstring
+  claimed every body but a 422 was one "this API builds itself"; that claim was wrong
+  and is corrected.
+- **A vendor's model name** made the whole row unwritable. `parse_report` drops the name
+  and keeps the counters — the opposite of what a bad counter gets, because a counter
+  that cannot be believed is a claim on somebody's allowance while a name that cannot be
+  written is a label, and the caller chose neither.
+- The **acting-for email** was already refused by the asserted-identity gate, and is
+  checked anyway, because that gate is a tenant's opt-in rather than a property of text.
+
 ## 0.10.0 — 2026-09-08
 
 **The acceptance pass** (step 099). Not a feature: the first time every end-to-end

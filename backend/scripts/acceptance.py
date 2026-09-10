@@ -108,6 +108,7 @@ HARNESSES: list[tuple[str, str, int, tuple[str, ...]]] = [
     ("e2e_file_workflows", "api", 600, ("dns",)),
     ("e2e_open_admin", "api", 600, ()),
     ("e2e_team_journey", "api", 600, ("dns",)),
+    ("e2e_openai_surface", "api", 900, ("dns",)),
     ("e2e_audit_stream", "api", 600, ("dns",)),
     # browser — real Chromium
     ("e2e_browser_local", "browser", 900, ("browser", "npm")),

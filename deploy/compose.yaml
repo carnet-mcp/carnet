@@ -116,6 +116,16 @@ services:
       # denied call spends no budget and still records its arguments.
       CARNET_MCP_MAX_CALL_BYTES: ${CARNET_MCP_MAX_CALL_BYTES:-}
       CARNET_MCP_SESSION_POOL_MAX: ${CARNET_MCP_SESSION_POOL_MAX:-}
+      # The OpenAI-compatible surface's own bounds (step 108, decision 4): a model call
+      # is not a tool call. The request cap (4 MiB) is under the front door's 12 MiB
+      # backstop; the chunk timeout and the wall clock bound a stream that stops
+      # producing and one that will not end; THREADS is the API's threadpool, and one
+      # open stream holds one thread for the life of the completion — the ceiling on
+      # engineers mid-completion per process. Raise it before adding `--workers`.
+      CARNET_MODEL_MAX_REQUEST_BYTES: ${CARNET_MODEL_MAX_REQUEST_BYTES:-}
+      CARNET_MODEL_CHUNK_TIMEOUT: ${CARNET_MODEL_CHUNK_TIMEOUT:-}
+      CARNET_MODEL_MAX_SECONDS: ${CARNET_MODEL_MAX_SECONDS:-}
+      CARNET_THREADS: ${CARNET_THREADS:-}
       # Step 083. How long a token minted by an MCP client's OAuth consent lives, in
       # days; 0 for no expiry. The flow issues no refresh token, so an expiry is a
       # re-consent — one click for a person still signed in at their provider.

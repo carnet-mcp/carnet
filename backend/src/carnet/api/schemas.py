@@ -884,7 +884,7 @@ class DoorCallRecord(BaseModel):
     these rows, which is why the reader had to exist before any of it was legible.
 
     **Two stored fields are deliberately not declared here, and their absence is the
-    redaction.** `args` is caller-supplied free text; `core/audit._redact` already keeps
+    redaction.** `args` is caller-supplied free text; `core/audit.redact_arguments` already keeps
     secrets out of it, but the class of thing it holds is not what an admin listing is
     for, and a record kept forever should not put it on a screen by default.
     `credential` is a lookup key — *which kind* of secret a call went out with — that
@@ -924,6 +924,13 @@ class DoorCallRecord(BaseModel):
     response_bytes: int | None = None
     acting_for: str | None = None
     identity_source: str
+    # The person behind a personal token, by email — step 108, decision 5. Resolved at
+    # read time by joining the token's owner to `users`, never stored on the row (an
+    # email on an append-only table is what 013's redaction argument exists to
+    # prevent). `''` for a service token, a person's own session and the system. It
+    # answers the one question a customer opens this listing with — *who used it* —
+    # and it is the field the *called by* column renders where there is one.
+    owner: str
     # What the call spent at a model, when the tool reported it. Step 045b.
     #
     # **Declared here where `args` and `credential` deliberately are not**, and the
@@ -2088,6 +2095,12 @@ class TokenSpend(BaseModel):
     """
 
     token_id: str
+    # Whose figures these are. `owner` for a personal token: every number on this page
+    # is the person's, across every personal token they hold, and a second machine
+    # draws on the same day (step 108, decision 7, migration 054). `token` for a service
+    # token, whose allowance is its own. A literal rather than a boolean because the
+    # screen renders a sentence from it and *"pooled: false"* names no subject.
+    keyed_by: Literal["owner", "token"]
     # The UTC day this deployment says is now, from `door.budget_window()` — the same
     # function `TokenBudget` freezes at construction, so the screen and the door cannot
     # disagree about which day a call is charged to.
@@ -2101,14 +2114,14 @@ class TokenSpend(BaseModel):
     # without its limit is not an answer** — it is why `ceiling` and `metered` sit beside
     # `calls` above, and the new numbers get the same treatment or they are decoration.
     #
-    # **The subject changes here, and that is the one thing a reader must not miss.**
-    # Everything above is about the *token*: `mcp_budget` keys on it, and a second token
-    # gets a second call allowance. Money keys on the **principal** — the person or
-    # service that holds the token — so `usd` is what its owner spent through the door
-    # today across every token they hold, and minting another one does not buy another
-    # budget. Two subjects on one page is a real hazard; the field names carry no
-    # disambiguating suffix because the alternative (`principal_usd`) reads as though the
-    # calls were somehow not somebody's. The screen says it in words instead.
+    # **One subject for the whole page, and `keyed_by` names it.** Until step 108 this
+    # comment claimed two: calls keyed on the token, money on *"the person or service
+    # that holds the token ... across every token they hold"*. The money half was not
+    # true — `door_spend_today` read the token presented — and the calls half was true
+    # in a way nobody wanted, a second machine buying a second day. Migration 054 keys
+    # both on `door.budget_subject`: the owner for a personal token, the token itself
+    # for a service one. The field names carry no suffix because there is now one
+    # subject to name, and the screen says which in words.
     #
     # `usd_metered` and `tokens_metered` are separate flags, not one: the two dials are
     # independent, and a deployment that bounds tokens without pricing anything (which is
@@ -2313,6 +2326,13 @@ class CallerTotals(BaseModel):
 
     principal_kind: str
     principal_id: str
+    # Step 108. The axis is now the *subject*: a personal token's calls count under its
+    # owner (`principal_kind: user`, `principal_id: <owner id>`), with the email here so
+    # the bar is labelled with the person; a service token stays its own row with `''`.
+    # The claim above — one person's several personal tokens are one caller — was
+    # written in 041 and was not true until this field made it so: `audit` names the
+    # token, and only a read-time join to `api_tokens` knows whose it is.
+    owner: str
     calls: int
     denied: int
     writes: int
@@ -2420,7 +2440,7 @@ class RefusalReason(BaseModel):
     distinct kind of row. This is the sentences themselves, which is *what the control
     said*, and it is the most directly actionable thing the log holds.
 
-    `reason` is written by this codebase and never by a caller, and `core/audit._redact`
+    `reason` is written by this codebase and never by a caller, and `core/audit.redact_arguments`
     has been over the record before it is stored. That is the condition under which this
     is safe to render on an admin screen — a condition rather than a property, and one a
     future refusal that interpolated caller text would break.

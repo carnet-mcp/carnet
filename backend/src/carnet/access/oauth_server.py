@@ -132,9 +132,11 @@ _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
 _CHALLENGE_LENGTH = 43
 _BASE64URL = frozenset(string.ascii_letters + string.digits + "-_")
 
-# How many numeric suffixes a token name is tried with before giving up. Two colleagues
-# connecting the same client must not have the second refused; a hundred of them will
-# have a tokens page nobody can read anyway.
+# How many numeric suffixes a token name is tried with before giving up. One person
+# connecting the same client from a second machine must not be refused; since migration
+# 054 a personal token's name is unique per *owner*, so two colleagues no longer collide
+# at all and the loop is only ever about one person's own tokens. A hundred of those is
+# a tokens page nobody can read anyway.
 _NAME_ATTEMPTS = 100
 
 # The actor a replay-triggered revocation is recorded under. `system:` because no
@@ -744,8 +746,8 @@ def exchange(form: dict) -> dict:
     if minted is None:
         raise OAuthError(
             "server_error",
-            f"this customer already has {_NAME_ATTEMPTS} live tokens called "
-            f"'{base}'. Revoke some on the tokens page and try again.",
+            f"you already have {_NAME_ATTEMPTS} live tokens called "
+            f"'{base}'. Revoke some on your tokens page and try again.",
             status=500,
         )
     store.record_oauth_code_token(row["code_hash"], minted["id"])

@@ -1868,6 +1868,43 @@ def test_mint_as_owner_says_what_it_made_and_suggests_no_grant(
     assert "call nothing yet" not in said
 
 
+def test_a_personal_name_is_the_owners_and_may_match_a_service_tokens(
+    monkeypatch, tenant_with_a_person, capsys
+):
+    """Migration 054. A personal token and a service token may share a name — they are
+    never on the same list — and one person may not hold two live personal tokens by one
+    name. The refusal names the owner, which on this command is the person the operator
+    typed, not the customer."""
+    run(monkeypatch, "--mint-token", "agent", "priya@acme.com")
+    capsys.readouterr()
+    run(monkeypatch, "--mint-token", "agent", "priya@acme.com", "--as-owner")
+    capsys.readouterr()
+    assert len(storage.active().list_api_tokens(cli.DEFAULT_TENANT_ID)) == 2
+
+    fails(monkeypatch, "--mint-token", "agent", "priya@acme.com", "--as-owner")
+
+    said = message(capsys)
+    assert "this owner already has a live personal token called 'agent'" in said
+    assert "Revoking the old one frees the name" in said
+
+
+def test_reach_says_whose_day_the_ceilings_count(monkeypatch, tenant_with_a_person, capsys):
+    """Step 108, decision 7: `--reach` is the command an administrator reads before
+    asking why a token was refused, and for a personal token the answer is often another
+    machine's morning. Both kinds say which applies."""
+    run(monkeypatch, "--mint-token", "priya-editor", "priya@acme.com", "--as-owner")
+    capsys.readouterr()
+    run(monkeypatch, "--mint-token", "nightly-ci", "priya@acme.com")
+    capsys.readouterr()
+    rows = {row["name"]: row["id"] for row in storage.active().list_api_tokens(cli.DEFAULT_TENANT_ID)}
+
+    run(monkeypatch, "--reach", rows["priya-editor"])
+    assert "shared with every personal token user:u_priya holds" in message(capsys)
+
+    run(monkeypatch, "--reach", rows["nightly-ci"])
+    assert "this token's own" in message(capsys)
+
+
 def test_list_tokens_shows_the_kind(monkeypatch, tenant_with_a_person, capsys):
     """The kind column is also where an operator holding a `machine:m_...` string
     from an old audit record reads the "via" half — derived from this table at read
@@ -2833,3 +2870,26 @@ def test_the_cli_gives_the_pool_back_on_every_path(monkeypatch, capsys):
 
     fails(monkeypatch, "--grant-role", "admin", "nobody@acme.com")
     assert closed == [True, True], "the store was not closed after a command that was refused"
+
+
+def test_vetting_from_a_recipe_applies_its_response_cap(monkeypatch, tenant_with_a_person, capsys):
+    """Step 108 found `max_response_bytes` declared in the recipe format and ignored at
+    vet time: the Azure recipe proposes 4 MiB for a chat completion, and the default 64
+    KiB cut every long answer off. Under the flag, like every other proposal field."""
+    run(monkeypatch, "--allow-host", "acme-foundry.openai.azure.com")
+    run(monkeypatch, "--add-connector", "foundry", "--from-recipe", "azure-openai",
+        "--url", "https://acme-foundry.openai.azure.com", "--credential-env", "AZURE_OPENAI_KEY")
+    capsys.readouterr()
+
+    run(monkeypatch, "--vet", "foundry", "--tool", "chat_completions", "--from-recipe", "azure-openai")
+    run(monkeypatch, "--vet", "foundry", "--tool", "embeddings", "--from-recipe", "azure-openai",
+        "--max-response-bytes", "1000")
+    capsys.readouterr()
+
+    from carnet.tools import mcp
+
+    vetted = {v.remote_name: v for v in mcp.get_connector(cli.DEFAULT_TENANT_ID, "foundry").vetted}
+    assert vetted["chat_completions"].max_response_bytes == 4 * 1024 * 1024
+    assert vetted["chat_completions"].redact_args == ("messages", "tools", "functions", "prediction")
+    # The flag still wins.
+    assert vetted["embeddings"].max_response_bytes == 1000

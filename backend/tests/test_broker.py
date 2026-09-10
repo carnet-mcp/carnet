@@ -214,6 +214,27 @@ def test_audit_redacts_message_bodies(ctx):
     assert record["args"]["channel"] == "#eng"  # policy-relevant args stay readable
 
 
+def test_redaction_survives_text_no_encoder_can_write(ctx):
+    """**A lone surrogate is what a coding agent's prompt holds after reading a file
+    with `errors="surrogateescape"`**, which is Python's own default for undecodable
+    bytes — and `\\ud800` is legal JSON syntax, so it arrives through any body.
+
+    Found by driving the model surface against real Postgres: the hash was computed
+    with a plain `.encode("utf-8")`, which raises on one — *inside the record of a call
+    that had already executed*. The tool ran, the vendor was paid, and the process
+    answered 500 on its way to writing it down. A hash is a hash whichever encoder
+    produced it; what must not happen is the redaction losing the row."""
+    result = broker.call(ctx, AGENT, "post_message",
+                         {"channel": "#eng", "text": "a file\ud800with bytes"})
+
+    assert "error" not in result
+    record = read_audit()[-1]
+    assert record["args"]["text"].startswith("sha256:")
+    # The length is the string's — six characters, the surrogate, then ten — so the
+    # digest still describes what was sent.
+    assert "len=17" in record["args"]["text"]
+
+
 def test_audit_redacts_smuggled_credentials(ctx):
     """A denied call is still logged — the smuggled secret must not land in the log."""
     broker.call(
@@ -826,3 +847,291 @@ def test_a_denial_still_fails_loud_when_nothing_can_record_it(
         broker.call(ctx, AGENT, "delete_everything", {"target": "prod"})
 
     assert not config.AUDIT_FALLBACK_PATH.exists()
+
+
+# --- the answer while it arrives: `stream` -------------------------------------------
+#
+# Step 108, decision 2. The one invariant the layout protects — nothing outside `core/`
+# calls a tool implementation directly — means a streamed model call goes through the
+# broker or it is the first bypass. What these pin: `stream` runs every check `call` runs
+# before a byte goes out; the bytes come through untouched; the row is written when the
+# iteration ends, with `outcome` saying how it ended; and stopping early closes the
+# upstream. The upstream here is duck-typed rather than `tools/rest.Upstream`, because
+# the broker's contract with it is five attributes and two methods and these tests are
+# about the broker.
+
+
+class FakeUpstream:
+    def __init__(self, chunks=(), *, status=200, error=None, relay_body=True,
+                 report=None, may_have_completed=False, headers=None):
+        self.status = status
+        self.headers = headers or {"Content-Type": "text/event-stream"}
+        self.error = error
+        self.relay_body = relay_body
+        self.may_have_completed = may_have_completed
+        self._chunks = list(chunks)
+        self._report = report
+        self.closed = False
+        self.yielded = 0
+
+    def chunks(self):
+        for chunk in self._chunks:
+            self.yielded += 1
+            yield chunk
+
+    def report(self):
+        return self._report
+
+    def close(self):
+        self.closed = True
+
+
+def _streaming_tool(monkeypatch, upstream, *, limit=None, effect="write", stream_impl=True,
+                    redact=frozenset()):
+    """Register a throwaway tool whose streamed entry point hands back `upstream`."""
+    from carnet import tools
+    from carnet.tools.base import Tool
+
+    calls = []
+
+    def impl(**arguments):
+        return {"buffered": True}
+
+    def stream(**arguments):
+        calls.append(arguments)
+        if isinstance(upstream, Exception):
+            raise upstream
+        return upstream
+
+    tool = Tool(
+        name="chat",
+        description="a model",
+        input_schema={"type": "object", "properties": {
+            "model": {"type": "string"}, "messages": {"type": "array"}}},
+        impl=impl,
+        stream_impl=stream if stream_impl else None,
+        max_response_bytes=limit,
+        effect=effect,
+        resources=[Resource("azure.deployment", "model")],
+        redact_args=redact,
+    )
+    monkeypatch.setitem(tools.REGISTRY, "chat", tool)
+    permissions = {
+        **AGENT["permissions"],
+        "tools": [*AGENT["permissions"]["tools"], "chat"],
+        "scope": {**AGENT["permissions"]["scope"], "azure.deployment": {"write": ["gpt-4o"]}},
+    }
+    return {**AGENT, "permissions": permissions}, calls
+
+
+PROMPT = {"model": "gpt-4o", "messages": [{"role": "user", "content": "secret prompt"}]}
+
+
+def test_stream_runs_every_check_call_runs_before_a_byte_goes_out(ctx, isolated_var_dir, monkeypatch):
+    """A deployment outside the scope is refused with `call`'s own dict, the upstream is
+    never asked for, and the row is the same `deny` row `call` writes."""
+    upstream = FakeUpstream([b"x"])
+    agent, calls = _streaming_tool(monkeypatch, upstream)
+
+    streamed = broker.stream(ctx, agent, "chat", {**PROMPT, "model": "gpt-3"})
+
+    assert streamed.refused is True
+    assert is_denied(streamed.error)
+    assert "gpt-3" in streamed.error["error"]
+    assert list(streamed) == []
+    assert calls == []
+    record = read_audit()[-1]
+    assert (record["decision"], record["outcome"]) == ("deny", "")
+
+
+def test_a_cancelled_run_may_not_stream_either(ctx, isolated_var_dir, monkeypatch):
+    agent, calls = _streaming_tool(monkeypatch, FakeUpstream([b"x"]))
+    ctx.cancellation.request()
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+
+    assert streamed.refused is True and "cancelled" in streamed.error["error"]
+    assert calls == []
+
+
+def test_a_streamed_answer_comes_through_untouched_and_is_audited_once_at_the_end(
+    ctx, isolated_var_dir, monkeypatch
+):
+    upstream = FakeUpstream([b"data: a\n\n", b"data: b\n\n"],
+                            report={"model": "gpt-4o", "input_tokens": 12, "output_tokens": 3})
+    agent, calls = _streaming_tool(monkeypatch, upstream)
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+    assert streamed.status == 200 and streamed.error is None
+    assert read_audit() == [] or read_audit()[-1]["tool"] != "chat", "no row before the end"
+
+    assert list(streamed) == [b"data: a\n\n", b"data: b\n\n"]
+
+    assert streamed.outcome == "ok"
+    assert streamed.response_bytes == 18
+    assert upstream.closed is True
+    record = read_audit()[-1]
+    assert (record["decision"], record["outcome"], record["response_bytes"]) == ("allow", "ok", 18)
+    assert (record["model"], record["input_tokens"], record["output_tokens"]) == ("gpt-4o", 12, 3)
+    assert calls == [PROMPT]
+
+
+def test_the_byte_cap_closes_the_upstream_as_the_bytes_pass(ctx, isolated_var_dir, monkeypatch):
+    """S7. A stream is the one response a size cap cannot check up front, so it is
+    applied on the way past: every byte up to the cap is handed on, the upstream is
+    closed there, and the row says `oversize` with the bytes that passed."""
+    upstream = FakeUpstream([b"x" * 40, b"y" * 40, b"z" * 40])
+    agent, _ = _streaming_tool(monkeypatch, upstream, limit=50)
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+    received = list(streamed)
+
+    assert received == [b"x" * 40]
+    assert streamed.outcome == "oversize"
+    assert streamed.error["limit"] == 50 and streamed.error["bytes"] == 80
+    assert upstream.closed is True
+    assert upstream.yielded == 2, "the chunk that crossed the cap was the last one read"
+    record = read_audit()[-1]
+    assert (record["outcome"], record["response_bytes"]) == ("oversize", 80)
+    assert "size limit" in record["reason"]
+
+
+def test_a_caller_that_stops_early_closes_the_upstream_and_the_row_says_aborted(
+    ctx, isolated_var_dir, monkeypatch
+):
+    """S6. Ctrl-C in the engineer's terminal. The upstream is closed so the vendor stops
+    generating for a listener that has gone, and the row records what was counted —
+    usually nothing, because the usage object is the final chunk."""
+    upstream = FakeUpstream([b"a", b"b", b"c"])
+    agent, _ = _streaming_tool(monkeypatch, upstream)
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+    for _chunk in streamed:
+        break
+    streamed.close()
+
+    assert streamed.outcome == "aborted"
+    assert upstream.closed is True
+    record = read_audit()[-1]
+    assert (record["outcome"], record["response_bytes"], record["input_tokens"]) == ("aborted", 1, None)
+
+
+def test_a_streamed_never_iterated_is_closed_and_recorded_as_aborted(ctx, isolated_var_dir, monkeypatch):
+    upstream = FakeUpstream([b"a"])
+    agent, _ = _streaming_tool(monkeypatch, upstream)
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+    streamed.close()
+    streamed.close()
+
+    assert streamed.outcome == "aborted" and upstream.closed is True
+    assert [r["outcome"] for r in read_audit() if r["tool"] == "chat"] == ["aborted"]
+
+
+def test_closing_a_stream_that_never_had_an_answer_is_an_error_not_an_abort(
+    ctx, isolated_var_dir, monkeypatch
+):
+    """**Nothing was there to walk away from.** A `Streamed` whose upstream failed
+    before the first byte — a connection refused, an argument the tool would not send —
+    is closed by the route rather than iterated, and recording that as `aborted` would
+    read as *the engineer pressed Ctrl-C* on a call that never reached the vendor.
+
+    The edge pass found the route leaving these unclosed altogether, so the row did not
+    exist at all; `close()` had then to decide what it says."""
+    upstream = FakeUpstream([], status=None, error="'tracker' could not be reached.")
+    agent, _ = _streaming_tool(monkeypatch, upstream)
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+    streamed.close()
+
+    assert streamed.outcome == "error"
+    record = read_audit()[-1]
+    assert (record["outcome"], record["response_bytes"]) == ("error", 0)
+    assert "could not be reached" in record["reason"]
+
+
+def test_a_break_mid_answer_is_an_error_with_the_upstreams_sentence(ctx, isolated_var_dir, monkeypatch):
+    """S11 at the broker: the upstream sets `error` after its last chunk, and the row
+    says `error` with that sentence — never `unknown`, because bytes arrived and the
+    caller watched them stop."""
+    class Stalls(FakeUpstream):
+        def chunks(self):
+            yield b"a"
+            self.error = "'tracker' stopped sending for 60s mid-answer"
+    upstream = Stalls(may_have_completed=True)
+    agent, _ = _streaming_tool(monkeypatch, upstream)
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+
+    assert list(streamed) == [b"a"]
+    assert streamed.outcome == "error"
+    record = read_audit()[-1]
+    assert record["outcome"] == "error" and "stopped sending" in record["reason"]
+
+
+def test_a_failure_before_the_first_byte_keeps_calls_bias_for_a_write(ctx, isolated_var_dir, monkeypatch):
+    upstream = FakeUpstream([], status=None, error="'tracker' accepted the request and did not answer in time.",
+                            may_have_completed=True)
+    agent, _ = _streaming_tool(monkeypatch, upstream)
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+    assert list(streamed) == []
+
+    assert streamed.outcome == "unknown"
+    assert read_audit()[-1]["outcome"] == "unknown"
+
+
+def test_a_vendor_refusal_is_relayed_and_recorded_as_an_error(ctx, isolated_var_dir, monkeypatch):
+    """S19, S20. The 429 or the content-filter 400 travels whole to the caller —
+    status, `Retry-After`, body — and the row says `error` with the status."""
+    upstream = FakeUpstream([b'{"error": "slow down"}'], status=429,
+                            error="'tracker' answered HTTP 429.",
+                            headers={"Content-Type": "application/json", "Retry-After": "7"})
+    agent, _ = _streaming_tool(monkeypatch, upstream)
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+
+    assert (streamed.status, streamed.headers["Retry-After"]) == (429, "7")
+    assert list(streamed) == [b'{"error": "slow down"}']
+    assert streamed.outcome == "error"
+    assert read_audit()[-1]["reason"] == "'tracker' answered HTTP 429."
+
+
+def test_a_tool_without_a_stream_impl_is_an_audited_error(ctx, isolated_var_dir, monkeypatch):
+    agent, _ = _streaming_tool(monkeypatch, FakeUpstream(), stream_impl=False)
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+
+    assert streamed.refused is False
+    assert "cannot stream" in streamed.error["error"]
+    assert list(streamed) == []
+    assert read_audit()[-1]["outcome"] == "error"
+
+
+def test_a_stream_impl_that_raises_is_an_audited_error(ctx, isolated_var_dir, monkeypatch):
+    agent, _ = _streaming_tool(monkeypatch, RuntimeError("boom"))
+
+    streamed = broker.stream(ctx, agent, "chat", PROMPT)
+
+    assert streamed.error == {"error": "RuntimeError: boom"}
+    assert read_audit()[-1]["outcome"] == "error"
+
+
+def test_the_caller_can_widen_the_redaction_and_never_narrow_it(ctx, isolated_var_dir, monkeypatch):
+    """Decision 10. The OpenAI surface strips `messages` from the row regardless of
+    how the tool was vetted; a tool vetted to redact `model` keeps that too."""
+    agent, _ = _streaming_tool(monkeypatch, FakeUpstream([b"a"]), redact=frozenset({"model"}))
+
+    list(broker.stream(ctx, agent, "chat", PROMPT, redact={"messages"}))
+
+    args = read_audit()[-1]["args"]
+    assert "secret prompt" not in json.dumps(args)
+    assert "gpt-4o" not in json.dumps(args)
+
+
+def test_the_bytes_that_passed_count_against_the_budget(ctx, isolated_var_dir, monkeypatch):
+    agent, _ = _streaming_tool(monkeypatch, FakeUpstream([b"abc", b"de"]))
+
+    list(broker.stream(ctx, agent, "chat", PROMPT))
+
+    assert ctx.budget.bytes == [5]

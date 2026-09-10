@@ -165,6 +165,35 @@ OAUTH_CLIENT_UNUSED_DAYS = 30
 # The default is unchanged; a deployment that brokers a slow vendor raises it.
 REQUEST_TIMEOUT = int(os.environ.get("CARNET_REQUEST_TIMEOUT") or 15)
 
+# --- model calls through the OpenAI-compatible surface -----------------------------
+#
+# Step 108, decision 4. A model call is not a tool call, and the two dials above and
+# the door's 64 KiB body cap are right for what they guard and wrong here. A coding
+# agent's prompt carries file context and is routinely 200 KiB; a completion routinely
+# takes forty seconds and streams the whole way. So `/v1/*` has its own four, read at
+# startup like every other setting here:
+#
+#   MODEL_MAX_REQUEST_BYTES   the request body. 4 MiB: under the front door's 12 MiB
+#                             backstop, far past any prompt that is not a document.
+#   MODEL_CHUNK_TIMEOUT       seconds between two chunks of a streamed answer. A stream
+#                             that is still producing is healthy however long it has
+#                             run; one that has produced nothing for a minute is not.
+#                             Also the read timeout for a non-streamed model call, since
+#                             the whole body is its one chunk.
+#   MODEL_MAX_SECONDS         wall clock for one call, streamed or not. Ten minutes: a
+#                             stream that has produced *anything* for ten minutes is
+#                             not a completion, it is a leak holding a thread.
+#   THREADS                   the API's threadpool. Every route here is sync `def` by
+#                             house rule, so one open stream is one thread for the life
+#                             of the completion; uvicorn's default of 40 would cap a
+#                             company at forty engineers mid-completion. Two hundred is
+#                             a guess sized to a company, not a measurement, and the
+#                             plan says so.
+MODEL_MAX_REQUEST_BYTES = int(os.environ.get("CARNET_MODEL_MAX_REQUEST_BYTES") or 4 * 1024 * 1024)
+MODEL_CHUNK_TIMEOUT = int(os.environ.get("CARNET_MODEL_CHUNK_TIMEOUT") or 60)
+MODEL_MAX_SECONDS = int(os.environ.get("CARNET_MODEL_MAX_SECONDS") or 600)
+THREADS = int(os.environ.get("CARNET_THREADS") or 200)
+
 # --- MCP session pool --------------------------------------------------------
 # Sessions outlive runs, which is right: a connector is a subprocess or a container,
 # and re-spawning one per run would be absurd. Behind a CLI the process exited and

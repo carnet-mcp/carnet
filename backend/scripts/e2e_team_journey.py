@@ -413,21 +413,22 @@ def run() -> None:
     minted = c.post("/me/tokens", headers=sam, json={"name": "claude-code"})
     check("sam minted a personal token", (minted.status_code, minted.json().get("acts_as_owner")), (201, True))
     assistants["sam"] = minted.json()["token"]
-    # Found by this harness on 2026-09-07: token names are unique per *customer*, not per
-    # owner, so the second colleague to call theirs "claude-code" — the obvious name — is
-    # refused with a sentence about "this customer". Recorded as the behaviour it is; the
-    # report carries it as a finding for the register rather than something this step
-    # decides. The colleagues name theirs distinctly, which is what the refusal asks.
-    clash = c.post("/me/tokens", headers=tom, json={"name": "claude-code"})
-    check("tom choosing the same name as sam is refused — names are per customer, not per owner",
-          clash.status_code, 400)
-    says("with the constraint's own words", clash.json().get("detail"), "already has a live API token called")
+    # Found by this harness on 2026-09-07: token names were unique per *customer*, so the
+    # second colleague to call theirs "claude-code" — the obvious name — was refused with
+    # a sentence about "this customer". Migration 054 (step 108, scenario S2) made a
+    # personal token's name the owner's: the obvious name works for everybody, and what
+    # is refused is one person holding two live tokens by one name.
     for who, headers in (("tom", tom), ("lee", lee)):
-        minted = c.post("/me/tokens", headers=headers, json={"name": f"{who}'s claude-code"})
-        if not check(f"{who} minted a personal token", (minted.status_code, minted.json().get("acts_as_owner")), (201, True)):
+        minted = c.post("/me/tokens", headers=headers, json={"name": "claude-code"})
+        if not check(f"{who} minted a personal token under the same name as sam's — names are per owner",
+                     (minted.status_code, minted.json().get("acts_as_owner")), (201, True)):
             print(f"        the server said: {minted.text[:300]}")
             return
         assistants[who] = minted.json()["token"]
+    clash = c.post("/me/tokens", headers=sam, json={"name": "claude-code"})
+    check("sam minting a second live token by the same name is refused", clash.status_code, 400)
+    says("with the constraint's own words, about the owner rather than the customer",
+         clash.json().get("detail"), "this owner already has a live personal token called")
     for who in ("sam", "tom", "lee"):
         status, answer = rpc(assistants[who], "tools/list")
         check(f"{who}'s assistant lists the shared agent's tool", [t["name"] for t in answer["result"]["tools"]], ["acme_search_issues"])

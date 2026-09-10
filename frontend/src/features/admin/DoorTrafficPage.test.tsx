@@ -34,6 +34,7 @@ function record(overrides: Partial<DoorCallRecord> = {}): DoorCallRecord {
     run_id: "door-0123456789ab",
     principal_kind: "machine",
     principal_id: "tok_9311cad7",
+    owner: "",
     agent: "triage",
     tool: "acme_list_issues",
     effect: "read",
@@ -69,6 +70,26 @@ describe("the log", () => {
     expect(screen.getByText("triage")).toBeInTheDocument();
     expect(screen.getByText("tok_9311cad7")).toBeInTheDocument();
     expect(screen.getByText("allow")).toBeInTheDocument();
+  });
+
+  it("names the person behind a personal token, with the machine beneath", async () => {
+    // Step 108, decision 5: the one question a customer opens this page with. A service
+    // token has no person and keeps showing its id alone.
+    show([record({ owner: "priya@example.com" }), record({ principal_id: "tok_bot", owner: "" })]);
+
+    expect(await screen.findByText("priya@example.com")).toBeInTheDocument();
+    expect(screen.getByText("tok_9311cad7")).toBeInTheDocument();
+    expect(screen.getByText("tok_bot")).toBeInTheDocument();
+    expect(screen.getByText("Called by")).toBeInTheDocument();
+  });
+
+  it("reads an owner filter from the URL, says it in words, and sends it", async () => {
+    show([record({ owner: "priya@example.com" })], "/admin/door-calls?owner=priya%40example.com");
+
+    expect(await screen.findByText(/Only calls by priya@example.com/)).toBeInTheDocument();
+    expect(vi.mocked(api.adminDoorCalls)).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "priya@example.com" }),
+    );
   });
 
   it("says so when no request has come through the MCP server yet", async () => {

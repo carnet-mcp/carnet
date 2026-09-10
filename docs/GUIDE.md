@@ -350,10 +350,12 @@ can be written and can never be called. Nothing in this tree reads that name; it
 reserved so it can never enter connector machinery. Providers with no platform-side counterpart get their own variable
 anyway, for symmetry.
 
-**A schema is the contract, and what it omits is refused.** The vetter authors it, so a
-caller that sends `stream: true` is refused before the vendor is dialled, and so is any
-argument the schema does not carry. That is 045a's rule and it is doing real work here:
-this door is JSON-only, and a chat pipe is not what this tool is for.
+**A schema is the contract, and what it omits is refused.** The vetter authors it, so
+any argument the schema does not carry is refused before the vendor is dialled, with a
+sentence naming it — never dropped, so a caller is not told a value applied when it did
+not. That is 045a's rule. Through `/mcp` the two schemas above refuse `stream: true` as
+well, because that door is JSON-only; the OpenAI-compatible surface below is where a
+model call streams, and its recipe declares `stream` for exactly that reason.
 
 #### The scope line is a model list, per provider
 
@@ -472,6 +474,192 @@ met first refuses, and the refusal says which.
   reasoning step. That is the price of the call being governed, and it is the trade this
   connector kind is: a credential the caller never holds, revocable in one command, with
   a row for every call.
+
+### Put Carnet in front of Azure OpenAI
+
+A company has built its own coding agent. It runs on every engineer's machine, calls
+Azure AI Foundry's OpenAI-compatible endpoint with the Azure OpenAI SDK, and every
+engineer already signs in with `az login`. The company wants per-engineer usage and
+spend, a daily ceiling per engineer, and the Azure key off every laptop — and the
+engineer to change nothing: same `az login`, same agent, no token to mint, no page to
+visit. This is step 108, and it is what the OpenAI-compatible surface exists for.
+
+#### What the agent's author changes, once
+
+Two values in the client, and a fifteen-line function that supplies the second:
+
+```python
+# before
+client = AzureOpenAI(azure_endpoint=FOUNDRY_URL, api_key=os.environ["AZURE_OPENAI_KEY"],
+                     api_version="2024-10-21")
+
+# after
+client = AzureOpenAI(azure_endpoint=CARNET, api_key=carnet_token(),
+                     api_version="2024-10-21")
+```
+
+`CARNET` is the deployment's API address — `https://carnet.acme.com/api` behind the
+shipped front door. Every `resp.choices[0].message.content`, every stream loop and every
+tool-call delta is untouched: what comes back is Azure's answer, byte for byte, streamed
+chunk for chunk when the agent asked for a stream. The Azure key is deleted from the
+agent's configuration. `carnet_token()` is this, and it is run as written by
+`scripts/e2e_openai_surface.py` so it cannot rot:
+
+```python
+# carnet_token.py — the silent first-run exchange. Standard library only.
+import json, os, pathlib, socket, subprocess, urllib.error, urllib.request
+
+CARNET = os.environ.get("CARNET", "https://carnet.acme.com/api")
+CARNET_APP_ID = os.environ.get("CARNET_APP_ID", "<carnet-app-id>")   # the Entra app registration
+CACHE = pathlib.Path(os.environ.get("CARNET_TOKEN_FILE", "~/.config/carnet/token")).expanduser()
+
+
+def entra_token() -> str:
+    """The signed-in engineer's Entra token *for Carnet's app*, from the `az login` session."""
+    if os.environ.get("CARNET_ENTRA_TOKEN"):          # a test or a CI job supplies its own
+        return os.environ["CARNET_ENTRA_TOKEN"]
+    return subprocess.check_output(
+        ["az", "account", "get-access-token", "--scope", f"api://{CARNET_APP_ID}/.default",
+         "--query", "accessToken", "-o", "tsv"], text=True,
+    ).strip()
+
+
+def mint() -> str:
+    """One personal token, owned by the engineer, cached 0600. Refused loudly when the
+    engineer has been offboarded — never retried, because re-minting is refused too."""
+    body = json.dumps({"name": f"coding-agent · {socket.gethostname()}"}).encode()
+    request = urllib.request.Request(f"{CARNET}/me/tokens", data=body, method="POST",
+        headers={"Authorization": f"Bearer {entra_token()}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            token = json.load(response)["token"]
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(f"Carnet refused to mint a token ({exc.code}): {exc.read().decode()[:300]}") from exc
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE.write_text(token)
+    CACHE.chmod(0o600)
+    return token
+
+
+def carnet_token() -> str:
+    """The cached token, or a freshly minted one. The two error rules the agent needs:
+    on 401 `invalid_api_key` (revoked or expired) delete the cache and mint once more;
+    on 403 `account_deactivated` stop — surface the sentence and do not re-mint."""
+    if CACHE.exists():
+        return CACHE.read_text().strip()
+    return mint()
+
+
+def refreshed_after(error) -> str | None:
+    """Call from the agent's error handler with the SDK's exception. Returns a new token
+    to retry with, or None when the agent should stop and show `error`."""
+    body = getattr(error, "body", None)          # the SDK's parsed `error` object
+    code = body.get("code") if isinstance(body, dict) else None
+    if getattr(error, "status_code", None) == 401 and code == "invalid_api_key":
+        CACHE.unlink(missing_ok=True)
+        return mint()
+    return None
+```
+
+The agent calls `refreshed_after(exc)` once when the SDK raises `AuthenticationError`,
+retries with the token it returns, and stops when it returns `None`. A `403
+account_deactivated` is the person having been disabled; the sentence says so and the
+right move is to stop rather than mint all night.
+
+**What the exchange depends on, said out loud.** The token the agent presents must have
+*Carnet* as its audience: `az login`'s default token is for Azure Resource Manager and
+Carnet refuses it, correctly. Somebody with Entra admin rights creates **one app
+registration** for Carnet, exposes an API scope on it, and sets
+`accessTokenAcceptedVersion: 2`; its application id is `CARNET_APP_ID` above and the
+`--audience` below. This is the one step neither Carnet nor the agent's author can do
+for the company, and it is the one most likely to stall a rollout.
+
+#### The admin's hour, in the container, once
+
+```bash
+# 1. The identity provider, spelled for Entra: the stable id is `oid`, the email is the UPN.
+#    `acme` is your tenant id — the customer the provider signs people into.
+carnet --add-idp acme \
+    --issuer   https://login.microsoftonline.com/<tenant-id>/v2.0 \
+    --jwks-uri https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys \
+    --audience api://<carnet-app-id> \
+    --subject-claim oid \
+    --email-claim preferred_username \
+    --domain acme.com                      # --groups-claim groups lights up directory groups
+
+# 2. The resource, and the connector from the recipe. Your resource, not the recipe's placeholder.
+carnet --allow-host acme-foundry.openai.azure.com
+carnet --add-connector foundry --from-recipe azure-openai \
+    --url https://acme-foundry.openai.azure.com \
+    --credential-env AZURE_OPENAI_KEY      # the one key, in .env, held here and nowhere else
+
+# 3. The three tools, each from the recipe: binding, schema, usage map, redaction, cap, prices.
+carnet --vet foundry --tool chat_completions --from-recipe azure-openai
+carnet --vet foundry --tool embeddings      --from-recipe azure-openai
+carnet --vet foundry --tool list_models     --from-recipe azure-openai
+```
+
+Then one permission list, shared with the group that owns the agent (or linked to a
+directory group, so membership follows Entra):
+
+```json
+{
+  "name": "coding-agent",
+  "permissions": {
+    "tools": ["foundry_chat_completions", "foundry_embeddings"],
+    "scope": {"azure.deployment": {"write": ["*"]}}
+  }
+}
+```
+
+**The first week's scope is `write: ["*"]` with a generous ceiling.** Nothing is
+refused, everything is recorded, and the admin reads a week of the overview before
+deciding what to tighten. A governance product that begins by refusing things on day one
+is one that gets removed on day two; the value on day one is the log, and the log needs
+traffic. After the week: name the deployments (`write: ["gpt-4o-prod", "gpt-4o-mini-prod"]`),
+set `CARNET_MCP_USD_PER_DAY` and `CARNET_MCP_CALLS_PER_DAY` — per engineer, across every
+machine they hold — and read the refusals on the door log.
+
+**Prices.** The recipe carries OpenAI's list prices as of its date, which Azure matches
+for the same models. When yours differ — a reservation, a region, next quarter — set
+`CARNET_MODEL_RATES` or re-vet with `--pricing`; the overview says *estimated, priced at
+read time*, so a corrected table reprices the history.
+
+#### What it looks like from each seat
+
+- **The engineer** sees nothing new. On first run the agent mints a personal token
+  from the `az login` session and caches it; a second machine mints a second token under
+  the same name, and both draw on one daily allowance. Ctrl-C mid-completion closes the
+  upstream request too, so Azure stops generating, and the row says `aborted`.
+- **The admin** reads the door log with the person's email on every row and a filter by
+  it, and an overview where an engineer with two machines is one bar. `--simulate` for a
+  token and a deployment gives the same verdict and the same sentence the route would.
+- **The SDK** raises its own classes with Carnet's sentences inside them: a deployment
+  outside the scope is `PermissionDeniedError` with `insufficient_scope`, a ceiling is
+  `RateLimitError` with `daily_limit_reached`, a prompt over 4 MiB is a 413. Azure's own
+  429 arrives whole, with its `Retry-After`, so the SDK's backoff works as before.
+- **A CI pipeline** that runs the same agent unattended holds a **service** token minted
+  by the admin, with its own grant and its own budget; its rows say *nobody named*.
+
+#### Two network shapes, and the trade
+
+A public Foundry endpoint needs only `--allow-host`. A **private endpoint** resolves to a
+`10.x` address inside the VNet, which egress refuses unless the operator consents:
+`CARNET_EGRESS_INTERNAL_HOSTS=acme-foundry.openai.azure.com`, and Carnet itself deployed
+inside the VNet or peered to it, or the call cannot leave.
+
+**This makes Carnet an inline dependency of every model call the company makes.** Before
+it, a Carnet outage stopped tool calls; after it, it stops the agent. There is
+deliberately no fallback to calling Foundry directly, because that is a path around the
+door with the key on the laptop again — the state this exists to end. Availability is the
+deployment's problem, and `deploy/` is where it is solved. Every open stream holds one
+thread for the life of the completion; `CARNET_THREADS` (default 200) is the ceiling on
+engineers mid-completion per process, and the compose file's comment says when to add
+`--workers`.
+
+The agent's own tool calls — to GitHub, to Jira — go through `/mcp` as they do today.
+That is the moment the two halves meet on one audit trail: the model call and the tool
+call it led to, under the same person, on the same page.
 
 `issue-reporter` reads GitHub through the vetted MCP connector, so it needs Docker
 and a read-only GitHub token:

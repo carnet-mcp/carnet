@@ -924,10 +924,13 @@ def drive():
 
         from carnet import door as _door
 
+        # Under the *owner's* key, not the token's: `priya-cursor` is a personal token,
+        # and since migration 054 its day is hers across every personal token she holds
+        # — the page reads `door.budget_subject`, which is what the door writes under.
         _today = _door.budget_window()
         for _ in range(4):
-            minting.spend_mcp_call(TENANT, cursor["id"], _today, ceiling=1000)
-        minting.spend_mcp_call(TENANT, cursor["id"], _today - timedelta(days=3), ceiling=1000)
+            minting.spend_mcp_call(TENANT, her, _today, ceiling=1000)
+        minting.spend_mcp_call(TENANT, her, _today - timedelta(days=3), ceiling=1000)
         minting.close()
 
         page.goto(f"{APP}/tokens")
@@ -1641,6 +1644,12 @@ def drive():
         content = admin.content()
         says("the tool is on the row", content, "acme_list_issues")
         says("under the agent whose scope decided the call", content, "triage")
+        # Step 108, decision 5: the call was made with `priya-cursor`, a personal token,
+        # and the row names the person — the email — with the machine beneath. The
+        # column is *called by*, not *actor*, because that is the question asked.
+        says("and the person behind the personal token — the email, not just the token id",
+             content, BOOTSTRAP_EMAIL)
+        says("under a column that asks the question a customer asks", content, "Called by")
         # Scoped to a table cell, not the page: a bare `says(content, "allow")` was
         # measured passing against the *empty* state during this scene's development —
         # the 035l class, a pin that "will fail loudly" and never fails.

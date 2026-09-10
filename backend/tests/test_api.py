@@ -6469,12 +6469,21 @@ def test_a_duplicate_live_name_is_refused_and_revocation_frees_it(
     client, auth, machine
 ):
     """The storage constraint's own sentence surfaces, and the name-recycling index's
-    behaviour — revoke frees the name — holds over HTTP as it does at the terminal."""
-    row, _presented, _owner = machine  # 'nightly-ci' is live
+    behaviour — revoke frees the name — holds over HTTP as it does at the terminal.
+
+    Since migration 054 the collision is between one owner's *personal* tokens: this
+    route mints personal tokens by default, so `machine` (a service token, also called
+    `nightly-ci`) is not in the way — that pair may share a name — and the row that is
+    in the way is the first personal one minted here."""
+    service, _presented, _owner = machine  # a service 'nightly-ci', live, not a collision
+
+    first = client.post("/me/tokens", headers=auth, json={"name": "nightly-ci"})
+    assert first.status_code == 201
+    row = first.json()
 
     taken = client.post("/me/tokens", headers=auth, json={"name": "nightly-ci"})
     assert taken.status_code == 400
-    assert "live API token" in taken.json()["detail"]
+    assert "live personal token" in taken.json()["detail"]
 
     assert client.delete(f"/me/tokens/{row['id']}", headers=auth).status_code == 200
 
@@ -6776,6 +6785,32 @@ def test_a_tokens_budget_reports_the_count_and_the_ceiling(
     assert body["calls"] == 3
     assert body["ceiling"] == 1000
     assert body["metered"] is True
+
+
+def test_a_personal_tokens_budget_is_the_owners_and_says_so(
+    client, auth, machine, monkeypatch
+):
+    """Step 108, decision 7. A personal token's page reports the *owner's* day —
+    everything every personal token they hold has spent — under `keyed_by: owner`, and
+    a service token's its own under `keyed_by: token`. The subject is the door's own
+    `budget_subject`, not a second reading of the row here."""
+    from carnet import config
+    from carnet.access import tokens
+
+    monkeypatch.setattr(config, "MCP_CALLS_PER_DAY", 1000)
+    service, _presented, owner = machine
+    laptop, _ = tokens.mint(TEST_TENANT, "laptop", owner, actor="system:cli", acts_as_owner=True)
+    desktop, _ = tokens.mint(TEST_TENANT, "desktop", owner, actor="system:cli", acts_as_owner=True)
+    # Two machines spent the day under the one key the door charges them to.
+    _spend(owner, 3)
+    _spend(service["id"], 5)
+
+    for token_id in (laptop["id"], desktop["id"]):
+        body = client.get(f"/me/tokens/{token_id}/budget", headers=auth).json()
+        assert (body["keyed_by"], body["calls"]) == ("owner", 3)
+
+    body = client.get(f"/me/tokens/{service['id']}/budget", headers=auth).json()
+    assert (body["keyed_by"], body["calls"]) == ("token", 5)
 
 
 def test_the_ceiling_is_read_per_request_and_never_captured(
@@ -7203,6 +7238,10 @@ def test_the_budget_response_declares_every_field_as_required(client, auth, mach
         "calls",
         "ceiling",
         "history",
+        # Step 108: whose figures these are. Required for the same reason — the route
+        # always knows, and a client that could read it as absent would default to
+        # "the token's own", which is the reading 054 exists to correct.
+        "keyed_by",
         "metered",
         "token_id",
         # 045b's money fields, held to the same rule: the route supplies every one
@@ -7769,6 +7808,32 @@ def test_a_variable_and_a_reference_together_are_a_400(client, auth, admin, admi
     assert "not both" in refused.json()["detail"]
 
 
+def test_the_door_log_names_the_person_behind_a_personal_token(client, auth, admin, machine):
+    """Step 108, decision 5. `owner` on every row — the email for a personal token's
+    call, `''` for a service token's — and `?owner=` narrows to the person across every
+    personal token they hold."""
+    from carnet.access import tokens as _tokens
+
+    service, _presented, owner = machine
+    laptop, _ = _tokens.mint(TEST_TENANT, "laptop", owner, actor="system:cli", acts_as_owner=True)
+    desktop, _ = _tokens.mint(TEST_TENANT, "desktop", owner, actor="system:cli", acts_as_owner=True)
+    email = storage.active().get_user(TEST_TENANT, owner)["email"]
+    for token_id, tool in ((laptop["id"], "a"), (desktop["id"], "b"), (service["id"], "c")):
+        storage.active().append_audit(
+            TEST_TENANT,
+            {"v": 5, "ts": "2026-08-02T10:00:00.000+00:00", "run_id": "door-0123456789ab",
+             "principal_kind": "machine", "principal_id": token_id, "agent": "triage",
+             "tool": tool, "effect": "read", "args": {}, "decision": "allow", "outcome": "ok",
+             "identity_source": "none"},
+        )
+
+    rows = client.get("/admin/door-calls", headers=auth).json()
+    assert [(r["tool"], r["owner"]) for r in rows] == [("a", email), ("b", email), ("c", "")]
+
+    theirs = client.get("/admin/door-calls", headers=auth, params={"owner": email}).json()
+    assert [r["tool"] for r in theirs] == ["a", "b"]
+
+
 def test_every_open_route_is_listed_and_argued():
     """Step 083. A route that authenticates nobody is a decision, and the list of them
     is `deps.OPEN_SURFACE` — compared in both directions, `ADMIN_SURFACE`'s device: an
@@ -7785,7 +7850,13 @@ def test_every_open_route_is_listed_and_argued():
             found |= calls(dependency)
         return found
 
-    principals = {deps.principal_from_request, deps.admin_from_request}
+    from carnet.api import routes_openai
+
+    # Step 108: the OpenAI-compatible surface authenticates through its own dependency,
+    # which *calls* `principal_from_request` rather than depending on it — so the three
+    # refusals arrive in that surface's error dialect. A principal-producing dependency
+    # by construction, and listed as one here.
+    principals = {deps.principal_from_request, deps.admin_from_request, routes_openai.model_principal}
     open_routes = set()
     for route in _our_routes():
         if not (calls(route.dependant) & principals):

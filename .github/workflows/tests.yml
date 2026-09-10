@@ -348,7 +348,7 @@ jobs:
         env:
           CARNET_E2E_PG: postgresql://postgres:test@localhost:5432
         run: |
-          for script in e2e_file_workflows e2e_open_admin e2e_team_journey e2e_audit_stream; do
+          for script in e2e_file_workflows e2e_open_admin e2e_team_journey e2e_audit_stream e2e_openai_surface; do
             python "scripts/$script.py" | tee "/tmp/$script.log"
             if grep -q "SKIPPED:" "/tmp/$script.log"; then
               echo "::error::$script skipped — its world is missing from this job."

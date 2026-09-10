@@ -307,6 +307,16 @@ class Tool:
     # re-vetted path/method/schema would keep serving the old request shape until a
     # process restart. The broker never reads it; `tools/rest.bind` closes over it.
     binding: dict | None = None
+    # The streamed entry point, when the tool has one — step 108. Called with the same
+    # arguments and the same keyword-only credential as `impl`, and returns an object
+    # the broker's `stream()` iterates while the answer is still arriving (see
+    # `tools/rest.Upstream`). None for every MCP and hand-written tool: MCP's
+    # `tools/call` is a complete result by protocol, so there is nothing to forward
+    # early. Set by `tools/rest.bind` for every REST tool, because a REST response can
+    # always be read as it arrives — whether the vendor *streams* is the vendor's
+    # business, and the broker forwards bytes either way. Never called by the MCP door,
+    # which is JSON-only by decision (033b); `broker.stream` is its one reader.
+    stream_impl: Callable | None = None
 
     def __post_init__(self):
         # Accept a list at the call site — a trailing comma in a one-element tuple is

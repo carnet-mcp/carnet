@@ -991,6 +991,12 @@ def the_names(store):
 
     client_id = registered()
     priya, sam = bearer(PRIYA, "priya@acme.com"), bearer(SAM, "sam@acme.com")
+
+    def live_claude(owner):
+        return sorted(t["name"] for t in store.list_api_tokens(TENANT_A, owner_id=owner)
+                      if t["name"].startswith("Claude") and t["revoked_at"] is None)
+
+    priya_before, sam_before = live_claude(PRIYA), live_claude(SAM)
     pairs = []
     for who in (priya, sam):
         verifier, challenge = pkce()
@@ -1006,11 +1012,20 @@ def the_names(store):
         outcomes = [f.result() for f in [pool.submit(racer, p) for p in pairs]]
 
     check("both people get a token", [o.status_code for o in outcomes], [200, 200])
-    names = sorted(t["name"] for t in store.list_api_tokens(TENANT_A)
-                   if t["name"].startswith("Claude") and t["revoked_at"] is None)
-    check("and the second is suffixed rather than refused, under a real unique index",
-          ["Claude" in n for n in names[:2]], [True, True])
-    check("...with distinct names", len(set(names)), len(names))
+    # Since migration 054 a personal token's name is unique per *owner*: sam, who has
+    # none, gets plain `Claude` whatever priya holds — the two people are not the
+    # collision the suffix loop exists for. Before 054 the second was `Claude (2)`.
+    check("sam's is plain `Claude` — names are per owner, so two people do not collide",
+          (sam_before, live_claude(SAM)), ([], ["Claude"]))
+    priya_after = live_claude(PRIYA)
+    check("and priya's is one more than she had, suffixed past her own",
+          (len(priya_after) - len(priya_before), priya_after[-1] not in priya_before), (1, True))
+
+    step("the same person connecting the same client again — the collision the loop is for")
+    verifier, challenge = pkce()
+    second = exchange(client_id, code_of(consent(sam, client_id, challenge)), verifier)
+    check("the second machine gets a token", second.status_code, 200)
+    check("...suffixed rather than refused, under the per-owner index", live_claude(SAM), ["Claude", "Claude (2)"])
 
     step("a name the person chose, and the shapes it can take")
     for asked, expected in (("  laptop  ", "laptop"), ("Клод 🤖", "Клод 🤖"), ("n" * 200, "n" * 200)):
@@ -1041,9 +1056,12 @@ def the_names(store):
     from carnet.access import tokens as machine_tokens
     from carnet.access.oauth_server import _NAME_ATTEMPTS
 
+    # Personal tokens, because that is what the exchange mints and the index it
+    # collides on is the per-owner one (054); a hundred *service* tokens of the name
+    # would be a different list and no collision at all.
     for n in range(_NAME_ATTEMPTS):
         machine_tokens.mint(TENANT_A, "Crowded" if n == 0 else f"Crowded ({n + 1})",
-                            PRIYA, actor=ACTOR)
+                            PRIYA, actor=ACTOR, acts_as_owner=True)
     exhausted = connect(bearer(PRIYA, "priya@acme.com"), token_name="Crowded")
     check("the exchange gives up rather than looping", exhausted.status_code, 500)
     check("...as server_error", exhausted.json()["error"], "server_error")

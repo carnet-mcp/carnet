@@ -1031,8 +1031,24 @@ class Storage(Protocol):
         outcome: str | None = None,
         effect: str | None = None,
         identity_source: str | None = None,
+        owner: str | None = None,
     ) -> list[dict]:
         """Audit records for this tenant's **MCP door** calls, **oldest first**.
+
+        ## `owner`, step 108: the person, on the row, at read time
+
+        Every row carries one field the table does not: `owner`, the email of the person
+        whose *personal* token made the call, and `''` for a service token, a person's
+        own session, or the system. Resolved by joining `api_tokens.owner_id` to `users`
+        as the rows are read — **never written onto the audit row**, because an email on
+        an append-only table is the thing 013's redaction argument exists to prevent,
+        and the join costs one index lookup per row at this scale. It is the answer to
+        the one question a customer opens this listing with — *who used it* — which was
+        answerable in the database before and is answerable on the screen now.
+
+        The `owner` filter takes that email and narrows to the person's personal tokens,
+        all of them: an engineer's laptop and desktop are two `principal_id`s and one
+        owner, and a reader chasing a person should not have to know their machines.
 
         ## The filters, step 066, and why they arrive now rather than in 035a
 
@@ -1290,7 +1306,7 @@ class Storage(Protocol):
             identity      [{day, verified, asserted, none}]
             door_latency  [{day, median_ms, p95_ms}]     allowed, non-null durations
             door_bytes    [{day, bytes, p95_bytes}]      allowed, non-null sizes
-            callers       [{principal_kind, principal_id, calls, denied, writes,
+            callers       [{principal_kind, principal_id, owner, calls, denied, writes,
                            tools, last_seen}]            window totals, not a series
             door_tools    [{tool, effect, calls, denied}] window totals
             door_agents   [{agent, calls, denied, tools}] window totals, capped
@@ -1853,13 +1869,22 @@ class Storage(Protocol):
     # reading two clocks.
 
     def spend_mcp_call(
-        self, tenant_id: str, token_id: str, window_start, *, ceiling: int
+        self, tenant_id: str, subject: str, window_start, *, ceiling: int
     ) -> int | None:
-        """Consume one door call against this token's window. **Atomic.**
+        """Consume one door call against this subject's window. **Atomic.**
 
         Returns the new count when the call is admitted, and **None when the ceiling is
         already met** — no row is written in that case, so a refusal costs nothing and
         cannot push a caller further past the line.
+
+        **`subject` is whose allowance this is, and the door decides it** (step 108,
+        migration 054). For a service token it is the token's id, as it was from 040: a
+        CI bot with three tokens for three pipelines was given three allowances on
+        purpose. For a *personal* token it is the **owner's user id**, so an engineer's
+        laptop and desktop draw on one allowance and *a daily ceiling per engineer* means
+        what it says. `door.budget_subject` is the one place that rule is spelled; this
+        layer stores whatever string it is handed and joins it to nothing — migration 054
+        dropped the foreign key to `api_tokens` for exactly that reason.
 
         One statement, never read-then-write: two replicas racing at `ceiling - 1` must
         produce one admission and one refusal, and a check followed by an increment
@@ -1877,8 +1902,8 @@ class Storage(Protocol):
         doing, which is what an offboarding review would want.
         """
 
-    def mcp_calls_spent(self, tenant_id: str, token_id: str, window_start) -> int:
-        """What this token has already spent in this window. 0 when there is no row.
+    def mcp_calls_spent(self, tenant_id: str, subject: str, window_start) -> int:
+        """What this subject has already spent in this window. 0 when there is no row.
 
         **Never on the call path** — `spend_mcp_call` returns the new count, so the door
         needs no second query to know how much is left. What reads this today is the
@@ -1900,12 +1925,16 @@ class Storage(Protocol):
     def mcp_call_windows(
         self,
         tenant_id: str,
-        token_id: str,
+        subject: str,
         *,
         since: date,
         until: date,
     ) -> list[dict]:
-        """This token's windows between two dates, **inclusive**, oldest first.
+        """This subject's windows between two dates, **inclusive**, oldest first.
+
+        `subject` is `spend_mcp_call`'s: a token id, or an owner's user id for a personal
+        token — and a page about a personal token that asked for the token's id would
+        read an empty week, because nothing has been written under that key since 054.
 
         Step 035e, and the first read of this table with a caller outside the suite:
         `GET /me/tokens/{id}/budget` renders *why did this token stop working* on the
@@ -1931,7 +1960,7 @@ class Storage(Protocol):
         and a list for several — and every reader would have to branch on it.
 
         **No index, and it was measured rather than assumed.** Migration 040 says the
-        primary key `(tenant_id, token_id, window_start)` *"is the whole access pattern"*,
+        primary key `(tenant_id, subject, window_start)` *"is the whole access pattern"*,
         and a range on the third column under equalities on the first two is a prefix
         scan it already serves: at 2,000,000 rows all four predicates land in the
         `Index Cond` and a seven-day read touches five buffers in 0.023 ms. What would
@@ -3411,6 +3440,38 @@ class Storage(Protocol):
         on every deployment whose tools report no usage at all.
         """
 
+    def owner_door_spend_since(self, tenant_id: str, since, *, owner_id: str) -> list[dict]:
+        """What this person's **personal tokens** spent through the door, together.
+
+        Step 108, decision 7. `door_spend_since` for a personal token answers for the one
+        token presented, and a person with two machines holds two — so the money and
+        token ceilings were per device, and *a daily ceiling per engineer* was not what
+        the dial did. This is the read that makes it so: every `audit` row whose
+        `principal_id` is a token owned by `owner_id` **with `acts_as_owner`**, summed
+        into `door_spend_since`'s exact shape, so `price_buckets` and the ceiling's
+        arithmetic do not know which read fed them.
+
+        **Only tokens that act as their owner.** A service token this person happens to
+        own is its own subject with its own allowance (a CI bot's three tokens are three
+        allowances on purpose), and pooling it here would charge a person's day for a
+        pipeline's. The bit is `api_tokens.acts_as_owner`, read at query time — the
+        same one `credentials.personal_owner` decides by, so the door and this read
+        cannot disagree about which tokens are somebody's.
+
+        **Revoked tokens count.** A token revoked at noon spent what it spent this
+        morning, and a rule that forgot it would let anyone reset their day by revoking
+        and re-minting — which the silent first-run exchange does for them. Expired
+        tokens count for the same reason.
+
+        A subquery over `api_tokens` rather than a list of ids passed in: the set is
+        small (one row per machine the person has), but resolving it here means one
+        statement under one snapshot, and no window in which a token minted between two
+        queries is charged to nobody.
+
+        Same index as `door_spend_since`; the subquery's ids become an `= ANY` over the
+        index's third column under the same two leading equalities.
+        """
+
     def tokens_spent_since(self, tenant_id: str, since) -> int:
         """Every model token this tenant's finished runs accounted for since `since`.
 
@@ -4556,7 +4617,8 @@ DECISIONS = frozenset({"allow", "deny"})
 # and a refused call has no outcome to report, so the empty string is a real stored value
 # and a filter that could not express it could not ask "the ones nothing was recorded
 # for". `unknown` is likewise a stored value that no screen has ever drawn.
-OUTCOMES = frozenset({"", "ok", "error", "oversize", "unknown"})
+# `aborted` since migration 055: a streamed call the caller walked away from. Step 108.
+OUTCOMES = frozenset({"", "ok", "error", "oversize", "unknown", "aborted"})
 
 # What an acting-for claim was worth. 033c's three, and they are **never collapsed** —
 # a filter that offered "named" as one value would merge `verified` and `asserted`, which
@@ -5144,6 +5206,33 @@ def check_name_is_text(name, *, what: str) -> None:
             "printed in a list; a NUL cannot be stored at all and a line break makes "
             "the list unreadable."
         )
+
+
+def personal_name_taken(name: str) -> str:
+    """The refusal for migration 054's per-owner index, in both stores' words.
+
+    One sentence, defined once, because the two stores raise it from different places —
+    the fake from a loop, Postgres from a constraint name — and the CLI, the tokens page
+    and `e2e_team_journey` all quote it. *This owner*, not *this customer*: the name is
+    unique among the owner's live personal tokens and nobody else's, which is the whole
+    of what 054 changed.
+    """
+    return (
+        f"this owner already has a live personal token called '{name}'. The name is what "
+        "they read on their tokens page when deciding which to revoke, so two live rows "
+        "sharing one makes that decision a guess. Revoking the old one frees the name "
+        "for its replacement."
+    )
+
+
+def service_name_taken(name: str) -> str:
+    """The refusal for the customer-wide index a service token still lives under."""
+    return (
+        f"this customer already has a live API token called '{name}'. The name is what "
+        "somebody reads when deciding which token to revoke, so two live rows sharing "
+        "one makes that decision a guess. Revoking the old one frees the name for its "
+        "replacement."
+    )
 
 
 def normalize_api_token(token: dict) -> dict:

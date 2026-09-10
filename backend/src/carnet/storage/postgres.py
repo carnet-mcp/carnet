@@ -174,6 +174,8 @@ from .base import (
     normalize_scope_notes,
     normalize_scopes,
     normalize_api_token,
+    personal_name_taken,
+    service_name_taken,
     normalize_usage,
     normalize_user,
     normalize_user_external_id,
@@ -2414,16 +2416,39 @@ class PostgresStorage:
     # caller — they cannot be parameters, so the only safe spelling is one where input
     # never reaches the string.
     _DOOR_FILTERS = (
-        ("tool", "tool"),
-        ("agent", "agent"),
-        ("principal_id", "principal_id"),
-        ("principal_kind", "principal_kind"),
-        ("acting_for", "acting_for"),
-        ("decision", "decision"),
-        ("outcome", "outcome"),
-        ("effect", "effect"),
-        ("identity_source", "identity_source"),
+        ("tool", "a.tool"),
+        ("agent", "a.agent"),
+        ("principal_id", "a.principal_id"),
+        ("principal_kind", "a.principal_kind"),
+        ("acting_for", "a.acting_for"),
+        ("decision", "a.decision"),
+        ("outcome", "a.outcome"),
+        ("effect", "a.effect"),
+        ("identity_source", "a.identity_source"),
+        # Step 108: the person behind a personal token, off the read-time join below.
+        # `''` never matches a row, which is right — a filter for nobody narrows to
+        # nothing rather than to the service tokens.
+        ("owner", "NULLIF(u.email, '')"),
     )
+
+    # The read-time join, step 108. A door call's row names `machine:<token id>`; the
+    # person it belongs to is `api_tokens.owner_id` when the token acts as its owner,
+    # and their email is on `users`. Two LEFT JOINs, so every row that is not a personal
+    # token's — a service token, a person's own session, the system — reads `NULL` and
+    # is projected as `''`. Never written back: an email on an append-only table is the
+    # thing 013's redaction argument exists to prevent. `audit` is aliased `a`
+    # wherever this is used, so its columns must be qualified — `api_tokens` and
+    # `users` both carry `tenant_id` and `id`.
+    _JOIN_OWNER = (
+        " LEFT JOIN api_tokens t ON t.tenant_id = a.tenant_id AND t.id = a.principal_id"
+        "                       AND a.principal_kind = 'machine' AND t.acts_as_owner"
+        " LEFT JOIN users u ON u.tenant_id = t.tenant_id AND u.id = t.owner_id"
+    )
+    # Who a call counts as on the overview: the owner for a personal token's call, the
+    # principal for everything else. `door.budget_subject`'s rule, applied to
+    # attribution, so an engineer with two machines is one bar.
+    _SUBJECT_KIND = "CASE WHEN t.owner_id IS NULL THEN a.principal_kind ELSE 'user' END"
+    _SUBJECT_ID = "COALESCE(t.owner_id, a.principal_id)"
 
     def door_call_records(
         self,
@@ -2434,9 +2459,9 @@ class PostgresStorage:
         until: "date | None" = None,
         **filters,
     ) -> list[dict]:
-        columns = ", ".join(self._AUDIT_COLUMNS)
+        columns = ", ".join(f"a.{column}" for column in self._AUDIT_COLUMNS)
         params: list = [tenant_id, self._DOOR_CALL_PATTERN]
-        where = "tenant_id = %s AND run_id LIKE %s"
+        where = "a.tenant_id = %s AND a.run_id LIKE %s"
 
         # The date bounds first, because they are the ones the index is for. Half-open at
         # the top — `< until + 1 day` — which is `_WINDOW`'s decision and its recorded
@@ -2449,10 +2474,10 @@ class PostgresStorage:
         # the **session's** `TimeZone`, and under BYOC that is somebody else's Postgres
         # with somebody else's default. The chart that linked here grouped in UTC.
         if since is not None:
-            where += " AND ts >= (%s::date)::timestamp AT TIME ZONE 'UTC'"
+            where += " AND a.ts >= (%s::date)::timestamp AT TIME ZONE 'UTC'"
             params.append(since)
         if until is not None:
-            where += " AND ts < ((%s::date + 1))::timestamp AT TIME ZONE 'UTC'"
+            where += " AND a.ts < ((%s::date + 1))::timestamp AT TIME ZONE 'UTC'"
             params.append(until)
 
         for keyword, column in self._DOOR_FILTERS:
@@ -2465,23 +2490,29 @@ class PostgresStorage:
                 where += f" AND {column} = %s"
                 params.append(value)
 
+        source = f"audit a{self._JOIN_OWNER}"
         if limit is None:
-            sql = f"SELECT {columns} FROM audit WHERE {where} ORDER BY id"
+            sql = (
+                f"SELECT {columns}, COALESCE(u.email, '') FROM {source}"
+                f" WHERE {where} ORDER BY a.id"
+            )
         else:
             # The most recent N, then re-sorted oldest-first — `audit_records`' shape,
             # and for its two reasons: taking the tail wants `id DESC`, and the caller
-            # still wants the sequence in the order it happened.
+            # still wants the sequence in the order it happened. The owner rides through
+            # the subquery as one more column.
+            plain = ", ".join(self._AUDIT_COLUMNS)
             sql = (
-                f"SELECT {columns} FROM ("
-                f"  SELECT {columns}, id FROM audit WHERE {where} ORDER BY id DESC "
-                f"  LIMIT %s"
+                f"SELECT {plain}, owner FROM ("
+                f"  SELECT {columns}, COALESCE(u.email, '') AS owner, a.id"
+                f"    FROM {source} WHERE {where} ORDER BY a.id DESC LIMIT %s"
                 f") recent ORDER BY id"
             )
             params.append(max(limit, 0))
 
         rows = []
         for row in self._fetchall(sql, tuple(params)):
-            record = dict(zip(self._AUDIT_COLUMNS, row))
+            record = dict(zip((*self._AUDIT_COLUMNS, "owner"), row))
             # An ISO string in both stores, the coercion every log reader here applies.
             record["ts"] = record["ts"].isoformat(timespec="milliseconds")
             record["tenant_id"] = tenant_id
@@ -2671,11 +2702,18 @@ class PostgresStorage:
             "       count(*) FILTER (WHERE decision = 'deny')          AS denied,"
             "       count(*) FILTER (WHERE decision <> 'deny'"
             "                          AND effect = 'write')           AS writes,"
-            "       count(*) FILTER (WHERE identity_source='verified') AS verified,"
-            "       count(DISTINCT (principal_kind, principal_id))     AS callers"
+            "       count(*) FILTER (WHERE identity_source='verified') AS verified"
             f"  FROM audit WHERE {self._TRAFFIC_WHERE}",
             door,
-        ) or (0, 0, 0, 0, 0)
+        ) or (0, 0, 0, 0)
+        # Counted by *subject* — a person's personal tokens are one caller — which is
+        # what the `callers` leaderboard groups by, so the tile and the list agree.
+        # Its own statement because it needs the owner join and the pass above does not.
+        callers = self._fetchone(
+            f"SELECT count(DISTINCT ({self._SUBJECT_KIND}, {self._SUBJECT_ID}))"
+            f"  FROM audit a{self._JOIN_OWNER} WHERE {self._TRAFFIC_WHERE_A}",
+            door,
+        ) or (0,)
 
         # Refusals as one number, not five bands — `base.overview_totals` says why. Both
         # halves of the window's refusals: brokered denials over `audit` (matching what
@@ -2714,7 +2752,7 @@ class PostgresStorage:
             "door_denied": int(row[1]),
             "door_writes": int(row[2]),
             "door_verified": int(row[3]),
-            "callers": int(row[4]),
+            "callers": int(callers[0]),
             "refusals": int(brokered[0]) + int(access[0]),
             "admin_changes": int(changes[0]),
             "door_spend": [
@@ -2809,6 +2847,13 @@ class PostgresStorage:
         " AND ts < ((%s::date + 1))::timestamp AT TIME ZONE 'UTC'"
     )
     _TRAFFIC_WHERE = f"tenant_id = %s AND {_WINDOW} AND run_id LIKE %s"
+    # The same predicate with `audit` aliased `a`, for the two reads that join the owner
+    # (step 108) and would otherwise find `tenant_id` and `ts` ambiguous.
+    _TRAFFIC_WHERE_A = (
+        "a.tenant_id = %s AND a.ts >= (%s::date)::timestamp AT TIME ZONE 'UTC'"
+        " AND a.ts < ((%s::date + 1))::timestamp AT TIME ZONE 'UTC'"
+        " AND a.run_id LIKE %s"
+    )
 
     def _q_calls_by_day(self, params, day) -> list[dict]:
         # `FILTER (WHERE ...)` rather than `SUM(CASE ...)`: one pass, and each band reads
@@ -2989,28 +3034,33 @@ class PostgresStorage:
 
     def _q_callers(self, params) -> tuple[list[dict], int, dict]:
         # Window totals, not a series: the question is *who is using this*, and a caller
-        # who appears on three days is one row. Grouped on the principal rather than on
-        # a token because `audit` has no token id — plan 041 finding 2, and the reason
-        # one person's several personal tokens are one caller here.
+        # who appears on three days is one row. Grouped on the **subject** since step
+        # 108: a personal token's calls under its owner, everything else under its
+        # principal. 041 said *"one person's several personal tokens are one caller
+        # here"* on the strength of `audit` having no token id — but `principal_id` IS
+        # the token id for a machine, so two machines were two rows until the join to
+        # `api_tokens` made the sentence true. `owner` is the email, for the label.
         rows = self._fetchall(
             "WITH ranked AS ("
-            "SELECT principal_kind, principal_id,"
-            "       count(DISTINCT tool)                      AS tools,"
+            f"SELECT {self._SUBJECT_KIND} AS principal_kind,"
+            f"       {self._SUBJECT_ID}   AS principal_id,"
+            "       max(COALESCE(u.email, ''))                AS owner,"
+            "       count(DISTINCT a.tool)                    AS tools,"
             # `AT TIME ZONE 'UTC'` strips to a naive UTC timestamp before psycopg sees
             # it, because a timestamptz comes back in the **session's** timezone and
             # `.isoformat()` faithfully renders that offset — same instant, a string
             # the fake (which renders `+00:00`) never produces. Found by running the
             # suite against a database defaulting to America/New_York.
-            "       max(ts) AT TIME ZONE 'UTC'                AS last_seen,"
-            "       count(*) FILTER (WHERE decision <> 'deny'"
-            "                          AND effect = 'write')  AS writes,"
+            "       max(a.ts) AT TIME ZONE 'UTC'              AS last_seen,"
+            "       count(*) FILTER (WHERE a.decision <> 'deny'"
+            "                          AND a.effect = 'write') AS writes,"
             # The last two ordinary columns are `calls` and `denied` in that order, and
             # `_split_tail` reads them positionally from the right (`row[-4]`, `row[-3]`)
             # so that every leaderboard here can share one splitter. Moving either is a
             # silent change to what the tail reports.
             "       count(*)                                  AS calls,"
-            "       count(*) FILTER (WHERE decision = 'deny')  AS denied"
-            f"  FROM audit WHERE {self._TRAFFIC_WHERE}"
+            "       count(*) FILTER (WHERE a.decision = 'deny') AS denied"
+            f"  FROM audit a{self._JOIN_OWNER} WHERE {self._TRAFFIC_WHERE_A}"
             "  GROUP BY 1, 2"
             ")"
             # **Capped in SQL, not in the browser.** The first build shipped every
@@ -3032,13 +3082,14 @@ class PostgresStorage:
             lambda row: {
                 "principal_kind": row[0],
                 "principal_id": row[1],
-                "tools": row[2],
+                "owner": row[2],
+                "tools": row[3],
                 # Naive UTC from the SELECT above; the suffix restores what the strip
                 # removed, and matches the fake's `+00:00` byte for byte.
-                "last_seen": f"{row[3].isoformat(timespec='milliseconds')}+00:00",
-                "writes": row[4],
-                "calls": row[5],
-                "denied": row[6],
+                "last_seen": f"{row[4].isoformat(timespec='milliseconds')}+00:00",
+                "writes": row[5],
+                "calls": row[6],
+                "denied": row[7],
             },
         )
 
@@ -3166,7 +3217,7 @@ class PostgresStorage:
         033b kept one write path and a budget denial is not a distinct kind of row. This
         is the sentences themselves, ranked.
 
-        `reason` is written by this codebase, never by a caller, and `core/audit._redact`
+        `reason` is written by this codebase, never by a caller, and `core/audit.redact_arguments`
         has already been over the record. That is the condition under which it is safe to
         render on an admin screen, and it is a condition rather than a property — see the
         plan's known limits.
@@ -4027,16 +4078,14 @@ class PostgresStorage:
             cause = exc.__cause__
             if isinstance(cause, psycopg.errors.UniqueViolation):
                 constraint = getattr(getattr(cause, "diag", None), "constraint_name", "")
-                if constraint == "api_tokens_one_live_name":
-                    # The store working perfectly and somebody reusing a name: a 400 over
-                    # HTTP and a `parser.error` on the CLI, not "storage unavailable".
-                    raise ValueRefused(
-                        f"this customer already has a live API token called "
-                        f"'{row['name']}'. The name is what somebody reads when "
-                        "deciding which token to revoke, so two live rows sharing one "
-                        "makes that decision a guess. Revoking the old one frees the "
-                        "name for its replacement."
-                    ) from exc
+                # The store working perfectly and somebody reusing a name: a 400 over
+                # HTTP and a `parser.error` on the CLI, not "storage unavailable".
+                # Migration 054 split the one index into two, and the name says which
+                # list the collision is on — the owner's, or the customer's.
+                if constraint == "api_tokens_one_live_personal_name":
+                    raise ValueRefused(personal_name_taken(row["name"])) from exc
+                if constraint == "api_tokens_one_live_service_name":
+                    raise ValueRefused(service_name_taken(row["name"])) from exc
                 raise StorageError(
                     f"an api token with id '{row['id']}' already exists. The id is "
                     "minted rather than chosen, so this is a collision in whatever "
@@ -4236,7 +4285,7 @@ class PostgresStorage:
     # --- the MCP door's per-token budget ------------------------------------------
 
     def spend_mcp_call(
-        self, tenant_id: str, token_id: str, window_start, *, ceiling: int
+        self, tenant_id: str, subject: str, window_start, *, ceiling: int
     ) -> int | None:
         # **One statement, and that is the whole point of this table.** The ceiling is
         # in the UPDATE's WHERE, so two replicas arriving at `ceiling - 1` in the same
@@ -4251,31 +4300,31 @@ class PostgresStorage:
         # off, so there is no sentinel to interpret here).
         row = self._fetchone(
             """
-            INSERT INTO mcp_budget (tenant_id, token_id, window_start, calls)
+            INSERT INTO mcp_budget (tenant_id, subject, window_start, calls)
                  VALUES (%s, %s, %s, 1)
-            ON CONFLICT (tenant_id, token_id, window_start) DO UPDATE
+            ON CONFLICT (tenant_id, subject, window_start) DO UPDATE
                     SET calls = mcp_budget.calls + 1
                   WHERE mcp_budget.calls < %s
               RETURNING calls
             """,
-            (tenant_id, token_id, window_start, ceiling),
+            (tenant_id, subject, window_start, ceiling),
         )
         # No row means the DO UPDATE's WHERE was false: the ceiling is met, and nothing
         # was written. `ON CONFLICT ... WHERE` that matches nothing is not an error.
         return row[0] if row is not None else None
 
-    def mcp_calls_spent(self, tenant_id: str, token_id: str, window_start) -> int:
+    def mcp_calls_spent(self, tenant_id: str, subject: str, window_start) -> int:
         row = self._fetchone(
             "SELECT calls FROM mcp_budget "
-            " WHERE tenant_id = %s AND token_id = %s AND window_start = %s",
-            (tenant_id, token_id, window_start),
+            " WHERE tenant_id = %s AND subject = %s AND window_start = %s",
+            (tenant_id, subject, window_start),
         )
         return row[0] if row is not None else 0
 
     def mcp_call_windows(
         self,
         tenant_id: str,
-        token_id: str,
+        subject: str,
         *,
         # Quoted, and `date` is imported under `TYPE_CHECKING` above: this file
         # deliberately holds no runtime handle on a clock type.
@@ -4283,15 +4332,15 @@ class PostgresStorage:
         until: "date",
     ) -> list[dict]:
         # Every predicate is a primary-key column, so this is an index range scan and
-        # not a table read: `(tenant_id, token_id)` equal, `window_start` bounded. The
+        # not a table read: `(tenant_id, subject)` equal, `window_start` bounded. The
         # `ORDER BY` is free for the same reason — it is the key's own order. Measured
         # at 2M rows: five buffers, 0.023 ms. See migration 040 and the base docstring.
         rows = self._fetchall(
             "SELECT window_start, calls FROM mcp_budget "
-            " WHERE tenant_id = %s AND token_id = %s "
+            " WHERE tenant_id = %s AND subject = %s "
             "   AND window_start >= %s AND window_start <= %s "
             " ORDER BY window_start",
-            (tenant_id, token_id, since, until),
+            (tenant_id, subject, since, until),
         )
         # An ISO string in both stores, the coercion every reader of a stamped column
         # here applies — psycopg hands back a `date` and the fake holds one as a key.
@@ -7179,11 +7228,44 @@ class PostgresStorage:
         principal_kind: str,
         principal_id: str,
     ) -> list[dict]:
+        return self._door_spend_buckets(
+            tenant_id,
+            since,
+            "(principal_kind, principal_id) = (%s, %s)",
+            (principal_kind, principal_id),
+        )
+
+    def owner_door_spend_since(self, tenant_id: str, since, *, owner_id: str) -> list[dict]:
+        # The set of this person's personal tokens, resolved inside the statement so it
+        # and the scan share one snapshot. `api_tokens` is filtered by the same tenant
+        # the outer query is, which keeps the subquery inside the row-level policy's
+        # own answer as well as inside the index's leading column. No liveness
+        # predicate, on purpose — the base docstring says why a revoked token's morning
+        # still counts.
+        return self._door_spend_buckets(
+            tenant_id,
+            since,
+            "principal_kind = 'machine'"
+            " AND principal_id IN (SELECT id FROM api_tokens"
+            "                       WHERE tenant_id = %s AND owner_id = %s"
+            "                         AND acts_as_owner)",
+            (tenant_id, owner_id),
+        )
+
+    def _door_spend_buckets(
+        self, tenant_id: str, since, whose: str, whose_params
+    ) -> list[dict]:
         # Over `audit_principal_usage` (048). The predicates are in the order the index
         # keys them so the planner can prove it applies; `input_tokens IS NOT NULL` is
         # spelled out for the same reason `spend_since` spells `finished_at IS NOT NULL`
         # — without it Postgres cannot use a partial index and falls back to scanning
         # this tenant's whole audit history, which on an append-only table grows forever.
+        #
+        # `whose` is the principal predicate, and it is the one thing the two callers
+        # differ on: a `(kind, id)` pair for one presented credential, a subquery over
+        # `api_tokens` for everything a person's personal tokens did. It is one of two
+        # string constants written in this file, never anything a caller supplied — the
+        # values travel in `whose_params`.
         #
         # `run_id LIKE %s` with the pattern passed as a parameter, never interpolated:
         # `_DOOR_CALL_PATTERN`'s discipline everywhere else in this file. It selects door
@@ -7197,7 +7279,7 @@ class PostgresStorage:
             "       COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens"
             "  FROM audit"
             " WHERE tenant_id = %s"
-            "   AND (principal_kind, principal_id) = (%s, %s)"
+            f"   AND {whose}"
             "   AND ts >= %s"
             "   AND input_tokens IS NOT NULL"
             "   AND run_id LIKE %s"
@@ -7208,8 +7290,7 @@ class PostgresStorage:
             "        + SUM(cache_read_tokens) + SUM(cache_write_tokens) DESC, model",
             (
                 tenant_id,
-                principal_kind,
-                principal_id,
+                *whose_params,
                 since,
                 self._DOOR_CALL_PATTERN,
             ),

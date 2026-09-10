@@ -314,13 +314,36 @@ administrative routes need the `admin` platform role (or `CARNET_OPEN_ADMIN=on`)
 | `DELETE /me/tokens/{token_id}` | revoke one of yours, idempotently |
 | `GET /me/tokens/{token_id}/reach` | what this token is granted — the door's own answer, without the door |
 | `POST /me/tokens/{token_id}/simulate` | would this call be admitted, and which rule decided. Executes nothing |
-| `GET /me/tokens/{token_id}/budget` | what this token has spent through the door today, against what ceiling |
+| `GET /me/tokens/{token_id}/budget` | what this token has spent through the door today, against what ceiling; `keyed_by` says whether the figures are the owner's (personal token) or the token's own (service token) |
 
 ### The door
 
 | Route | What it answers |
 | --- | --- |
 | `POST /mcp` | one JSON-RPC message in, one answer out: `initialize`, `tools/list`, `tools/call`. Every call is one audit record whose id comes back in `_meta` |
+
+### The OpenAI-compatible surface, for a company's own coding agent
+
+Step 108. The agent's author changes the base URL and the key; every call goes through
+the door as a call on a vetted REST model tool, scoped to the deployment, under the
+connector's credential, metered per person, audited without the prompt.
+
+| Route | What it answers |
+| --- | --- |
+| `POST /v1/chat/completions` | a chat completion, `OpenAI(base_url=…)`'s shape; streamed chunk for chunk when asked, the vendor's body byte for byte when not |
+| `POST /openai/deployments/{deployment}/chat/completions` | the same, `AzureOpenAI(azure_endpoint=…)`'s shape: deployment in the path, `api-key` header, `api-version` forwarded as sent |
+| `POST /v1/embeddings` | an embedding; `input` is never recorded |
+| `POST /openai/deployments/{deployment}/embeddings` | the same, Azure's shape |
+| `GET /v1/models` | the deployments this token's scope admits, in OpenAI's `models` shape — the grant, not Foundry's catalogue |
+| `GET /openai/models` | the same, where the Azure SDK asks |
+| `/v1/{rest:path}` | anything else under the prefix — audio, images, files, fine-tuning, assistants, legacy completions — is refused with a sentence, in the dialect |
+| `/openai/{rest:path}` | the same, under Azure's prefix |
+
+Every refusal is `{"error": {"message", "type", "code"}}` with the status an SDK expects:
+401 `invalid_api_key`, 403 `account_deactivated` / `insufficient_scope`, 429
+`daily_limit_reached`, 413 `request_too_large`, 502 `upstream_credential_refused` /
+`upstream_unavailable`, 504 for a vendor that did not answer. A vendor's own 429 or 400
+is relayed whole, with its `Retry-After`.
 
 ### The door's own OAuth server, for clients that speak it
 
@@ -382,7 +405,7 @@ administrative routes need the `admin` platform role (or `CARNET_OPEN_ADMIN=on`)
 | `GET /admin/overview` | the numbers the Overview page draws: calls per day, latency, refusals by control, who called, what it cost |
 | `GET /admin-audit` | the administrative log: who granted, revoked, vetted or deleted what |
 | `GET /admin/denials` | the access-denial log |
-| `GET /admin/door-calls` | the door log: who called what, as whom, and what was refused |
+| `GET /admin/door-calls` | the door log: who called what, as whom, and what was refused; since step 108 every row carries `owner` (the person behind a personal token, by email) and `?owner=` filters by it |
 | `GET /admin/hosts` | every host this tenant will dial, and who approved each |
 | `POST /admin/hosts` | approve one; a host that can never be dialled is recorded with a warning |
 | `DELETE /admin/hosts/{host}` | withdraw one; connectors are not touched, and the answer names what is stranded |
@@ -451,12 +474,16 @@ otherwise; a misspelt value is refused rather than defaulted.
 | `CARNET_PUBLIC_ORIGIN` | the address this deployment is reached at, which the consent flows and `/me` hand out |
 | `CARNET_OAUTH_TOKEN_DAYS` | how long a token the door's own OAuth server mints lives (default 30) |
 | `CARNET_REQUEST_TIMEOUT` | seconds to wait on a connector's answer (default 15) |
+| `CARNET_MODEL_MAX_REQUEST_BYTES` | the largest request body the OpenAI-compatible surface accepts (default 4 MiB); a coding agent's prompt carries file context |
+| `CARNET_MODEL_CHUNK_TIMEOUT` | seconds a streamed model answer may go without producing a chunk before it is closed (default 60); also the read timeout of a non-streamed model call |
+| `CARNET_MODEL_MAX_SECONDS` | wall-clock ceiling on one model call, streamed or not (default 600) |
+| `CARNET_THREADS` | the API's threadpool; one open stream holds one thread for the life of the completion (default 200) |
 | `CARNET_MCP_SESSION_POOL_MAX` | how many upstream sessions the door keeps open at once |
 | `CARNET_MCP_MAX_CALL_BYTES` | the largest `tools/call` the door accepts (default 64 KiB) |
 | `CARNET_MCP_MAX_ACTING_FOR_BYTES` | the largest acting-for claim a call may carry |
-| `CARNET_MCP_CALLS_PER_DAY` | a per-token daily call ceiling, counted in the database so replicas agree (default 1000) |
-| `CARNET_MCP_TOKENS_PER_DAY` | a per-token daily model-token ceiling; zero disables |
-| `CARNET_MCP_USD_PER_DAY` | a per-token daily spend ceiling in dollars; zero disables. Read fresh per call, so it can be turned mid-incident |
+| `CARNET_MCP_CALLS_PER_DAY` | a daily call ceiling, counted in the database so replicas agree (default 1000). Per **person** for personal tokens — every personal token one owner holds draws on one allowance — and per token for service tokens |
+| `CARNET_MCP_TOKENS_PER_DAY` | a daily model-token ceiling on the same subject; zero disables |
+| `CARNET_MCP_USD_PER_DAY` | a daily spend ceiling in dollars on the same subject; zero disables. Read fresh per call, so it can be turned mid-incident |
 | `CARNET_MODEL_RATES` | a file of what each model costs, so spend is priced in your figures rather than the built-in list |
 | `CARNET_EGRESS_INTERNAL_HOSTS` | hosts on the deployment's own network the door may dial over plain http or at private addresses — the operator's consent |
 

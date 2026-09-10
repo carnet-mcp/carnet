@@ -458,6 +458,7 @@ describe("a workspace that only uses the MCP server", () => {
           {
             principal_kind: "machine",
             principal_id: "tok_alice",
+            owner: "",
             calls: 5,
             denied: 0,
             writes: 1,
@@ -549,6 +550,7 @@ describe("every number points at its calls", () => {
           {
             principal_kind: "machine",
             principal_id: "tok_hot",
+            owner: "",
             calls: 40,
             denied: 2,
             writes: 1,
@@ -572,6 +574,46 @@ describe("every number points at its calls", () => {
       expect(link.getAttribute("href")).toMatch(/^\//);
       expect(link.getAttribute("target")).toBeNull();
     }
+  });
+
+  it("labels a person's pooled personal tokens with their email and links the log by it", async () => {
+    // Step 108. The log's rows still name the machine, so a link filtered by the
+    // owner's id would find nothing; the bar links by the email instead.
+    vi.mocked(api.overview).mockResolvedValue(
+      overview({
+        callers: [
+          {
+            principal_kind: "user",
+            principal_id: "u_priya",
+            owner: "priya@example.com",
+            calls: 12,
+            denied: 1,
+            writes: 0,
+            tools: 2,
+            last_seen: `${DAY}T09:00:00.000+00:00`,
+          },
+          {
+            principal_kind: "machine",
+            principal_id: "tok_nightly",
+            owner: "",
+            calls: 3,
+            denied: 0,
+            writes: 0,
+            tools: 1,
+            last_seen: `${DAY}T09:00:00.000+00:00`,
+          },
+        ],
+      }),
+    );
+
+    draw("/overview?view=callers");
+    await figureTitle("Callers");
+
+    const person = (await screen.findByText("priya@example.com")).closest("a")!;
+    expect(person.getAttribute("href")).toContain("owner=priya%40example.com");
+    expect(person.getAttribute("href")).not.toContain("principal_id");
+    const bot = screen.getByText("tok_nightly").closest("a")!;
+    expect(bot.getAttribute("href")).toContain("principal_id=tok_nightly");
   });
 
   it("sends an access denial to the other log, because it is a different table", async () => {
@@ -609,6 +651,7 @@ describe("every number points at its calls", () => {
           {
             principal_kind: "machine",
             principal_id: "tok_hot",
+            owner: "",
             calls: 40,
             denied: 2,
             writes: 1,
@@ -741,6 +784,7 @@ describe("a truncated leaderboard admits it", () => {
           {
             principal_kind: "machine",
             principal_id: "tok_1",
+            owner: "",
             calls: 40,
             denied: 0,
             writes: 0,

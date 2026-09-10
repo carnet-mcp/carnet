@@ -69,6 +69,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .. import config
+from ..storage.base import ValueRefused, check_name_is_text
 
 log = logging.getLogger(__name__)
 
@@ -586,6 +587,29 @@ def parse_report(report) -> "tuple[str, TokenUsage] | None":
     # it is expressed here: a model name is an identifier, not a payload, and this table
     # is append-only and kept for the retention window.
     model = model[:200]
+
+    # **And it has to be text a column can hold.** `audit.model` is TEXT, and a vendor
+    # that answers with a lone surrogate or a NUL in its model id — an encoding bug at
+    # their end, a proxy mangling a header, a non-model endpoint sharing the binding —
+    # made the *whole row* unwritable: step 108's edge pass watched such a call execute
+    # and its record land in the degraded-mode file. The caller could do nothing about
+    # it, because the caller did not choose the string.
+    #
+    # **The label is dropped and the counters are kept**, which is the opposite of what
+    # a bad counter gets, and the asymmetry is the point: a counter that cannot be
+    # believed is a claim on somebody's allowance, while a name that cannot be written
+    # is a label. Losing the tokens because the label was strange would throw away the
+    # one number this function exists to produce. An empty model is already a legal
+    # report here — it prices as unpriced and the overview says so.
+    try:
+        check_name_is_text(model, what="a reported model name")
+    except ValueRefused:
+        log.warning(
+            "a tool reported a model name that no text column can hold; the counters "
+            "are kept and the name is dropped, so the call is recorded as spending at "
+            "an unnamed model rather than not being recorded at all."
+        )
+        model = ""
 
     return model, TokenUsage(**counters)
 

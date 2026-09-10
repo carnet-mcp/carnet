@@ -2845,23 +2845,95 @@ def test_a_personal_token_lists_its_owners_union(client, personal_auth, vetted, 
     assert names == sorted([READ, WRITE])
 
 
-def test_a_personal_call_is_charged_to_the_token_and_audited_as_the_machine(
+def test_a_personal_call_is_charged_to_the_owner_and_audited_as_the_machine(
     client, personal_auth, vetted, personal
 ):
-    """Still a machine principal, everywhere: the budget is the token's (two of
-    Priya's tokens are two ceilings), and the record names `machine:<id>` — whose
-    token it was is the read-time join's business, never a second principal column."""
+    """Still a machine principal in the record — `machine:<id>`, whose token it was
+    being the read-time join's business — but the **allowance is the owner's** (step
+    108, decision 7). This test used to assert the opposite, *two of Priya's tokens are
+    two ceilings*, and that was the per-device budget plan 108 found."""
     row, _ = personal
     grant_owner(TRIAGE)
 
     response = call(client, personal_auth, READ, {"owner": "acme"})
 
     assert acted_as(response) == SHARED
-    assert storage.active().mcp_calls_spent(TEST_TENANT, row["id"], today()) == 1
+    assert storage.active().mcp_calls_spent(TEST_TENANT, OWNER, today()) == 1
+    assert storage.active().mcp_calls_spent(TEST_TENANT, row["id"], today()) == 0
     record = read_audit()[-1]
     assert (record["principal_kind"], record["principal_id"]) == ("machine", row["id"])
     assert record["agent"] == TRIAGE["name"]
     assert record["identity_source"] == "none"
+
+
+@pytest.fixture
+def second_machine(owner):
+    """Priya's other computer: a second personal token, same owner."""
+    row, presented = tokens.mint(
+        TEST_TENANT, "priya-desktop", owner, actor="system:cli", acts_as_owner=True
+    )
+    return row, {"Authorization": f"Bearer {presented}"}
+
+
+def test_two_personal_tokens_share_one_call_ceiling(
+    client, personal_auth, vetted, personal, second_machine, monkeypatch
+):
+    """*A daily ceiling per engineer* — the laptop and the desktop draw on one day, and
+    the refusal on the third call says so, because a count of two on a machine that
+    made one call reads as a bug unless the sentence names the other machine."""
+    monkeypatch.setattr(config, "MCP_CALLS_PER_DAY", 2)
+    grant_owner(TRIAGE)
+    _, desktop_auth = second_machine
+
+    first = call(client, personal_auth, READ, {"owner": "acme"}).json()["result"]["isError"]
+    second = call(client, desktop_auth, READ, {"owner": "acme"}).json()["result"]["isError"]
+    third = call(client, personal_auth, READ, {"owner": "acme"}).json()
+
+    assert (first, second, third["result"]["isError"]) == (False, False, True)
+    assert "across every personal token they hold" in third["result"]["content"][0]["text"]
+    assert storage.active().mcp_calls_spent(TEST_TENANT, OWNER, today()) == 2
+
+
+def test_a_service_token_keeps_its_own_allowance_beside_its_owners(
+    client, auth, personal_auth, vetted, token, personal, monkeypatch
+):
+    """The rule is exactly the `acts_as_owner` bit. `token` is a service token Priya
+    owns; her personal token spending the day must not touch it, because a CI bot's
+    tokens were given their own allowances on purpose."""
+    monkeypatch.setattr(config, "MCP_CALLS_PER_DAY", 1)
+    row, _ = token
+    grant(row, TRIAGE)
+    grant_owner(TRIAGE)
+
+    assert call(client, personal_auth, READ, {"owner": "acme"}).json()["result"]["isError"] is False
+    assert call(client, personal_auth, READ, {"owner": "acme"}).json()["result"]["isError"] is True
+    # The service token's day is untouched.
+    assert call(client, auth, READ, {"owner": "acme"}).json()["result"]["isError"] is False
+    assert storage.active().mcp_calls_spent(TEST_TENANT, row["id"], today()) == 1
+    assert storage.active().mcp_calls_spent(TEST_TENANT, OWNER, today()) == 1
+
+
+def test_the_money_ceiling_pools_personal_tokens_too(
+    client, personal_auth, vetted, personal, second_machine, monkeypatch
+):
+    """The dollar and token ceilings read `owner_door_spend_since` for a personal token,
+    so the desktop's morning refuses the laptop's afternoon — and the sentence names the
+    person and the pooling, not `machine:<id>`."""
+    monkeypatch.setattr(EchoTransport, "usage", A_MILLION)
+    monkeypatch.setattr(config, "MCP_USD_PER_DAY", 10.0)
+    grant_owner(TRIAGE)
+    _, desktop_auth = second_machine
+
+    crossing = call(client, desktop_auth, READ, {"owner": "acme"}).json()
+    assert crossing["result"]["isError"] is False, "the crossing call must complete"
+
+    refused = call(client, personal_auth, READ, {"owner": "acme"}).json()
+    assert refused["result"]["isError"] is True
+    record = read_audit()[-1]
+    assert record["decision"] == "deny"
+    assert f"user:{OWNER}" in record["reason"]
+    assert "across every personal token they hold" in record["reason"]
+    assert "$15.00" in record["reason"] and "$10.00" in record["reason"]
 
 
 def test_a_user_tool_through_a_personal_token_acts_as_the_owner(
@@ -3148,6 +3220,10 @@ def test_the_response_shape_is_the_record_less_what_it_must_not_carry(
         "v", "ts", "run_id", "principal_kind", "principal_id", "agent", "tool",
         "effect", "decision", "reason", "outcome", "duration_ms", "response_bytes",
         "acting_for", "identity_source",
+        # 108. The person behind a personal token, by email, joined at read time —
+        # `''` for this service token. The one field the listing carries that the
+        # table does not.
+        "owner",
         # 045b. Declared rather than redacted, unlike `args` and `credential`: token
         # counts are the answer to *why is this credential being refused*, which is the
         # question somebody opens this listing with.
@@ -4670,3 +4746,132 @@ def test_call_tool_mints_its_own_id_when_nobody_hands_it_one(vetted, token, prin
     assert read_audit()[-1]["run_id"].startswith(door.CALL_ID_PREFIX)
     door.call_tool(principal, READ, {"owner": "acme"}, call_id="door-handedin0001")
     assert read_audit()[-1]["run_id"] == "door-handedin0001"
+
+
+# --- text no column can hold ------------------------------------------------------------
+#
+# Step 108's edge pass, driven against real Postgres. `\ud800` is legal JSON syntax —
+# `json.loads` produces a lone surrogate from it, and so does any file read with
+# `errors="surrogateescape"`, which is Python's own default for undecodable bytes — and
+# Postgres refuses one in a `jsonb` or `text` column outright.
+#
+# What made it worth a gate rather than a note: the call **executed**. The grant was
+# checked, the vendor was dialled, and the audit insert then failed and was diverted to
+# step 060's degraded-mode file. The log had a gap, and any caller could open one.
+
+
+def test_an_argument_no_column_could_hold_is_refused_before_anything_is_called(
+    client, auth, vetted, token, monkeypatch
+):
+    """Refused at the edge, on `MCP_MAX_CALL_BYTES`' own argument one property over:
+    what an authenticated caller may write into an append-only log is bounded, and
+    *writable* is the first bound. An unwritable call costs a sentence, not a row."""
+    row, _ = token
+    grant(row, TRIAGE)
+    sent = []
+    monkeypatch.setattr(mcp, "_transport_for",
+                        lambda t, c, cred: _recording(sent, cred))
+
+    response = surrogate_call(client, auth, READ, {"owner": "acme\ud800"})
+
+    error = response.json()["error"]
+    assert error["code"] == routes_mcp.INVALID_PARAMS
+    assert "unpaired surrogate" in error["message"]
+    assert "at arguments.owner" in error["message"]
+    assert "Nothing was called" in error["message"]
+    assert sent == [], "the vendor must not have been dialled"
+    assert read_audit() == []
+
+
+def test_a_redacted_argument_may_hold_anything_because_it_is_hashed(
+    client, auth, vetted, token
+):
+    """The other half, and the one that keeps the door usable: an argument the vetting
+    redacts is a digest by the time it reaches a column. A tool vetted to redact its
+    content can be sent a file with undecodable bytes in it, which is exactly what a
+    caller reading one with `errors="surrogateescape"` has."""
+    row, _ = token
+    # `post_message` is the shipped tool that declares its content sensitive, and the
+    # one `test_the_tools_redaction_policy_survives_the_door` uses for the same reason.
+    grant(row, agent("chatter", ["post_message"], {"chat.channel": {"write": ["#eng"]}}))
+
+    response = surrogate_call(client, auth, "post_message",
+                              {"channel": "#eng", "text": "a file\ud800of bytes"})
+
+    assert "error" not in response.json(), response.text
+    assert response.json()["result"]["isError"] is False
+    record = read_audit()[-1]
+    assert str(record["args"]["text"]).startswith("sha256:")
+    assert record["args"]["channel"] == "#eng"
+
+
+def test_a_vendors_own_answer_may_hold_it_too(client, auth, vetted, token, monkeypatch):
+    """**A `tools/call` result is the connector's body, forwarded.** Rendering it with
+    Starlette's default (`ensure_ascii=False`) killed the response of a call that had
+    already executed and been paid for — a 500 for something no caller did. The door
+    escapes non-ASCII on the way out now, which every JSON parser reads."""
+    row, _ = token
+    grant(row, TRIAGE)
+
+    class Surrogate(EchoTransport):
+        def send(self, message):
+            answer = super().send(message)
+            if message.get("method") == "tools/call":
+                answer["result"]["content"][0]["text"] = json.dumps(
+                    {"note": "from the vendor \ud800"})
+            return answer
+
+    monkeypatch.setattr(mcp, "_transport_for", lambda t, c, cred: Surrogate(cred))
+
+    response = call(client, auth, READ, {"owner": "acme"})
+
+    assert response.status_code == 200
+    assert response.json()["result"]["isError"] is False, response.text[:400]
+    # The escape survives as an escape, which is what a JSON body is allowed to carry.
+    assert "\\ud800" in response.text
+    assert read_audit()[-1]["outcome"] == "ok"
+
+
+def test_a_vendors_unwritable_model_name_costs_the_name_and_not_the_money(
+    client, auth, vetted, token, monkeypatch
+):
+    """`parse_report`'s asymmetry, and the reason for it: a counter that cannot be
+    believed is a claim on somebody's allowance and is dropped whole, while a *name*
+    that cannot be written is a label. Losing the tokens because a vendor's model id was
+    strange would throw away the one number the report exists to carry — and the caller
+    chose none of it."""
+    row, _ = token
+    grant(row, TRIAGE)
+    monkeypatch.setattr(EchoTransport, "usage",
+                        {"model": "gpt-4o\ud800", "input_tokens": 11, "output_tokens": 2})
+
+    response = call(client, auth, READ, {"owner": "acme"})
+
+    assert response.json()["result"]["isError"] is False
+    record = read_audit()[-1]
+    assert (record["input_tokens"], record["output_tokens"]) == (11, 2)
+    assert record["model"] == ""
+
+
+def surrogate_call(client, auth, name, arguments):
+    """`call`, with the body encoded by hand. `httpx`'s own `json=` cannot serialise a
+    lone surrogate — which is the point: the escape reaches this door from clients whose
+    encoders emit `\\ud800` rather than the character."""
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}}
+    return client.post("/mcp", headers={**auth, "Content-Type": "application/json"},
+                       content=json.dumps(body).encode("utf-8", "surrogatepass"))
+
+
+def _recording(sent, credential):
+    """An `EchoTransport` that records every `tools/call` it is asked to make."""
+    transport = EchoTransport(credential)
+    original = transport.send
+
+    def send(message):
+        if message.get("method") == "tools/call":
+            sent.append(message["params"])
+        return original(message)
+
+    transport.send = send
+    return transport

@@ -1644,7 +1644,20 @@ def _reach(parser, tenant_id: str, token_id: str) -> None:
     grants — and this prints what that returns. No socket is opened, no credential is
     read and nothing is stamped.
     """
-    answer = door.reach(_token_principal(parser, tenant_id, token_id))
+    principal = _token_principal(parser, tenant_id, token_id)
+    answer = door.reach(principal)
+
+    # Whose day the ceilings count — step 108, decision 7. Said on both branches, because
+    # this is the command an administrator reads before asking why a token was refused,
+    # and for a personal token the answer is often another machine's morning.
+    pooled = door.budget_owner(principal)
+    ceilings = (
+        f"Daily ceilings: shared with every personal token {pooled} holds — one "
+        "allowance per person, not per machine."
+        if pooled is not None
+        else "Daily ceilings: this token's own. A service token's day is its own, "
+        "whoever else the owner's tokens are."
+    )
 
     if not answer["tools"]:
         print(f"API token '{token_id}' is granted nothing. It can authenticate and "
@@ -1652,6 +1665,7 @@ def _reach(parser, tenant_id: str, token_id: str) -> None:
         if answer["invalid_agents"]:
             print(f"\n  {len(answer['invalid_agents'])} granted agent(s) have an invalid "
                   f"config and were skipped: {', '.join(answer['invalid_agents'])}")
+        print(f"\n{ceilings}")
         return
 
     print(f"API token '{token_id}' reaches {len(answer['tools'])} tool(s) "
@@ -1679,6 +1693,8 @@ def _reach(parser, tenant_id: str, token_id: str) -> None:
     if answer["invalid_agents"]:
         print(f"\n{len(answer['invalid_agents'])} granted agent(s) were skipped as "
               f"invalid: {', '.join(answer['invalid_agents'])}")
+
+    print(f"\n{ceilings}")
 
     print("\nThis is the grant. Whether the token still works — revoked, expired, owner "
           "disabled\n— is `--list-tokens`.")
@@ -2894,7 +2910,14 @@ def _vet(parser, tenant_id: str, args) -> None:
             resources=resources,
             note=args.note or proposal.get("note") or "",
             local_name=args.local_name,
-            max_response_bytes=args.max_response_bytes,
+            # The recipe's cap under the flag, like every other proposal field. Step 108
+            # found this one falling through: the Azure recipe proposes 4 MiB for a chat
+            # completion and the default 64 KiB cut every long answer off.
+            max_response_bytes=(
+                args.max_response_bytes
+                if args.max_response_bytes is not None
+                else proposal.get("max_response_bytes")
+            ),
             actor=str(_cli_principal(tenant_id)),
             credential=None
             if is_rest

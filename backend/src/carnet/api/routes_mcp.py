@@ -71,6 +71,7 @@ from .. import __version__, config, door
 from ..access import oauth_server
 from ..core import Principal
 from .deps import principal_from_request
+from .responses import AsciiJSONResponse
 
 log = logging.getLogger(__name__)
 
@@ -151,7 +152,13 @@ def _short(value: str) -> str:
 
 
 def _result(message_id, result: dict) -> JSONResponse:
-    return JSONResponse({"jsonrpc": "2.0", "id": message_id, "result": result})
+    # **`AsciiJSONResponse`, because this body is not ours.** A `tools/call` result is
+    # the connector's own answer, forwarded — so a vendor that puts a lone surrogate
+    # anywhere in it (an echoed filename, a model id, a snippet of somebody's file)
+    # used to kill Starlette's `render` and turn a completed call into a 500. Escaping
+    # non-ASCII costs nothing a JSON parser can see and makes the door's answer
+    # renderable whatever a vendor sends. Found by step 108's edge pass.
+    return AsciiJSONResponse({"jsonrpc": "2.0", "id": message_id, "result": result})
 
 
 def _error(message_id, code: int, message: str) -> JSONResponse:
@@ -159,7 +166,10 @@ def _error(message_id, code: int, message: str) -> JSONResponse:
     # answer to a well-formed question, and clients read the body. Using an HTTP status
     # instead would mean an MCP client reporting "the server is unreachable" about a
     # server that answered precisely.
-    return JSONResponse({"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}})
+    # Ascii-safe for `_result`'s reason: a refusal quotes the caller's own tool name and
+    # arguments back at them, bounded but not re-encodable.
+    return AsciiJSONResponse(
+        {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}})
 
 
 def widen_challenge(exc: HTTPException) -> HTTPException:
@@ -323,6 +333,22 @@ def _call(message_id, principal: Principal, params: dict) -> JSONResponse:
     # `"_meta": {}` on a perfectly plain call.
     meta = params.get("_meta")
     acting_raw = meta.get(ACTING_FOR_META_KEY) if isinstance(meta, dict) else None
+
+    # **The third bound on what a caller may write into the log, beside the two sizes.**
+    # A `\ud800` — legal JSON syntax, and what any file read with
+    # `errors="surrogateescape"` produces — is a value Postgres refuses in the columns
+    # this call is about to land in. Driven against a real database it *executed*: the
+    # vendor was dialled and paid, and the audit insert then failed and was diverted to
+    # the degraded-mode file, leaving a gap a caller could open at will. Refused here,
+    # before anything is dialled, so an unwritable call costs a sentence rather than a
+    # row — `MCP_MAX_CALL_BYTES`' own argument, one property over.
+    #
+    # `door.unstorable_call` checks the **recorded** form, so an argument the vetting
+    # redacts stays free to hold anything: it is a digest by the time it reaches a
+    # column, and a coding agent's prompt legitimately carries undecodable bytes.
+    unstorable = door.unstorable_call(principal, name, arguments, acting_raw)
+    if unstorable is not None:
+        return _error(message_id, INVALID_PARAMS, f"{unstorable} Nothing was called.")
     if acting_raw is not None:
         size = len(json.dumps(acting_raw, default=str).encode("utf-8"))
         if size > config.MCP_MAX_ACTING_FOR_BYTES:

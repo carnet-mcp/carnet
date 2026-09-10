@@ -105,7 +105,6 @@ ungranted one that does, and the leak reopens through a status code nobody thoug
 an authorization decision.
 """
 
-import json
 import logging
 
 from fastapi import HTTPException, Request
@@ -121,6 +120,7 @@ from ..access.oauth import OAuthRefused
 from ..access.recipes import RecipeRefused
 from ..access.roles import RoleRequired
 from ..access.oauth_server import OAuthError
+from .responses import AsciiJSONResponse
 from .routes_mcp import mcp as door_endpoint
 from .routes_mcp import widen_challenge
 from ..access.users import AccessDenied, UserRefused
@@ -152,24 +152,6 @@ def _problem(code: int, detail: str, **extra) -> JSONResponse:
     return JSONResponse(status_code=code, content={"detail": detail, **extra})
 
 
-class _AsciiJSONResponse(JSONResponse):
-    """A `JSONResponse` that escapes non-ASCII on the way out. Step 087.
-
-    Starlette renders with `ensure_ascii=False`, which is right for every body this
-    API builds itself and wrong for exactly one: a 422 echoes the caller's offending
-    `input`, and when that input is a lone surrogate — the `\\ud800` escape any JSON
-    body can carry, which `json.loads` turns into a string UTF-8 cannot encode —
-    Pydantic's correct refusal died in `render` and the caller saw a **500** about a
-    request that was merely wrong. Same status, same shape, same fields; only the
-    escaping differs, and every JSON parser reads both.
-    """
-
-    def render(self, content) -> bytes:
-        return json.dumps(
-            content, ensure_ascii=True, allow_nan=False, indent=None, separators=(",", ":")
-        ).encode("utf-8")
-
-
 def install(app) -> None:
     """Attach the handlers. Called once, from the app factory."""
 
@@ -195,7 +177,7 @@ def install(app) -> None:
         # through `_AsciiJSONResponse` — see its docstring for the one input that made
         # the default a 500. Pydantic had already refused the request correctly as
         # `string_unicode`; what failed was telling the caller so.
-        return _AsciiJSONResponse(
+        return AsciiJSONResponse(
             status_code=422, content={"detail": jsonable_encoder(exc.errors())}
         )
 

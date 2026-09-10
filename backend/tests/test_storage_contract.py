@@ -2340,10 +2340,15 @@ def test_a_record_written_without_the_optional_fields_reads_alike(store, tenant)
     assert row["args"] == {}
     assert row["duration_ms"] is None and row["response_bytes"] is None
 
-    # The shape, whole: every column, from both stores, for a writer that named eight.
+    # And the one field the row carries that the table does not: `owner`, the read-time
+    # join of step 108 — `''` here, because `tok_1` is no `api_tokens` row.
+    assert row["owner"] == ""
+
+    # The shape, whole: every column, from both stores, for a writer that named eight —
+    # plus `owner`, which is the listing's and not the column's.
     from carnet.storage.postgres import PostgresStorage
 
-    assert set(row) == {"tenant_id", *PostgresStorage._AUDIT_COLUMNS}
+    assert set(row) == {"tenant_id", "owner", *PostgresStorage._AUDIT_COLUMNS}
 
 
 def test_a_partial_record_still_builds_the_response_model(store, tenant):
@@ -2787,21 +2792,98 @@ def test_a_day_with_no_timed_call_reports_no_latency_rather_than_zero(store, ten
     assert store.overview(tenant, **_OVERVIEW_WINDOW)["door_latency"] == []
 
 
-def test_the_caller_axis_is_the_principal_not_the_token(store, tenant):
-    """`audit` has no token id — plan 041 finding 2 — so one person's several personal
-    tokens are **one** caller here, and that is stated rather than accidental. *Which
-    credential* is the per-token page's question and needs an index migration 040
-    declined."""
+def test_the_caller_axis_is_the_principal_for_a_service_token(store, tenant):
+    """A service token is its own caller: its calls group under `machine:<token id>`,
+    exactly as 041 built it. (Since step 108 a *personal* token's calls group under
+    its owner — the next test — which is what 041's docstring claimed and this table
+    could not deliver without a join.)"""
     store.append_audit(tenant, _door_on(24, principal_id="tok_1", tool="a"))
     store.append_audit(tenant, _door_on(24, principal_id="tok_1", tool="b"))
     store.append_audit(tenant, _door_on(24, principal_id="tok_2"))
-
     callers = store.overview(tenant, **_OVERVIEW_WINDOW)["callers"]
-
-    assert [(c["principal_id"], c["calls"], c["tools"]) for c in callers] == [
-        ("tok_1", 2, 2),
-        ("tok_2", 1, 1),
+    assert [(c["principal_id"], c["owner"], c["calls"], c["tools"]) for c in callers] == [
+        ("tok_1", "", 2, 2),
+        ("tok_2", "", 1, 1),
     ]
+
+
+def _a_person_with_two_machines(store, tenant):
+    """Priya, her laptop and her desktop (personal tokens), a CI bot she owns (service),
+    and Tom with a personal token — the cast every owner-join test needs. User ids are a
+    **global** key (`users_pkey` is `id` alone) and the Postgres parameter shares one
+    database for the session, so they are derived from the tenant like `_token_id`."""
+    priya, tom = _user_id(tenant, "priya"), _user_id(tenant, "tom")
+    store.create_user(tenant, {"id": priya, "issuer": "https://idp", "subject": f"{priya}-1",
+                               "email": "priya@example.com"})
+    store.create_user(tenant, {"id": tom, "issuer": "https://idp", "subject": f"{tom}-2",
+                               "email": "tom@example.com"})
+    for token_id, owner, personal in (
+        (_token_id(tenant, "lap"), priya, True),
+        (_token_id(tenant, "desk"), priya, True),
+        (_token_id(tenant, "bot"), priya, False),
+        (_token_id(tenant, "tom"), tom, True),
+    ):
+        store.create_api_token(
+            tenant,
+            {"id": token_id, "name": token_id, "owner_id": owner, "acts_as_owner": personal,
+             "secret_hash": "sha256$" + "a" * 64},
+            actor=TEST_ACTOR,
+        )
+    return priya, tom
+
+
+def _user_id(tenant, who):
+    return f"u_{tenant}_{who}".replace("-", "_")[:64]
+
+
+def test_a_persons_personal_tokens_are_one_caller_labelled_with_their_email(store, tenant):
+    """**Step 108, decision 5, and the sentence 041 wrote before it was true.** An
+    engineer with a laptop and a desktop is one bar, under `user:<owner>`, with the
+    email on the row for the label. The CI bot she owns stays its own caller: a service
+    token's calls are the pipeline's, not the person's. Tom is Tom."""
+    priya, tom_id = _a_person_with_two_machines(store, tenant)
+    lap, desk, bot, tom = (_token_id(tenant, s) for s in ("lap", "desk", "bot", "tom"))
+    for token_id, tool in ((lap, "a"), (lap, "b"), (desk, "a"), (bot, "a"), (tom, "a")):
+        store.append_audit(tenant, _door_on(24, principal_id=token_id, tool=tool))
+
+    view = store.overview(tenant, **_OVERVIEW_WINDOW)
+
+    assert [(c["principal_kind"], c["principal_id"], c["owner"], c["calls"], c["tools"])
+            for c in view["callers"]] == [
+        ("user", priya, "priya@example.com", 3, 2),
+        ("machine", bot, "", 1, 1),
+        ("user", tom_id, "tom@example.com", 1, 1),
+    ]
+    # The tile counts what the list groups by, so the two cannot disagree.
+    assert view["caller_count"] == 3
+    assert store.overview_totals(tenant, **_OVERVIEW_WINDOW)["callers"] == 3
+
+
+def test_a_door_call_row_carries_its_owner_and_the_filter_finds_every_machine(store, tenant):
+    """The person, on the row, at read time — never written to `audit`. `owner` is the
+    email for a personal token's call and `''` for a service token's; the filter by
+    email returns both of the person's machines, because a reader chasing a person
+    should not have to know their laptops."""
+    priya, _ = _a_person_with_two_machines(store, tenant)
+    lap, desk, bot = (_token_id(tenant, s) for s in ("lap", "desk", "bot"))
+    store.append_audit(tenant, _door_on(24, principal_id=lap, tool="a"))
+    store.append_audit(tenant, _door_on(24, principal_id=desk, tool="b"))
+    store.append_audit(tenant, _door_on(24, principal_id=bot, tool="c"))
+    store.append_audit(tenant, _door_on(24, principal_kind="user", principal_id=priya, tool="d"))
+
+    rows = store.door_call_records(tenant)
+    assert [(r["tool"], r["owner"]) for r in rows] == [
+        ("a", "priya@example.com"), ("b", "priya@example.com"), ("c", ""), ("d", ""),
+    ]
+    # The audit row itself never learned the email.
+    assert all("owner" not in r for r in store.audit_records(tenant))
+
+    theirs = store.door_call_records(tenant, owner="priya@example.com")
+    assert [r["tool"] for r in theirs] == ["a", "b"]
+    assert [r["tool"] for r in store.door_call_records(tenant, owner="priya@example.com", limit=1)] == ["b"]
+    assert store.door_call_records(tenant, owner="nobody@example.com") == []
+    # `''` narrows to nothing rather than to the service tokens.
+    assert store.door_call_records(tenant, owner="") == []
 
 
 # The window for the one test whose rows are stamped **now** rather than on one of
@@ -3429,6 +3511,9 @@ def test_the_door_reader_offers_no_way_to_write_one(store):
         # Step 076 adds three more readers, all of the same kind: `door_tool_evidence`
         # and `token_door_touch` group rows the broker and the door already wrote,
         # `oldest_door_record_at` is one `min(ts)`. None can produce a row.
+        # Step 108 adds `owner_door_spend_since` — `door_spend_since` over every personal
+        # token one person holds — and `_door_spend_buckets`, the statement the two now
+        # share. Both aggregate rows the broker wrote; neither can produce one.
         and name not in {
             "door_call_records",
             "door_call_summary",
@@ -3437,7 +3522,9 @@ def test_the_door_reader_offers_no_way_to_write_one(store):
             "token_door_touch",
             "oldest_door_record_at",
             "door_spend_since",
+            "owner_door_spend_since",
             "_door_spend",
+            "_door_spend_buckets",
             "_q_door_spend",
             "_door_agents",
             "_DOOR_CALL_PATTERN",
@@ -8335,6 +8422,70 @@ def test_door_spend_scopes_to_one_principal(store, tenant):
     assert sum(row["input_tokens"] for row in theirs) == 999_999
 
 
+def _personal(store, tenant, token_id, owner_id, *, personal=True):
+    store.create_api_token(
+        tenant,
+        {"id": token_id, "name": token_id, "owner_id": owner_id, "acts_as_owner": personal,
+         "secret_hash": "sha256$" + "a" * 64},
+        actor=TEST_ACTOR,
+    )
+
+
+def test_owner_door_spend_pools_a_persons_personal_tokens_and_nothing_else(store, tenant):
+    """**Step 108, decision 7 — the read that makes *a daily ceiling per engineer* true.**
+
+    Two machines are two personal tokens with one owner, and the money ceiling read one
+    of them. This sums every token that acts as the owner: revoked ones too, because a
+    token revoked at noon spent what it spent this morning and a rule that forgot it
+    would let anyone reset their day by revoking and re-minting. A *service* token the
+    same person owns is its own subject with its own allowance and stays out; so does
+    another person's personal token.
+    """
+    laptop, desktop, old = (_token_id(tenant, s) for s in ("lap", "desk", "old"))
+    bot, toms = _token_id(tenant, "bot"), _token_id(tenant, "tom")
+    _personal(store, tenant, laptop, "u-priya")
+    _personal(store, tenant, desktop, "u-priya")
+    _personal(store, tenant, old, "u-priya")
+    _personal(store, tenant, bot, "u-priya", personal=False)
+    _personal(store, tenant, toms, "u-tom")
+    store.revoke_api_token(tenant, old, actor=TEST_ACTOR)
+
+    store.append_audit(tenant, _spent(principal_id=laptop, input_tokens=100))
+    store.append_audit(tenant, _spent(principal_id=desktop, input_tokens=20))
+    store.append_audit(tenant, _spent(principal_id=old, input_tokens=3))
+    store.append_audit(tenant, _spent(principal_id=bot, input_tokens=1_000))
+    store.append_audit(tenant, _spent(principal_id=toms, input_tokens=10_000))
+    # A row that touched no model, and a run's row — both ignored, as for one token.
+    store.append_audit(tenant, _door(principal_kind="machine", principal_id=laptop, tool="x"))
+
+    rows = store.owner_door_spend_since(tenant, _BEFORE_THE_ROWS, owner_id="u-priya")
+
+    assert [row["model"] for row in rows] == ["claude-opus-5"]
+    assert rows[0]["input_tokens"] == 123
+    # The shape is `door_spend_since`'s exactly, so the pricing above does not branch.
+    assert set(rows[0]) == {
+        "model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"
+    }
+    # And a person with no personal tokens has spent nothing, rather than raising.
+    assert store.owner_door_spend_since(tenant, _BEFORE_THE_ROWS, owner_id="u-nobody") == []
+
+
+def test_owner_door_spend_belongs_to_exactly_one_customer(store, tenant, other):
+    """The subquery over `api_tokens` is tenant-filtered as the outer read is: a token id
+    is a global key, and a join that forgot the tenant would let one customer's person
+    be charged for a same-named owner id at another."""
+    mine, theirs = _token_id(tenant, "m"), _token_id(other, "t")
+    _personal(store, tenant, mine, "u-priya")
+    _personal(store, other, theirs, "u-priya")
+    store.append_audit(tenant, _spent(principal_id=mine, input_tokens=100))
+    store.append_audit(other, _spent(principal_id=theirs, input_tokens=5))
+
+    assert sum(r["input_tokens"] for r in
+               store.owner_door_spend_since(tenant, _BEFORE_THE_ROWS, owner_id="u-priya")) == 100
+    assert sum(r["input_tokens"] for r in
+               store.owner_door_spend_since(other, _BEFORE_THE_ROWS, owner_id="u-priya")) == 5
+
+
 def test_door_spend_belongs_to_exactly_one_customer(store, tenant, other):
     store.append_audit(tenant, _spent(input_tokens=100))
     store.append_audit(other, _spent(input_tokens=5))
@@ -11924,6 +12075,67 @@ def test_revoking_a_token_frees_its_name_for_a_replacement(store, tenant):
     with pytest.raises(ValueRefused, match="already has a live API token called"):
         store.create_api_token(
             tenant, _token(tenant, id=_token_id(tenant, "c")), actor=TEST_ACTOR
+        )
+
+
+def test_two_people_may_each_hold_a_personal_token_by_one_name(store, tenant):
+    """**Migration 054, and the journey that found it.** A company's coding agent mints a
+    personal token on every engineer's machine under the obvious name; under 031's
+    customer-wide index the second engineer was refused with a sentence about somebody
+    else's token. A personal token is read on its owner's page beside its owner's other
+    tokens, so the only collision that makes revocation a guess is between one owner's."""
+    from carnet.storage.base import ValueRefused
+
+    store.create_api_token(
+        tenant, _token(tenant, name="coding-agent", owner_id="u-priya", acts_as_owner=True),
+        actor=TEST_ACTOR,
+    )
+    store.create_api_token(
+        tenant,
+        _token(tenant, id=_token_id(tenant, "tom"), name="coding-agent", owner_id="u-tom",
+               acts_as_owner=True),
+        actor=TEST_ACTOR,
+    )
+    assert sorted(row["owner_id"] for row in store.list_api_tokens(tenant)) == ["u-priya", "u-tom"]
+
+    # The same person holding two live personal tokens by one name is still a guess on
+    # their page, and the sentence now names the owner rather than the customer.
+    with pytest.raises(ValueRefused, match="this owner already has a live personal token called"):
+        store.create_api_token(
+            tenant,
+            _token(tenant, id=_token_id(tenant, "b"), name="coding-agent", owner_id="u-priya",
+                   acts_as_owner=True),
+            actor=TEST_ACTOR,
+        )
+
+    # Revocation frees it for that owner too — 031's argument, per owner now.
+    store.revoke_api_token(tenant, _token_id(tenant), actor=TEST_ACTOR)
+    store.create_api_token(
+        tenant,
+        _token(tenant, id=_token_id(tenant, "b"), name="coding-agent", owner_id="u-priya",
+               acts_as_owner=True),
+        actor=TEST_ACTOR,
+    )
+
+
+def test_a_personal_and_a_service_token_may_share_a_name(store, tenant):
+    """The two kinds are never on the same list — a service token on the customer's,
+    a personal one on its owner's — so a shared name confuses no reader, and 054's two
+    partial indexes deliberately do not see each other. Service tokens keep the
+    customer-wide rule, whoever owns them."""
+    from carnet.storage.base import ValueRefused
+
+    store.create_api_token(tenant, _token(tenant, name="agent"), actor=TEST_ACTOR)
+    store.create_api_token(
+        tenant, _token(tenant, id=_token_id(tenant, "p"), name="agent", acts_as_owner=True),
+        actor=TEST_ACTOR,
+    )
+    assert len(store.list_api_tokens(tenant)) == 2
+
+    with pytest.raises(ValueRefused, match="this customer already has a live API token called"):
+        store.create_api_token(
+            tenant, _token(tenant, id=_token_id(tenant, "s2"), name="agent", owner_id="u-tom"),
+            actor=TEST_ACTOR,
         )
 
 

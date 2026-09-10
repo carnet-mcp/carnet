@@ -173,6 +173,8 @@ from .base import (
     normalize_usage,
     describe_cadence,
     normalize_api_token,
+    personal_name_taken,
+    service_name_taken,
     normalize_schedule,
     normalize_trigger,
     normalize_user,
@@ -1878,20 +1880,50 @@ class InMemoryStorage:
             # Postgres' `LIKE 'door-%'`. Reading `self._audit` rather than a list of its
             # own is the point: there is one log, and a door call is a row in it that a
             # run could not have written.
-            rows = [
-                {**copy.deepcopy(record), "tenant_id": tid}
-                for tid, record in self._audit
-                if tid == tenant_id
-                and str(record.get("run_id") or "").startswith(DOOR_CALL_ID_PREFIX)
-                and in_window(record)
-                and matches(record)
-            ]
+            wanted_owner = filters.get("owner")
+            rows = []
+            for tid, record in self._audit:
+                if (
+                    tid != tenant_id
+                    or not str(record.get("run_id") or "").startswith(DOOR_CALL_ID_PREFIX)
+                    or not in_window(record)
+                    or not matches(record)
+                ):
+                    continue
+                # The read-time join, step 108: the person behind a personal token,
+                # never stored on the row. `''` for everything that is not one.
+                owner = self._owner_email(tenant_id, record)
+                # `''` narrows to nothing rather than to the service tokens — the SQL's
+                # `NULLIF(u.email, '') = ''` is never true, and neither is this.
+                if wanted_owner is not None and (not wanted_owner or owner != wanted_owner):
+                    continue
+                rows.append({**copy.deepcopy(record), "tenant_id": tid, "owner": owner})
 
         if limit is not None:
             # The most recent N, still oldest-first — `audit_records`' rule.
             rows = rows[-limit:] if limit > 0 else []
 
         return rows
+
+    def _owner_email(self, tenant_id: str, record: dict) -> str:
+        """`api_tokens.owner_id` → `users.email` for a personal token's call. Called
+        under the lock. The SQL's two LEFT JOINs, as two dict reads."""
+        return self._subject(tenant_id, record)[2]
+
+    def _subject(self, tenant_id: str, record: dict) -> tuple:
+        """Who a door call counts as on the overview, step 108: the owner for a
+        personal token's call, the principal for everything else — `door.budget_subject`'s
+        rule applied to attribution. `(kind, id, owner_email)`; the email is `''` unless
+        the call was a personal token's. Called under the lock."""
+        if record.get("principal_kind") == "machine":
+            token = self._api_tokens.get(record.get("principal_id") or "")
+            if token is not None and token["tenant_id"] == tenant_id and token["acts_as_owner"]:
+                user = self._users.get(token["owner_id"])
+                email = ""
+                if user is not None and user["tenant_id"] == tenant_id:
+                    email = user.get("email") or ""
+                return ("user", token["owner_id"], email)
+        return (record.get("principal_kind"), record.get("principal_id"), "")
 
     def door_call_summary(self, tenant_id: str, agent_name: str) -> dict:
         with self._lock:
@@ -2199,9 +2231,7 @@ class InMemoryStorage:
             "door_verified": sum(
                 1 for r in door if r.get("identity_source") == "verified"
             ),
-            "callers": len(
-                {(r.get("principal_kind"), r.get("principal_id")) for r in door}
-            ),
+            "callers": len({self._subject(tenant_id, r)[:2] for r in door}),
             # Every brokered denial — what `overview`'s five bands
             # sum to — plus the access log, which is the genuinely different table.
             "refusals": sum(1 for r in audit if r.get("decision") == "deny") + access,
@@ -2267,7 +2297,7 @@ class InMemoryStorage:
         in_product = [record for record in audit if not through_the_door(record)]
 
         tools, tool_count, tool_tail = self._tool_totals(door)
-        callers, caller_count, caller_tail = self._callers(door)
+        callers, caller_count, caller_tail = self._callers(tenant_id, door)
         agents, agent_count, agent_tail = self._door_agents(door)
         acting, acting_count, acting_tail = self._acting_for(door)
         reasons, reason_count, reason_tail = self._refusal_reasons(door)
@@ -2459,15 +2489,17 @@ class InMemoryStorage:
             },
         )
 
-    def _callers(self, door: list[dict]) -> tuple[list[dict], int, dict]:
+    def _callers(self, tenant_id: str, door: list[dict]) -> tuple[list[dict], int, dict]:
         callers: dict[tuple, dict] = {}
         for record in door:
-            key = (record.get("principal_kind"), record.get("principal_id"))
+            kind, ident, owner = self._subject(tenant_id, record)
+            key = (kind, ident)
             caller = callers.setdefault(
                 key,
                 {
-                    "principal_kind": key[0],
-                    "principal_id": key[1],
+                    "principal_kind": kind,
+                    "principal_id": ident,
+                    "owner": owner,
                     "calls": 0,
                     "denied": 0,
                     "writes": 0,
@@ -3155,24 +3187,27 @@ class InMemoryStorage:
             if row["id"] in self._api_tokens:
                 raise StorageError(f"api token id '{row['id']}' already exists")
 
-            # `api_tokens_one_live_name`, the table's **partial** unique index. The
-            # `revoked_at is None` half is the load-bearing part: without it here the
-            # fake would burn a name on revocation while Postgres frees it — a fake
+            # Migration 054's two **partial** unique indexes, one per kind of token.
+            # The `revoked_at is None` half is the load-bearing part: without it here
+            # the fake would burn a name on revocation while Postgres frees it — a fake
             # STRICTER than the real store, which is migration 007's direction of drift
-            # and the harder one to notice, because the refusal looks deliberate.
+            # and the harder one to notice, because the refusal looks deliberate. The
+            # `acts_as_owner` half is 054's: a personal token's name is unique among its
+            # owner's live personal tokens, a service token's among the customer's live
+            # service tokens, and the two kinds never collide with each other.
             for existing in self._api_tokens.values():
                 if (
-                    existing["tenant_id"] == tenant_id
-                    and existing["name"] == row["name"]
-                    and existing["revoked_at"] is None
+                    existing["tenant_id"] != tenant_id
+                    or existing["name"] != row["name"]
+                    or existing["revoked_at"] is not None
+                    or existing["acts_as_owner"] != row["acts_as_owner"]
                 ):
-                    raise ValueRefused(
-                        f"this customer already has a live API token called "
-                        f"'{row['name']}'. The name is what somebody reads when "
-                        "deciding which token to revoke, so two live rows sharing one "
-                        "makes that decision a guess. Revoking the old one frees the "
-                        "name for its replacement."
-                    )
+                    continue
+                if row["acts_as_owner"]:
+                    if existing["owner_id"] == row["owner_id"]:
+                        raise ValueRefused(personal_name_taken(row["name"]))
+                    continue
+                raise ValueRefused(service_name_taken(row["name"]))
 
             self._api_tokens[row["id"]] = {
                 "id": row["id"],
@@ -3340,13 +3375,13 @@ class InMemoryStorage:
     # --- the MCP door's per-token budget ------------------------------------------
 
     def spend_mcp_call(
-        self, tenant_id: str, token_id: str, window_start, *, ceiling: int
+        self, tenant_id: str, subject: str, window_start, *, ceiling: int
     ) -> int | None:
         # Under the lock for the whole read-modify-write, which is this store's version
         # of the Postgres statement's atomicity: the API runs endpoints in a threadpool,
         # so two threads reaching `ceiling - 1` together is an ordinary shape here and
         # not a hypothetical.
-        key = (tenant_id, token_id, window_start)
+        key = (tenant_id, subject, window_start)
         with self._lock:
             spent = self._mcp_budget.get(key, 0)
             if spent >= ceiling:
@@ -3354,14 +3389,14 @@ class InMemoryStorage:
             self._mcp_budget[key] = spent + 1
             return spent + 1
 
-    def mcp_calls_spent(self, tenant_id: str, token_id: str, window_start) -> int:
+    def mcp_calls_spent(self, tenant_id: str, subject: str, window_start) -> int:
         with self._lock:
-            return self._mcp_budget.get((tenant_id, token_id, window_start), 0)
+            return self._mcp_budget.get((tenant_id, subject, window_start), 0)
 
     def mcp_call_windows(
         self,
         tenant_id: str,
-        token_id: str,
+        subject: str,
         *,
         since: date,
         until: date,
@@ -3374,7 +3409,7 @@ class InMemoryStorage:
             windows = [
                 (window, calls)
                 for (tid, kid, window), calls in self._mcp_budget.items()
-                if tid == tenant_id and kid == token_id and since <= window <= until
+                if tid == tenant_id and kid == subject and since <= window <= until
             ]
 
         # Sorted here rather than relying on insertion order: the Postgres side gets
@@ -5625,10 +5660,40 @@ class InMemoryStorage:
         principal_kind: str,
         principal_id: str,
     ) -> list[dict]:
+        return self._door_spend_buckets(
+            tenant_id,
+            since,
+            lambda record: (record["principal_kind"], record["principal_id"])
+            == (principal_kind, principal_id),
+        )
+
+    def owner_door_spend_since(self, tenant_id: str, since, *, owner_id: str) -> list[dict]:
+        # The subquery, as a set: every token this person owns that acts as them,
+        # revoked or not — the SQL's `IN (SELECT id ...)` has no liveness predicate
+        # either, and the base docstring says why a revoked token's morning still
+        # counts. Resolved under the lock in the same breath as the scan, which is this
+        # store's version of one statement under one snapshot.
+        with self._lock:
+            theirs = {
+                row["id"]
+                for row in self._api_tokens.values()
+                if row["tenant_id"] == tenant_id
+                and row["owner_id"] == owner_id
+                and row["acts_as_owner"]
+            }
+        return self._door_spend_buckets(
+            tenant_id,
+            since,
+            lambda record: record["principal_kind"] == "machine"
+            and record["principal_id"] in theirs,
+        )
+
+    def _door_spend_buckets(self, tenant_id: str, since, whose) -> list[dict]:
         # `spend_since` below over `audit` instead of `runs`, and the three differences
         # are the three predicates in the SQL: the `door-` prefix, the required principal
-        # scope, and `input_tokens is not None` — a NULL counter is *this call touched no
-        # model*, which is nearly every row in this list.
+        # scope (`whose`, which is the one thing the two callers differ on), and
+        # `input_tokens is not None` — a NULL counter is *this call touched no model*,
+        # which is nearly every row in this list.
         # `since` normalised once rather than per row: it does not change, and `_as_utc`
         # answers `None` only for an absent stamp, which a required parameter is not.
         floor = self._as_utc(since) or since
@@ -5642,10 +5707,7 @@ class InMemoryStorage:
                     continue
                 if record.get("input_tokens") is None:
                     continue
-                if (record["principal_kind"], record["principal_id"]) != (
-                    principal_kind,
-                    principal_id,
-                ):
+                if not whose(record):
                     continue
                 # `>=` and inclusive, matching the SQL. `ts` is an ISO string here and
                 # `since` is an aware datetime, so both go through `_as_utc` — the

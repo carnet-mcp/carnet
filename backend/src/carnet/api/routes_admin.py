@@ -546,10 +546,20 @@ def token_budget(
     window = door.budget_window()
     since = window - timedelta(days=_BUDGET_WINDOWS - 1)
 
+    # Whose allowance this page is about — the door's own rule, not a second reading of
+    # the row (step 108, decision 7). For a personal token the subject is the owner and
+    # every figure below is theirs across every personal token they hold; the page says
+    # so through `keyed_by`, because a count that silently included another machine's
+    # morning would look wrong to the person reading it on this one.
+    machine = Principal.machine(token_id, row["tenant_id"])
+    owner = door.budget_owner(machine)
     spent = {
         entry["window_start"]: entry["calls"]
         for entry in storage.active().mcp_call_windows(
-            row["tenant_id"], token_id, since=since, until=window
+            row["tenant_id"],
+            door.budget_subject(machine, owner),
+            since=since,
+            until=window,
         )
     }
 
@@ -579,9 +589,7 @@ def token_budget(
     # Read for a revoked or expired token too, matching everything above it: revocation
     # closes a door and deletes no evidence, and *what was that credential spending before
     # I killed it* is an offboarding question by construction.
-    spend = door.door_spend_today(
-        Principal.machine(token_id, row["tenant_id"])
-    )
+    spend = door.door_spend_today(machine, owner=owner)
     usd_ceiling = config.MCP_USD_PER_DAY
     tokens_ceiling = config.MCP_TOKENS_PER_DAY
 
@@ -589,6 +597,7 @@ def token_budget(
     # of `history` are the same lookup and cannot disagree about today.
     return TokenSpend(
         token_id=token_id,
+        keyed_by="owner" if owner is not None else "token",
         window=days[-1],
         calls=spent.get(days[-1], 0),
         usd=round(spend["usd"], 6),
@@ -1054,6 +1063,8 @@ def door_calls(
     agent: str | None = Query(default=None),
     principal_id: str | None = Query(default=None),
     acting_for: str | None = Query(default=None),
+    # Step 108: the person, by email, across every personal token they hold.
+    owner: str | None = Query(default=None),
     # The closed ones, and **every Literal below is derived rather than typed out**. The
     # bug that rule exists for is recorded: a hand-written `Literal["user","system",
     # "group"]` went stale against `GRANTEE_KINDS`, and the first share sheet holding a
@@ -1144,6 +1155,7 @@ def door_calls(
             outcome=outcome,
             effect=effect,
             identity_source=identity_source,
+            owner=owner,
         )
     ]
 

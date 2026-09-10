@@ -398,6 +398,22 @@ function Spent({ spend }: { spend: TokenSpend }) {
         counted here. An administrator can see denied requests on the access denied log.
       </p>
 
+      {/* Whose day this is. Said once for the whole card, because the calls above and
+          the cost below share the subject — and for a personal token the honest reading
+          of "3 of 1000" on this laptop includes the desktop's morning. */}
+      {spend.keyed_by === "owner" ? (
+        <p className="muted sentence">
+          <strong>Shared with your other personal tokens.</strong> Every figure on this
+          card is yours for the day, across every personal token you hold. A second
+          machine draws on the same allowance, and a limit reached there is reached here.
+        </p>
+      ) : (
+        <p className="muted sentence">
+          <strong>This token&apos;s own allowance.</strong> A service token&apos;s day is
+          its own; another token, even one with the same owner, has a separate one.
+        </p>
+      )}
+
       <Cost spend={spend} />
     </Card>
   );
@@ -407,11 +423,10 @@ function Spent({ spend }: { spend: TokenSpend }) {
  *
  *  ## A second section under the same card, and a second subject worth naming
  *
- *  Everything above counts *calls*, keyed on this credential's row in `mcp_budget`. This
- *  counts *money*, and the ceiling behind it is written against a principal — which at
- *  the MCP door is this same token, because a machine credential resolves to
- *  `machine:<id>` and no other kind may reach the door at all. So the two are about one
- *  thing, and the sentence below says so rather than leaving a reader to assume it.
+ *  Everything above counts *calls* and this counts *money*, and since step 108 both are
+ *  keyed on the same subject — `keyed_by`: the owner for a personal token, the token for
+ *  a service one. The card says which once, above this section, so the two halves are
+ *  read as one thing without either repeating the sentence.
  *
  *  ## Three renderings again, and for `Spent`'s reasons
  *

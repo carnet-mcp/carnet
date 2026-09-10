@@ -629,9 +629,10 @@ def test_the_token_request_is_a_form_and_json_is_tolerated(client, auth):
     assert as_json.json()["access_token"].startswith("art_")
 
 
-def test_a_second_person_connecting_the_same_client_gets_a_suffixed_name(client, auth, sam):
-    """Two colleagues connecting Claude Desktop must not have the second refused: a
-    token's name is unique among a tenant's live tokens, so the second is `Claude (2)`."""
+def test_a_second_person_connecting_the_same_client_gets_the_same_name(client, auth, sam):
+    """Two colleagues connecting Claude Desktop each get `Claude`: since migration 054 a
+    personal token's name is unique per owner, so the second person is not the
+    collision the suffix loop exists for. Before 054 this test expected `Claude (2)`."""
     client_id, first = dance(client, auth)
     assert first.status_code == 200
     reg_again = storage.active().find_oauth_client(client_id)
@@ -640,8 +641,23 @@ def test_a_second_person_connecting_the_same_client_gets_a_suffixed_name(client,
     second = exchange(client, client_id, code, verifier)
     assert second.status_code == 200, second.text
     assert reg_again["client_name"] == "Claude"
-    assert [t["name"] for t in client.get("/me/tokens", headers=sam).json()] == ["Claude (2)"]
+    assert [t["name"] for t in client.get("/me/tokens", headers=sam).json()] == ["Claude"]
     assert [t["name"] for t in client.get("/me/tokens", headers=auth).json()] == ["Claude"]
+
+
+def test_the_same_person_connecting_the_same_client_twice_gets_a_suffixed_name(client, auth):
+    """The collision the loop is for: one person, a second machine, the same client.
+    Their own page would show two live `Claude` rows and revocation would be a guess,
+    so the second is `Claude (2)`."""
+    client_id, first = dance(client, auth)
+    assert first.status_code == 200
+    verifier, challenge = pkce()
+    code, _ = code_from(consent(client, auth, client_id, challenge).json()["redirect_to"])
+    second = exchange(client, client_id, code, verifier)
+    assert second.status_code == 200, second.text
+    assert sorted(t["name"] for t in client.get("/me/tokens", headers=auth).json()) == [
+        "Claude", "Claude (2)"
+    ]
 
 
 def test_the_person_may_name_the_token_on_the_page(client, auth):

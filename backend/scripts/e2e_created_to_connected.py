@@ -423,8 +423,10 @@ def main():
 
         status, refused = http("POST", "/me/tokens", priya, {"name": "my-assistant"})
         check("a duplicate live name is refused", status, 400)
+        # Since migration 054 a personal token's name is unique per *owner*, and the
+        # sentence says so — *this owner*, not *this customer*.
         says("with the storage constraint's own words", refused["detail"],
-             "live API token")
+             "live personal token")
 
         # **This asserted a 403 until step 069 collapsed it, and the collapse is the
         # point.** Within a tenant, a 403 that says *only its owner may* alongside a 400

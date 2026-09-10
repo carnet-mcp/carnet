@@ -269,6 +269,11 @@ export interface DoorCallRecord {
   /** Whom the call was made for, or `null` when nobody was named. */
   acting_for: string | null;
   identity_source: IdentitySource;
+  /** The person behind a personal token, by email — resolved by the server at read
+   *  time from the token's owner, never stored on the row. `""` for a service token, a
+   *  person's own session and the system. What the *called by* column shows where
+   *  there is one, with the token id beneath it. Step 108. */
+  owner: string;
 }
 
 /** Which of the three-and-a-half states a connector is in **for the signed-in person**.
@@ -1071,6 +1076,13 @@ export interface SpentWindow {
  *  non-empty while `metered` is false: what is in it was counted while the meter ran. */
 export interface TokenSpend {
   token_id: string;
+  /** Whose figures these are — every number on this page, calls and money alike.
+   *  `owner` for a personal token: the person's, across every personal token they hold,
+   *  so a second machine draws on the same day and a refusal on this one may be the
+   *  other one's morning. `token` for a service token, whose allowance is its own.
+   *  Step 108, decision 7 — the page renders a sentence from it rather than leaving the
+   *  reader to assume the count is this credential's alone. */
+  keyed_by: "owner" | "token";
   /** The UTC day the deployment answering considers today, ISO. The same definition the
    *  door charges against — deliberately not the browser's own idea of the date, which
    *  is the reader's local day and a different one for most of the world. */
@@ -1092,11 +1104,10 @@ export interface TokenSpend {
 
   // --- what it cost, step 045b -----------------------------------------------------
   //
-  // **The subject is the same credential the fields above describe, and that is worth
-  // knowing rather than assuming.** The money ceiling is written against a *principal*,
-  // and at the MCP door the principal is the token: a machine credential resolves to
-  // `machine:<token id>` and no other kind reaches the door at all. So these numbers and
-  // `calls` are about one thing.
+  // **The subject is `keyed_by`'s, the same one `calls` above has.** Until step 108 the
+  // two halves of this page had different subjects in their comments and the same one in
+  // the code; now both are keyed on the owner for a personal token and on the token for
+  // a service one, and there is one sentence on the page saying which.
   //
   // Two flags rather than one, because the two dials are independent: a deployment that
   // bounds tokens without pricing anything — every deployment brokering a provider the
@@ -1314,6 +1325,11 @@ export interface HourCell {
 export interface CallerTotals {
   principal_kind: string;
   principal_id: string;
+  /** The person's email when this bar is a person's personal tokens pooled together
+   *  (`principal_kind` is then `user` and `principal_id` their id); `""` for a service
+   *  token, which stays its own bar. Step 108 — the label, and the key the bar's link
+   *  to the door log filters by. */
+  owner: string;
   calls: number;
   denied: number;
   writes: number;
