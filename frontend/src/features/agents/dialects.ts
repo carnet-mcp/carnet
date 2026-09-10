@@ -157,9 +157,9 @@ export function dialect(id: string): Dialect {
 export function unreachable(entry: Dialect, url: string): string | null {
   if (entry.needsHttps && url.startsWith("http://")) {
     return (
-      `${entry.label} refuses a plain http:// address for a remote server, and this ` +
-      `deployment's door is ${url}. Put the door behind TLS — the shipped deployment ` +
-      `does — and the snippet will work.`
+      `${entry.label} requires an https:// address for a remote server. This ` +
+      `deployment's MCP server URL is ${url}. Put it behind TLS to connect from ` +
+      `${entry.label}.`
     );
   }
   return null;

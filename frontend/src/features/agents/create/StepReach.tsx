@@ -37,7 +37,7 @@ import type { StepProps } from "./CreateAgentPage";
 export function reachBlocker(draft: Draft, catalogue: ToolGroup[] | null): string {
   for (const row of requiredRows(draft.tools, catalogue)) {
     const answer = draft.reach[rowKey(row.resource, row.effect)];
-    if (!answer) return `Say which ${row.resource} it may ${row.effect}.`;
+    if (!answer) return `Choose which ${row.resource} items it may ${row.effect}.`;
     // **The trap this catches is real and would otherwise ship.** "Only these" with an
     // empty list is a perfectly valid config — the scope entry exists, so
     // `_validate_scope_matches_tools` is satisfied — and it denies every call the tool
@@ -45,7 +45,7 @@ export function reachBlocker(draft: Draft, catalogue: ToolGroup[] | null): strin
     // validator's *other* direction exists to prevent, arriving through the one door it
     // does not cover.
     if (!answer.any && answer.ids.every((id) => !id.trim())) {
-      return `Add at least one ${row.resource}, or choose "anything".`;
+      return `Add at least one ${row.resource}, or choose "All".`;
     }
   }
   return "";
@@ -60,16 +60,13 @@ export default function StepReach({ draft, set, catalogue }: StepProps) {
 
   if (rows.length === 0) {
     return (
-      <Empty title="Nothing to narrow">
+      <Empty title="No resources to choose">
         {draft.tools.length === 0 ? (
-          <p>
-            This agent is granted no tools, so there is nothing for it to reach. It will
-            be able to answer a question and touch nothing.
-          </p>
+          <p>This agent has no tools, so there are no resources to choose.</p>
         ) : (
           <p>
-            None of the tools you ticked act on a particular thing — they take no
-            resource, so there is nothing to point them at.
+            The selected tools do not take a resource, so they are not restricted to
+            particular items.
           </p>
         )}
       </Empty>
@@ -78,13 +75,10 @@ export default function StepReach({ draft, set, catalogue }: StepProps) {
 
   return (
     <>
-      <Card
-        title="What may it reach?"
-        hint={rows.length === 1 ? "one question" : `${rows.length} questions`}
-      >
+      <Card title="Resources">
         <p className="sentence">
-          These are not extra options. Each one is here because you ticked a tool that
-          acts on it, and the agent cannot make a single call until you answer it.
+          For each resource type below, choose which items the agent may use. Tools that
+          use a resource are denied until this is set.
         </p>
       </Card>
 
@@ -124,7 +118,7 @@ function ReachCard({
               Through column renders. It turns "fill in github.repo" into "fill this in
               because you ticked that", which is the difference between a form field and
               a question somebody can answer. */}
-          because you ticked {row.through.join(", ")}
+          used by {row.through.join(", ")}
         </span>
       </div>
 
@@ -136,7 +130,7 @@ function ReachCard({
             checked={!any && answer !== undefined}
             onChange={() => onChange({ any: false, ids })}
           />
-          <span>Only the ones I list</span>
+          <span>Only selected {plural(row.resource)}</span>
         </label>
         <label className="choice">
           <input
@@ -145,7 +139,7 @@ function ReachCard({
             checked={any}
             onChange={() => onChange({ any: true, ids })}
           />
-          <span>Anything of this type</span>
+          <span>All {plural(row.resource)}</span>
         </label>
       </div>
 
@@ -153,11 +147,10 @@ function ReachCard({
         // **The one place this form speaks in its own voice**, because this is the one
         // choice that cannot be narrowed later without somebody noticing. It is also the
         // only choice here that produces a pattern nobody typed.
-        <Notice tone="warn" title="This is the widest thing you can grant">
+        <Notice tone="warn" title={`All ${plural(row.resource)}`}>
           <p className="sentence">
-            Whoever calls through this agent will be able to reach{" "}
-            <strong>every {row.resource} their own account can</strong>
-            {write ? ", and change it" : ""}. Every call is recorded against their name.
+            The agent can {write ? "change" : "use"} every {singular(row.resource)} the
+            caller's account can access.
           </p>
         </Notice>
       ) : (
@@ -208,10 +201,10 @@ function Identifiers({
         </div>
       ))}
       <Button onClick={() => onChange([...ids, ""])}>
-        {ids.length === 0 ? `Add a ${resource}` : "Add another"}
+        {ids.length === 0 ? `Add a ${singular(resource)}` : "Add another"}
       </Button>
       {ids.some((id) => !id.trim()) && (
-        <p className="muted">An empty line grants nothing — fill it in or remove it.</p>
+        <p className="muted">Fill in or remove the empty line.</p>
       )}
     </div>
   );
@@ -227,3 +220,18 @@ const PLACEHOLDER: Record<string, string> = {
   "github.repo": "anthropics/anthropic-sdk-python",
   "chat.channel": "#eng",
 };
+
+/** A plain-English label for a resource type, singular and plural, for the two types
+ *  that ship. An unknown type falls back to the type itself. */
+const LABEL: Record<string, [string, string]> = {
+  "github.repo": ["repository", "repositories"],
+  "chat.channel": ["channel", "channels"],
+};
+
+function singular(resource: string): string {
+  return LABEL[resource]?.[0] ?? resource;
+}
+
+function plural(resource: string): string {
+  return LABEL[resource]?.[1] ?? `${resource} items`;
+}

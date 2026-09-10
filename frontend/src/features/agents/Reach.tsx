@@ -89,8 +89,8 @@ export default function Reach({
   agent,
   catalogue,
   failed,
-  title = "What it may reach",
-  hint = "the permission model, as stored",
+  title = "Resource access",
+  hint = "as stored",
 }: {
   agent: Reachable;
   catalogue: ToolGroup[] | null;
@@ -109,10 +109,7 @@ export default function Reach({
   return (
     <Card title={title} hint={hint}>
       {agent.tools.length === 0 ? (
-        <p className="muted">
-          It is granted no tools at all. It can answer a question, and it cannot touch
-          anything.
-        </p>
+        <p className="muted">This agent has no tools.</p>
       ) : !catalogue ? (
         // Degraded, and it says which half is missing. The names are the agent's own
         // config and are still true; what is absent is the annotation that says which
@@ -126,8 +123,8 @@ export default function Reach({
           </div>
           <p className="muted stack-sm">
             {failed
-              ? "The tool catalogue could not be loaded, so this cannot say which of these change anything."
-              : "Loading what each of these does…"}
+              ? "The tool list could not be loaded. Tool effects are not shown."
+              : "Loading tool details…"}
           </p>
           {failed ? <Failure error={failed} /> : null}
         </>
@@ -138,11 +135,11 @@ export default function Reach({
               whether to run an agent — and only one of the two is reversible. */}
           {writes.length > 0 && (
             <>
-              <h3>It can change things</h3>
+              <h3>Write tools</h3>
               <p className="sentence">
                 {writes.length === 1
-                  ? "One tool that alters a system outside this one. Nothing here undoes what it does."
-                  : `${writes.length} tools that alter systems outside this one. Nothing here undoes what they do.`}
+                  ? "One tool that can change data in the connected system."
+                  : `${writes.length} tools that can change data in connected systems.`}
               </p>
               <div className="tool-list">
                 {writes.map((entry) => (
@@ -154,11 +151,11 @@ export default function Reach({
 
           {reads.length > 0 && (
             <>
-              <h3>It can read</h3>
+              <h3>Read tools</h3>
               <p className="sentence">
                 {reads.length === 1
-                  ? "One tool that looks and changes nothing. What it returns goes to the model."
-                  : `${reads.length} tools that look and change nothing. What they return goes to the model.`}
+                  ? "One tool that reads data and changes nothing."
+                  : `${reads.length} tools that read data and change nothing.`}
               </p>
               <div className="tool-list">
                 {reads.map((entry) => (
@@ -172,9 +169,9 @@ export default function Reach({
             <Notice tone="warn" title="Granted, and no longer available">
               <p className="sentence">
                 {unknown.map((entry) => entry.name).join(", ")}
-                {unknown.length === 1 ? " is" : " are"} in this agent's grant and not in
-                the catalogue, which means a connector was withdrawn underneath it. The
-                agent cannot run until that is fixed.
+                {unknown.length === 1 ? " is" : " are"} granted to this agent and no
+                longer available. Calls to this agent are denied until{" "}
+                {unknown.length === 1 ? "it is" : "they are"} removed.
               </p>
             </Notice>
           )}
@@ -213,7 +210,7 @@ function ToolRow({ entry }: { entry: Granted }) {
       ) : (
         // Said rather than left blank. Every row vetted before migration 018 has no
         // description, and a gap where a sentence should be reads as a rendering bug.
-        <p className="muted">No description was recorded when this tool was vetted.</p>
+        <p className="muted">No description.</p>
       )}
 
       {tool.note ? <p className="muted note">{tool.note}</p> : null}
@@ -238,9 +235,20 @@ function Resources({
   const scopes = Object.entries(agent.scope ?? {});
 
   if (scopes.length === 0) {
+    // With no tools at all there is nothing to say about resources; the caller has
+    // already said "This agent has no tools", and a sentence about what *these tools*
+    // take would be about nothing.
+    if (granted.length === 0) return null;
+    // Two true sentences (plan 107, D8). Whether any granted tool declares a resource
+    // decides which one; when the catalogue is unknown the tools' resources cannot be
+    // read, so the first sentence — the one that says access is open — is the safe one.
+    const takesResource =
+      !known || granted.some((entry) => (entry.tool?.resources.length ?? 0) > 0);
     return (
       <p className="muted">
-        No scope is set, so every resource these tools accept is in reach.
+        {takesResource
+          ? "No resources are selected. These tools can act on any resource the caller's account can reach."
+          : "These tools do not take a resource, so they are not restricted to particular items."}
       </p>
     );
   }
@@ -261,9 +269,9 @@ function Resources({
       <thead>
         <tr>
           <th>Resource</th>
-          <th>May</th>
-          <th>What exactly</th>
-          <th>Through</th>
+          <th>Access</th>
+          <th>Items</th>
+          <th>Tools</th>
         </tr>
       </thead>
       <tbody>
@@ -294,7 +302,7 @@ function Resources({
                     // this in both directions, so a *valid* agent cannot show it — and
                     // a broken one is rendered here rather than hidden, which is the
                     // same call `GET /agents` makes about listing an invalid row.
-                    <span className="muted">nothing granted uses this</span>
+                    <span className="muted">no granted tool uses this</span>
                   )}
                 </td>
               </tr>

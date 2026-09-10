@@ -105,8 +105,8 @@ describe("restoring", () => {
 
     // The new version's number, the two that survive, and the reversibility — all three
     // said before the click rather than discovered from the history afterwards.
-    expect(await screen.findByText(/This becomes v4/)).toBeInTheDocument();
-    expect(screen.getByText(/stays where it is/)).toBeInTheDocument();
+    expect(await screen.findByText(/Restoring creates v4/)).toBeInTheDocument();
+    expect(screen.getByText(/Versions 1 and 3 are kept/)).toBeInTheDocument();
   });
 
   it("sends the agent's ETag, so a save underneath it is refused rather than lost", async () => {
@@ -145,7 +145,7 @@ describe("restoring", () => {
 
     await screen.findByText("What it said before.");
     expect(screen.queryByRole("button", { name: /Restore/ })).not.toBeInTheDocument();
-    expect(screen.getByText(/this is the version running now/)).toBeInTheDocument();
+    expect(screen.getByText(/this is the live version/)).toBeInTheDocument();
   });
 
   it("renders a 409 as what happened rather than as a failure", async () => {
@@ -162,7 +162,7 @@ describe("restoring", () => {
     // There is no in-progress edit to lose here, so the answer is to look again — and
     // deliberately not a "restore anyway", which is the whole thing the refusal is for.
     expect(
-      await screen.findByText(/Somebody else saved while this was open/),
+      await screen.findByText(/The agent changed since you opened this page/),
     ).toBeInTheDocument();
     expect(screen.getByText(/Nothing was written/)).toBeInTheDocument();
   });

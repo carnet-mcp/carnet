@@ -125,7 +125,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
 
         <nav className="sidebar-nav" aria-label="Main">
-          <SideLink to="/agents" icon="agents" label="Create MCP" />
+          <SideLink to="/agents" icon="agents" label="Agents" />
           {/* Last of the four, and it belongs in the navigation rather than under an
               account menu: **it is the only screen here about the person rather than
               about their agents**, and the thing it fixes — an agent that cannot reach
@@ -137,14 +137,14 @@ export default function AppShell({ children }: { children: ReactNode }) {
               tokens, or ought to be able to find out that they do not. `GET /me/tokens`
               is deliberately roleless — see `routes_admin.my_tokens` — so unlike the five
               links below, this one is not a courtesy that hides a 403. */}
-          <SideLink to="/tokens" icon="tokens" label="Tokens" />
+          <SideLink to="/tokens" icon="tokens" label="Access tokens" />
           {/* **Moved out of the administrative group in 013c**, and the move is the
               feature rather than a tidy-up. The page answers two questions at two
               scopes: *what did my work cost*, which is roleless and everybody's, and
               *what came through the door*, which is the tenant's and stays admin-gated
               on the server. Offering it to everyone is therefore not a courtesy that
               hides a 403 — a non-administrator gets a real page, one section shorter. */}
-          <SideLink to="/overview" icon="overview" label="Overview" />
+          <SideLink to="/overview" icon="overview" label="Usage" />
 
           {/* Offered only to an administrator, and that is `your_role`'s lesson one level
               up: **a control that refuses the person who pressed it reads as a bug**, so a
@@ -165,9 +165,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   glyph is what a person aims at once they have learned the app — it is
                   the only part of the row that survives a collapsed rail at all. So each
                   is drawn as the thing it is: authorization, traffic, refusal. */}
-              <SideLink to="/admin" icon="admin" label="Administration" end />
-              <SideLink to="/admin/door-calls" icon="door" label="Door traffic" />
-              <SideLink to="/admin/denials" icon="denied" label="Access denials" />
+              <SideLink to="/admin" icon="admin" label="Audit log" end />
+              <SideLink to="/admin/door-calls" icon="door" label="Request log" />
+              <SideLink to="/admin/denials" icon="denied" label="Access denied" />
               <SideLink to="/admin/groups" icon="groups" label="Groups" />
               <SideLink to="/admin/connectors" icon="connectors" label="Connectors" />
             </div>
@@ -182,7 +182,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
               log, and somebody comparing the two needs both in front of them. */}
           <span
             className="whoami"
-            title={claims.uid ? `principal user:${claims.uid}` : undefined}
+            title={claims.uid ? `user:${claims.uid}` : undefined}
           >
             {claims.email ?? claims.sub ?? "signed in"}
           </span>

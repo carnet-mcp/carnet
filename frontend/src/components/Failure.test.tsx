@@ -77,7 +77,7 @@ describe("the rest of the map", () => {
   it("carries an unmapped status in its title rather than swallowing it", () => {
     render(<Failure error={new ApiError(500, "something broke")} />);
 
-    expect(screen.getByText("The server refused (500)")).toBeInTheDocument();
+    expect(screen.getByText("Request failed (500)")).toBeInTheDocument();
     expect(screen.getByText("something broke")).toBeInTheDocument();
   });
 

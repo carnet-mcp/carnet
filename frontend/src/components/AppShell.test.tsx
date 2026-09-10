@@ -69,15 +69,15 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe("the Administration nav item", () => {
+describe("the Audit log nav item", () => {
   it("is not offered to somebody who is not an administrator", async () => {
     vi.mocked(api.me).mockResolvedValue(me({ admin: false }));
 
     show();
 
-    await screen.findByText("Create MCP");
+    await screen.findByText("Agents");
     await waitFor(() => expect(api.me).toHaveBeenCalled());
-    expect(screen.queryByRole("link", { name: "Administration" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Audit log" })).not.toBeInTheDocument();
   });
 
   it("is offered to an administrator", async () => {
@@ -89,7 +89,7 @@ describe("the Administration nav item", () => {
     // the words are a `<span>` inside the link and the href is on the link around it.
     // The property is "there is a link to the log called Administration", which is what
     // a role query asks and what a text query only asked by accident.
-    expect(await screen.findByRole("link", { name: "Administration" })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: "Audit log" })).toHaveAttribute(
       "href",
       "/admin",
     );
@@ -115,11 +115,11 @@ describe("the Administration nav item", () => {
       "href",
       "/admin/connectors",
     );
-    expect(screen.getByRole("link", { name: "Door traffic" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Request log" })).toHaveAttribute(
       "href",
       "/admin/door-calls",
     );
-    expect(screen.getByRole("link", { name: "Access denials" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Access denied" })).toHaveAttribute(
       "href",
       "/admin/denials",
     );
@@ -130,7 +130,7 @@ describe("the Administration nav item", () => {
 
     show();
 
-    await screen.findByText("Create MCP");
+    await screen.findByText("Agents");
     await waitFor(() => expect(api.me).toHaveBeenCalled());
     // Tokens is asserted in the *other* direction just below: it is the first nav item
     // since Connections that a non-administrator must **keep**, and enumerating what a
@@ -138,13 +138,13 @@ describe("the Administration nav item", () => {
     // the wrong block with every test still green.
     expect(screen.queryByRole("link", { name: "Groups" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Connectors" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Door traffic" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Request log" })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("link", { name: "Access denials" }),
+      screen.queryByRole("link", { name: "Access denied" }),
     ).not.toBeInTheDocument();
   });
 
-  it("offers Tokens to somebody who is not an administrator", async () => {
+  it("offers Access tokens to somebody who is not an administrator", async () => {
     // 035c. `GET /me/tokens` is deliberately roleless — the person who needs it is a
     // non-administrator picking among their own machines — so this link sits outside the
     // administrative group, and that placement is the whole property. Asserted in the
@@ -154,7 +154,7 @@ describe("the Administration nav item", () => {
 
     show();
 
-    expect(await screen.findByRole("link", { name: "Tokens" })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: "Access tokens" })).toHaveAttribute(
       "href",
       "/tokens",
     );
@@ -170,7 +170,7 @@ describe("the Administration nav item", () => {
     show();
 
     await waitFor(() => expect(api.me).toHaveBeenCalled());
-    expect(screen.queryByText("Administration")).not.toBeInTheDocument();
+    expect(screen.queryByText("Audit log")).not.toBeInTheDocument();
     expect(screen.queryByText(/storage unavailable/)).not.toBeInTheDocument();
     expect(screen.getByText("the page")).toBeInTheDocument();
   });
@@ -179,7 +179,7 @@ describe("the Administration nav item", () => {
     vi.mocked(api.me).mockResolvedValue(me({ admin: true }));
 
     show();
-    await screen.findByText("Administration");
+    await screen.findByText("Audit log");
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(api.me).toHaveBeenCalledTimes(1);
@@ -207,7 +207,7 @@ describe("the boundary around the page", () => {
     );
 
     expect(screen.getByText("this page is broken")).toBeInTheDocument();
-    expect(screen.getByText("Create MCP")).toBeInTheDocument();
+    expect(screen.getByText("Agents")).toBeInTheDocument();
     expect(screen.getByText("Sign out")).toBeInTheDocument();
   });
 });
@@ -250,8 +250,8 @@ describe("the collapsed rail", () => {
 
     show();
 
-    expect(await screen.findByRole("link", { name: "Create MCP" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Administration" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Agents" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Audit log" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Sign out/ })).toBeInTheDocument();
   });
 });

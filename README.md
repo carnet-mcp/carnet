@@ -87,13 +87,13 @@ so *what tried to reach a project it should not* is a question with an answer â€
 the caller was a person's assistant or an unattended agent at 3am.
 
 Which looks like this. Every call, who made it, **whose account it went out as**, what
-was allowed, what was refused and why:
+was allowed, what was denied and why:
 
-![The door traffic log: every call, the agent that carried it, the account it acted for, the decision and the reason](docs/screenshots/readme/door-traffic.png)
+![The request log: every call, the agent that carried it, the account it acted for, the decision and the reason](docs/screenshots/readme/request-log.png)
 
 And a month of it, summarised:
 
-![The overview: calls per day, refusals, writes, share on a verified identity, callers and spend](docs/screenshots/readme/overview.png)
+![The Usage page: requests per day, denials, writes, share on a verified identity, callers and spend](docs/screenshots/readme/overview.png)
 
 ## Why this one
 

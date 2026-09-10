@@ -65,5 +65,5 @@ check.
    failed on a fresh one. **Fixed** in `e2e_deploy.py`: the scene creates the role it
    needs, as the cluster's administrator rather than as the deployment's own role.
 
-Each of the first three has a row in `DEFERRED.md` recording what was found and what was
+Each of the first three has a row in the deferred-work register recording what was found and what was
 done. The rows are closed rather than deleted, because the finding is the useful part.

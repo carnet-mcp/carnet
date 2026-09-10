@@ -273,10 +273,10 @@ describe("the reach", () => {
       .getAllByRole("heading")
       .map((node) => node.textContent);
 
-    expect(headings.indexOf("Tool by tool")).toBeGreaterThan(
-      headings.indexOf("What it can reach"),
+    expect(headings.indexOf("Access by tool")).toBeGreaterThan(
+      headings.indexOf("Access"),
     );
-    expect(headings.indexOf("Tool by tool")).toBeLessThan(headings.indexOf("triage"));
+    expect(headings.indexOf("Access by tool")).toBeLessThan(headings.indexOf("triage"));
   });
 
   it("says the union rule in words, because two scopes for one tool read as a mistake", async () => {
@@ -285,7 +285,7 @@ describe("the reach", () => {
     // Matched on the clause after the `<em>`, because Testing Library does not read text
     // across element boundaries and *each* is emphasised — which it is on purpose.
     expect(
-      await screen.findByText(/which one applies is decided per call/),
+      await screen.findByText(/Which one applies is decided per call/),
     ).toBeInTheDocument();
   });
 
@@ -318,14 +318,14 @@ describe("the reach", () => {
 });
 
 describe("what it has spent", () => {
-  it("puts the count against the ceiling, because a number without its limit is not an answer", async () => {
+  it("puts the count against the limit, because a number without its limit is not an answer", async () => {
     show([token()], reach(), CATALOGUE, spend({ history: week([0, 4, 0, 0, 9, 2, 41]) }));
 
     expect(await screen.findByText(/41 of 1,000/)).toBeInTheDocument();
-    expect(screen.getByText(/calls admitted today/)).toBeInTheDocument();
+    expect(screen.getByText(/requests allowed today/)).toBeInTheDocument();
   });
 
-  it("says admitted rather than made, and names where the refusals are", async () => {
+  it("says allowed rather than made, and names where the denials are", async () => {
     // **Trap 2.** A call refused for scope, and a call refused by this very ceiling, both
     // cost nothing and are not counted — so a token being denied five hundred times a day
     // shows up here as whatever it succeeded at. A section labelled *calls made* would be
@@ -333,8 +333,9 @@ describe("what it has spent", () => {
     // cares about.
     show([token()], reach(), CATALOGUE, spend({ history: week([0, 0, 0, 0, 0, 0, 3]) }));
 
-    expect(await screen.findByText(/Admitted, not attempted/)).toBeInTheDocument();
+    expect(await screen.findByText("Allowed requests only.")).toBeInTheDocument();
     expect(screen.getByText(/costs nothing and is not counted here/)).toBeInTheDocument();
+    expect(screen.getByText(/denied requests on the access denied log/)).toBeInTheDocument();
   });
 
   it("renders the week as seven rows including the quiet days", async () => {
@@ -344,7 +345,7 @@ describe("what it has spent", () => {
     // it is given rather than dropping the empty ones.
     show([token()], reach(), CATALOGUE, spend({ history: week([5, 0, 0, 7, 0, 0, 2]) }));
 
-    const table = (await screen.findByText("Calls admitted")).closest("table")!;
+    const table = (await screen.findByText("Requests allowed")).closest("table")!;
     expect(within(table).getAllByRole("row")).toHaveLength(8); // seven windows + header
     expect(within(table).getByText("2026-08-23")).toBeInTheDocument();
   });
@@ -352,7 +353,7 @@ describe("what it has spent", () => {
   it("marks today rather than moving it, since 'is today unusual' needs the others beside it", async () => {
     show([token()], reach(), CATALOGUE, spend({ history: week([1, 1, 1, 1, 1, 1, 8]) }));
 
-    const table = (await screen.findByText("Calls admitted")).closest("table")!;
+    const table = (await screen.findByText("Requests allowed")).closest("table")!;
     const rows = within(table).getAllByRole("row");
     // Oldest first — the server's order and every log reader's in this product. Reversing
     // it here would be a second ordering to remember.
@@ -366,11 +367,13 @@ describe("what it has spent", () => {
     // when it is off, which the next test is about.
     show([token()], reach(), CATALOGUE, spend());
 
-    expect(await screen.findByText(/no calls admitted through the door in the last seven days/)).toBeInTheDocument();
-    expect(screen.queryByText("Calls admitted")).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(/No requests were allowed in the last seven days/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Requests allowed")).not.toBeInTheDocument();
   });
 
-  it("warns when the token is at its ceiling, and says the credential is otherwise fine", async () => {
+  it("warns when the token is at its rate limit, and says the credential is otherwise fine", async () => {
     show(
       [token()],
       reach(),
@@ -378,15 +381,15 @@ describe("what it has spent", () => {
       spend({ ceiling: 3, history: week([0, 0, 0, 0, 0, 1, 3]) }),
     );
 
-    expect(await screen.findByText("At its ceiling for today")).toBeInTheDocument();
-    expect(screen.getByText(/frees at midnight UTC/)).toBeInTheDocument();
+    expect(await screen.findByText("Rate limit reached")).toBeInTheDocument();
+    expect(screen.getByText(/denied until midnight UTC/)).toBeInTheDocument();
     // The other half, and it is why the notice exists rather than a bare number: the
     // reader arrived asking *why did this stop*, and "it is not revoked" is the sentence
     // that stops them going and revoking something else.
-    expect(screen.getByText(/it is not revoked/)).toBeInTheDocument();
+    expect(screen.getByText(/The token is not revoked/)).toBeInTheDocument();
   });
 
-  it("offers nothing that would raise the ceiling, because that would be a grant", async () => {
+  it("offers nothing that would raise the limit, because that would be a grant", async () => {
     // Plan 035 category 2 at its sharpest: `CARNET_MCP_CALLS_PER_DAY` is a deployment
     // setting, and a control that changed what a credential may spend is a grant. The
     // page says where the dial lives instead.
@@ -397,16 +400,20 @@ describe("what it has spent", () => {
       spend({ ceiling: 3, history: week([0, 0, 0, 0, 0, 0, 3]) }),
     );
 
-    await screen.findByText("At its ceiling for today");
+    await screen.findByText("Rate limit reached");
     // The revoke button (044) is the page's one control, and it *removes* authority.
-    // Nothing here raises the ceiling or grants anything.
-    expect(screen.queryByRole("button", { name: /ceiling|raise|grant/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/decision at the command line/)).toBeInTheDocument();
+    // Nothing here raises the limit or grants anything.
+    expect(
+      screen.queryByRole("button", { name: /ceiling|limit|raise|grant/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/set by an operator for the whole deployment/),
+    ).toBeInTheDocument();
   });
 });
 
 describe("a deployment that does not meter", () => {
-  it("says the dial is off and renders no figure at all", async () => {
+  it("says the meter is off and renders no figure at all", async () => {
     // **Trap 1, and the assertion is as much about absence as presence.** `reserve`
     // returns ALLOW before touching storage when the ceiling is not positive, so a token
     // making thousands of calls an hour has no rows — and `0 / 0`, `0 / 1000` or a bar at
@@ -414,10 +421,11 @@ describe("a deployment that does not meter", () => {
     // direction, which is the one nobody rechecks.
     show([token()], reach(), CATALOGUE, spend({ ceiling: 0, metered: false }));
 
-    expect(await screen.findByText("Door calls are not metered here")).toBeInTheDocument();
-    expect(screen.getByText(/there would be no row to say so/)).toBeInTheDocument();
-    expect(screen.queryByText(/calls admitted today/)).not.toBeInTheDocument();
+    expect(await screen.findByText("Requests are not metered")).toBeInTheDocument();
+    expect(screen.getByText("Nothing is recorded here.")).toBeInTheDocument();
+    expect(screen.queryByText(/requests allowed today/)).not.toBeInTheDocument();
     expect(screen.queryByText(/of 1,000/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0 of 0/)).not.toBeInTheDocument();
   });
 
   it("does not offer the quiet-week sentence, where identical zeros mean something else", async () => {
@@ -425,9 +433,9 @@ describe("a deployment that does not meter", () => {
     // admitted* is only true when something was counting.
     show([token()], reach(), CATALOGUE, spend({ ceiling: 0, metered: false }));
 
-    await screen.findByText("Door calls are not metered here");
+    await screen.findByText("Requests are not metered");
     expect(
-      screen.queryByText(/no calls admitted through the door in the last seven days/),
+      screen.queryByText(/No requests were allowed in the last seven days/),
     ).not.toBeInTheDocument();
   });
 
@@ -435,10 +443,10 @@ describe("a deployment that does not meter", () => {
     show([token()], reach(), CATALOGUE, spend({ ceiling: 0, metered: false }));
 
     const notice = await screen.findByRole("alert");
-    expect(notice).toHaveTextContent("Door calls are not metered here");
+    expect(notice).toHaveTextContent("Requests are not metered");
   });
 
-  it("still shows what was counted before the dial was turned off, and captions it", async () => {
+  it("still shows what was counted before the meter was turned off, and captions it", async () => {
     // Nothing is deleted when the meter stops, so a deployment that ran metered until
     // Tuesday keeps Monday's rows. Dropping them would lose the only record there is; and
     // showing them uncaptioned would make the zeros after look like quiet days.
@@ -449,9 +457,9 @@ describe("a deployment that does not meter", () => {
       spend({ ceiling: 0, metered: false, history: week([12, 8, 0, 0, 0, 0, 0]) }),
     );
 
-    const table = (await screen.findByText("Calls admitted")).closest("table")!;
+    const table = (await screen.findByText("Requests allowed")).closest("table")!;
     expect(within(table).getByText("12")).toBeInTheDocument();
-    expect(screen.getByText(/it is a day nobody was counting/)).toBeInTheDocument();
+    expect(screen.getByText(/A zero may be a day nobody was counting/)).toBeInTheDocument();
   });
 });
 
@@ -480,8 +488,9 @@ describe("what it cost", () => {
     // counting — `Spent`'s own trap, one section down.
     show([token()], reach(), CATALOGUE, spend());
 
+    expect(await screen.findByText("No spend limit.")).toBeInTheDocument();
     expect(
-      await screen.findByText(/Spend at the model is not bounded here/),
+      screen.getByText(/Model spend is not limited on this deployment/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/spent at a model today/)).not.toBeInTheDocument();
   });
@@ -493,7 +502,7 @@ describe("what it cost", () => {
 
     expect(await screen.findByText(/\$0\.00 of \$100\.00/)).toBeInTheDocument();
     expect(
-      screen.getByText(/Nothing has been spent at a model through this credential today/),
+      screen.getByText(/Nothing has been spent at a model today/),
     ).toBeInTheDocument();
   });
 
@@ -531,7 +540,9 @@ describe("what it cost", () => {
     );
 
     expect(await screen.findByText(/\$15\.00 of \$100\.00/)).toBeInTheDocument();
-    expect(screen.getByText(/Whichever ceiling is met first refuses/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Whichever limit is reached first denies the next call/),
+    ).toBeInTheDocument();
   });
 
   it("names the models the price list could not value rather than dropping them", async () => {
@@ -543,12 +554,12 @@ describe("what it cost", () => {
     );
 
     expect(await screen.findByText(/llama-3-70b/)).toBeInTheDocument();
-    expect(screen.getByText(/reported as unpriced/)).toBeInTheDocument();
+    expect(screen.getByText(/has no rate in the price list/)).toBeInTheDocument();
   });
 
   it("names the remedy for an unpriced model, not only the gap", async () => {
-    // Step 045c decision 4. Naming the model says the figure is short; naming
-    // `CARNET_MODEL_RATES` says who can make it whole. A customer brokering their own
+    // Step 045c decision 4. Naming the model says the figure is short; naming the
+    // operator's price list says who can make it whole. A customer brokering their own
     // provider is the ordinary case now, so the unpriced sentence is the one somebody
     // reads first and it has to end somewhere other than a dead end.
     show(
@@ -558,24 +569,26 @@ describe("what it cost", () => {
       spend({ ...priced, usd: 0, unpriced_models: ["gpt-5-mini"] }),
     );
 
-    expect(await screen.findByText(/CARNET_MODEL_RATES/)).toBeInTheDocument();
     expect(
-      screen.getByText(/token ceiling is the one bounding this spend/),
+      await screen.findByText(/An operator can add rates to the price list/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Its tokens count against the token limit only/),
     ).toBeInTheDocument();
   });
 
-  it("warns at the ceiling and says the crossing call completed", async () => {
+  it("warns at the limit and says the crossing call completed", async () => {
     // Read-then-decide: a call's cost is only known once it returns, so the ceiling gates
     // the next one rather than holding anything back. A person looking at a figure past
     // its limit should not read it as a bug.
     show([token()], reach(), CATALOGUE, spend({ ...priced, usd: 120 }));
 
     const notice = await screen.findByRole("alert");
-    expect(notice).toHaveTextContent("At its spend ceiling for today");
-    expect(notice).toHaveTextContent(/crossed the line completed/);
+    expect(notice).toHaveTextContent("Spend limit reached");
+    expect(notice).toHaveTextContent(/The call that crossed the limit completed/);
   });
 
-  it("is shown even where the call meter is off, because they are separate dials", async () => {
+  it("is shown even where the call meter is off, because they are separate limits", async () => {
     // The gap this closes: a deployment that stopped counting calls may still be bounding
     // spend, and a page that hid the money would be silent about the ceiling actually
     // refusing this credential.
@@ -586,7 +599,7 @@ describe("what it cost", () => {
       spend({ ...priced, ceiling: 0, metered: false }),
     );
 
-    await screen.findByText("Door calls are not metered here");
+    await screen.findByText("Requests are not metered");
     expect(screen.getByText(/\$15\.00 of \$100\.00/)).toBeInTheDocument();
   });
 });
@@ -611,7 +624,9 @@ describe("whose access answered", () => {
       reach({ acts_as_owner: true, resolved_as: "user:u_priya" }),
     );
 
-    expect(await screen.findByText(/owner's grants, live/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/These are its owner's grants and change when the owner's do/),
+    ).toBeInTheDocument();
   });
 
   it("resolves a service token as itself", async () => {
@@ -628,8 +643,9 @@ describe("granted nothing", () => {
     // blank card is read as one. Same rule `TokensPage` applies to a person with no tokens.
     show([token()], reach({ tools: [], agents: [] }));
 
-    expect(await screen.findByText(/granted nothing/)).toBeInTheDocument();
-    expect(screen.getByText(/empty/)).toBeInTheDocument();
+    expect(await screen.findByText(/This token has no agents\./)).toBeInTheDocument();
+    expect(screen.getByText(/gets an empty/)).toBeInTheDocument();
+    expect(screen.getByText(/and every call is denied/)).toBeInTheDocument();
   });
 
   it("points a personal token at the person rather than at the token", async () => {
@@ -640,7 +656,10 @@ describe("granted nothing", () => {
       reach({ acts_as_owner: true, tools: [], agents: [] }),
     );
 
-    expect(await screen.findByText(/the person this token acts as/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/A personal token uses its owner’s access\. Share an/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/with yourself to use it here/)).toBeInTheDocument();
   });
 });
 
@@ -671,14 +690,14 @@ describe("an agent that cannot be read", () => {
     );
 
     expect(await screen.findByText(/filer/)).toBeInTheDocument();
-    expect(screen.getByText(/no longer validates/)).toBeInTheDocument();
+    expect(screen.getByText(/configuration is not valid/)).toBeInTheDocument();
   });
 
   it("names it even when nothing else is granted, where the count is 'nothing'", async () => {
     show([token()], reach({ tools: [], agents: [], invalid_agents: ["filer"] }));
 
-    expect(await screen.findByText(/granted nothing/)).toBeInTheDocument();
-    expect(screen.getByText(/no longer validates/)).toBeInTheDocument();
+    expect(await screen.findByText(/This token has no agents\./)).toBeInTheDocument();
+    expect(screen.getByText(/configuration is not valid/)).toBeInTheDocument();
   });
 });
 
@@ -706,7 +725,7 @@ describe("when something cannot be read", () => {
     );
 
     expect(await screen.findByText(/storage unavailable/)).toBeInTheDocument();
-    expect(screen.queryByText(/No token of yours has that id/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Token not found")).not.toBeInTheDocument();
   });
 
   it("keeps a failed budget from taking the reach off the screen, and the reverse", async () => {
@@ -717,7 +736,7 @@ describe("when something cannot be read", () => {
 
     expect(await screen.findByText(/storage unavailable/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "triage" })).toBeInTheDocument();
-    expect(screen.queryByText("What it has spent")).not.toBeInTheDocument();
+    expect(screen.queryByText("Usage")).not.toBeInTheDocument();
   });
 
   it("shows the server's own sentence for a refused budget", async () => {
@@ -734,7 +753,8 @@ describe("when something cannot be read", () => {
   it("says a token id that is not one of yours is not one of yours", async () => {
     show([], reach());
 
-    expect(await screen.findByText("No token of yours has that id")).toBeInTheDocument();
+    expect(await screen.findByText("Token not found")).toBeInTheDocument();
+    expect(screen.getByText(/This page shows only your own tokens/)).toBeInTheDocument();
   });
 });
 
@@ -753,11 +773,11 @@ describe("what the page does not offer", () => {
 
     await screen.findByRole("heading", { name: "triage" });
     const buttons = screen.getAllByRole("button").map((node) => node.textContent);
-    expect(buttons).toEqual(["Revoke this token", "Would this be allowed?"]);
+    expect(buttons).toEqual(["Revoke token", "Check"]);
     // And the inputs that exist belong to that question, not to a grant.
     for (const box of screen.getAllByRole("textbox")) {
       expect(box.closest("form")).toBe(
-        screen.getByRole("button", { name: "Would this be allowed?" }).closest("form"),
+        screen.getByRole("button", { name: "Check" }).closest("form"),
       );
     }
   });
@@ -768,7 +788,7 @@ describe("what the page does not offer", () => {
     show([token({ revoked_at: "2026-08-20T10:00:00+00:00" })]);
 
     await screen.findByRole("heading", { name: "triage" });
-    expect(screen.queryByRole("button", { name: "Revoke this token" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Revoke token" })).not.toBeInTheDocument();
   });
 
   it("revokes behind a confirmation that says what stops", async () => {
@@ -779,12 +799,12 @@ describe("what the page does not offer", () => {
     });
     show();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke this token" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Revoke token" }));
     // Nothing sent yet — the first click only opens the question.
     expect(api.revokeToken).not.toHaveBeenCalled();
     expect(screen.getByText(/Immediate and permanent/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Revoke it" }));
+    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
 
     await waitFor(() => expect(api.revokeToken).toHaveBeenCalledWith("m_8f2c1a"));
     // The listing is re-read so the state badge changes in place — no redirect away
@@ -795,11 +815,11 @@ describe("what the page does not offer", () => {
   it("keeps the token when the person keeps it", async () => {
     show();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke this token" }));
-    fireEvent.click(screen.getByRole("button", { name: "Keep it" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Revoke token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(api.revokeToken).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Revoke this token" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Revoke token" })).toBeInTheDocument();
   });
 
   it("offers a way back to the listing and nothing else that navigates away", async () => {

@@ -135,7 +135,7 @@ beforeEach(() => {
   vi.mocked(api.setAssertedIdentity).mockReset();
 });
 
-describe("acting-for (033c)", () => {
+describe("on behalf of (033c)", () => {
   it("states the resting posture and flips it as one deliberate action", async () => {
     vi.mocked(api.setAssertedIdentity).mockResolvedValue(
       connector({ allow_asserted_identity: true }),
@@ -144,10 +144,15 @@ describe("acting-for (033c)", () => {
 
     // Off is the posture, and the sentence says what IS accepted rather than only
     // what is not.
-    expect(await screen.findByText(/verified/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/on-behalf-of claim is accepted/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Asserted claims are denied for this connector's tools/),
+    ).toBeInTheDocument();
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Believe asserted identity" }),
+      await screen.findByRole("button", { name: "Accept asserted identity" }),
     );
 
     expect(api.setAssertedIdentity).toHaveBeenCalledWith("jira", true);
@@ -157,10 +162,10 @@ describe("acting-for (033c)", () => {
     show(connector({ allow_asserted_identity: true }));
 
     expect(
-      await screen.findByText(/exactly as honest as the calling application/),
+      await screen.findByText(/who it acts on behalf of, without verification/),
     ).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: "Stop believing asserted identity" }),
+      await screen.findByRole("button", { name: "Stop accepting asserted identity" }),
     ).toBeInTheDocument();
   });
 });
@@ -263,7 +268,7 @@ describe("approving a tool", () => {
     // to get vetting wrong is naming an argument the server does not have, and a list of
     // the ones it does have makes that unspellable rather than merely refused.
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "" }), "projectKey");
-    await userEvent.click(screen.getByRole("button", { name: "Approve this tool" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() =>
       expect(api.vetTool).toHaveBeenCalledWith("jira", "create_issue", {
@@ -297,7 +302,7 @@ describe("approving a tool", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Discover" }));
     await userEvent.click(await screen.findByRole("button", { name: "Approve…" }));
-    await userEvent.click(screen.getByRole("button", { name: "Approve this tool" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     // Verbatim, because the half after the dash is what to do instead — which is the
     // whole difference between this and the 500 it used to be.
@@ -305,7 +310,7 @@ describe("approving a tool", () => {
   });
 });
 
-describe("the consent flow", () => {
+describe("the OAuth app", () => {
   it("takes the secret in a password field and never shows one back", async () => {
     vi.mocked(api.configureOAuth).mockResolvedValue({
       app: oauthApp(),
@@ -315,7 +320,7 @@ describe("the consent flow", () => {
     show();
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Configure a consent flow" }),
+      await screen.findByRole("button", { name: "Set up OAuth app" }),
     );
 
     const secret = screen.getByLabelText(/Client secret/);
@@ -323,9 +328,9 @@ describe("the consent flow", () => {
 
     await userEvent.type(screen.getByLabelText(/Authorize endpoint/), "https://auth.acme.com/authorize");
     await userEvent.type(screen.getByLabelText(/Token endpoint/), "https://auth.acme.com/token");
-    await userEvent.type(screen.getByLabelText(/Client id/), "client-abc");
+    await userEvent.type(screen.getByLabelText(/Client ID/), "client-abc");
     await userEvent.type(secret, "MARKER-CLIENT-SECRET-e3f1");
-    await userEvent.click(screen.getByRole("button", { name: "Save consent flow" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save OAuth app" }));
 
     // The one real onboarding ask, rendered where the person who must do it is standing.
     expect(
@@ -347,9 +352,11 @@ describe("the consent flow", () => {
   it("refuses to offer one on a connector that could never use it", async () => {
     show(connector({ transport: "stdio", url: "" }));
 
-    expect(await screen.findByText(/cannot act as two people/)).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Configure a consent flow" }),
+      await screen.findByText(/An OAuth app is not available for it/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Set up OAuth app" }),
     ).not.toBeInTheDocument();
   });
 });
@@ -362,11 +369,13 @@ describe("a host that was revoked underneath a connector", () => {
     // connector. It did not, and believing it did means believing a customer's
     // integration is gone when the row is waiting for the host to come back.
     expect(await screen.findByText(/mcp.acme.com is not approved/)).toBeInTheDocument();
-    expect(screen.getByText(/Nothing was deleted/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Its registration and approved tools are kept/),
+    ).toBeInTheDocument();
   });
 });
 
-describe("the response ceiling (035g)", () => {
+describe("the response limit (035g)", () => {
   async function openTheForm() {
     vi.mocked(api.discover).mockResolvedValue(DISCOVERED);
     show();
@@ -386,8 +395,8 @@ describe("the response ceiling (035g)", () => {
     });
     await openTheForm();
 
-    await userEvent.type(screen.getByLabelText(/Response ceiling/), "200000");
-    await userEvent.click(screen.getByRole("button", { name: "Approve this tool" }));
+    await userEvent.type(screen.getByLabelText(/Response limit/), "200000");
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() =>
       expect(api.vetTool).toHaveBeenCalledWith(
@@ -408,11 +417,11 @@ describe("the response ceiling (035g)", () => {
     // saying what to do instead.
     await openTheForm();
 
-    await userEvent.type(screen.getByLabelText(/Response ceiling/), "0");
-    await userEvent.click(screen.getByRole("button", { name: "Approve this tool" }));
+    await userEvent.type(screen.getByLabelText(/Response limit/), "0");
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     expect(
-      await screen.findByText(/refuses every response this tool will ever return/),
+      await screen.findByText(/denies every response/),
     ).toBeInTheDocument();
     // A refusal and not a warning: nothing was sent, so nothing was stored.
     expect(api.vetTool).not.toHaveBeenCalled();
@@ -421,10 +430,10 @@ describe("the response ceiling (035g)", () => {
   it("refuses a negative one the same way", async () => {
     await openTheForm();
 
-    await userEvent.type(screen.getByLabelText(/Response ceiling/), "-5");
-    await userEvent.click(screen.getByRole("button", { name: "Approve this tool" }));
+    await userEvent.type(screen.getByLabelText(/Response limit/), "-5");
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
-    await screen.findByText(/refuses every response this tool will ever return/);
+    await screen.findByText(/denies every response/);
     expect(api.vetTool).not.toHaveBeenCalled();
   });
 
@@ -434,14 +443,14 @@ describe("the response ceiling (035g)", () => {
     // two: it would store a ceiling nobody typed.
     await openTheForm();
 
-    const box = screen.getByLabelText(/Response ceiling/);
+    const box = screen.getByLabelText(/Response limit/);
     await userEvent.type(box, "1.5");
-    await userEvent.click(screen.getByRole("button", { name: "Approve this tool" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     await screen.findByText(/whole number of bytes/);
 
     await userEvent.clear(box);
     await userEvent.type(box, "99999999999999999999");
-    await userEvent.click(screen.getByRole("button", { name: "Approve this tool" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     await screen.findByText(/whole number of bytes/);
 
     expect(api.vetTool).not.toHaveBeenCalled();
@@ -453,8 +462,8 @@ describe("the response ceiling (035g)", () => {
     // a different field.
     await openTheForm();
 
-    const hint = screen.getByLabelText(/Response ceiling/);
-    expect(hint).toHaveAccessibleName(/the platform's default/);
+    const hint = screen.getByLabelText(/Response limit/);
+    expect(hint).toHaveAccessibleName(/the deployment default/);
     expect(hint).not.toHaveAccessibleName(/64/);
   });
 });
@@ -469,10 +478,10 @@ describe("what an approval recorded (035g)", () => {
     expect(await screen.findByText("Finance owns this project.")).toBeInTheDocument();
   });
 
-  it("shows a ceiling as a size, and says refused rather than truncated", async () => {
+  it("shows a limit as a size, and says denied rather than truncated", async () => {
     show(connector({ vetted: 1, tools: [vetted({ max_response_bytes: 200000 })] }));
 
-    expect(await screen.findByText(/195.3 kB are refused/)).toBeInTheDocument();
+    expect(await screen.findByText(/195.3 kB are denied/)).toBeInTheDocument();
   });
 
   it("does not render a note that is only whitespace", async () => {
@@ -490,7 +499,7 @@ describe("what an approval recorded (035g)", () => {
     show(connector({ vetted: 1, tools: [vetted()] }));
 
     await screen.findByText("jira_list_issues");
-    expect(screen.queryByText(/are refused/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Responses over .* are denied/)).not.toBeInTheDocument();
     // The row still says everything it said before.
     expect(screen.getByText(/user:u_9311, against jira-mcp-server/)).toBeInTheDocument();
   });
@@ -522,11 +531,11 @@ describe("scope notes survive a re-save (068 review)", () => {
     });
     show(connector({ oauth: described() }));
 
-    await userEvent.click(await screen.findByRole("button", { name: "Replace it" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Replace" }));
     // The form says the notes are there, since it has no box to show them in.
     expect(screen.getByText(/2 scopes carry a description shown at consent/)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText(/Client secret/), "rotated-secret");
-    await userEvent.click(screen.getByRole("button", { name: "Save consent flow" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save OAuth app" }));
 
     await waitFor(() =>
       expect(api.configureOAuth).toHaveBeenCalledWith(
@@ -547,12 +556,12 @@ describe("scope notes survive a re-save (068 review)", () => {
     });
     show(connector({ oauth: described() }));
 
-    await userEvent.click(await screen.findByRole("button", { name: "Replace it" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Replace" }));
     const scopes = screen.getByLabelText(/Scopes/);
     await userEvent.clear(scopes);
     await userEvent.type(scopes, "read:jira-work offline_access");
     await userEvent.type(screen.getByLabelText(/Client secret/), "rotated-secret");
-    await userEvent.click(screen.getByRole("button", { name: "Save consent flow" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save OAuth app" }));
 
     await waitFor(() =>
       expect(api.configureOAuth).toHaveBeenCalledWith(
@@ -576,7 +585,7 @@ describe("authorize parameters (035g)", () => {
     show();
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Configure a consent flow" }),
+      await screen.findByRole("button", { name: "Set up OAuth app" }),
     );
     await userEvent.type(
       screen.getByLabelText(/Authorize endpoint/),
@@ -586,7 +595,7 @@ describe("authorize parameters (035g)", () => {
       screen.getByLabelText(/Token endpoint/),
       "https://auth.acme.com/token",
     );
-    await userEvent.type(screen.getByLabelText(/Client id/), "client-abc");
+    await userEvent.type(screen.getByLabelText(/Client ID/), "client-abc");
     await userEvent.type(screen.getByLabelText(/Client secret/), "s3cret");
     await userEvent.click(screen.getByRole("button", { name: "Add a parameter" }));
     await userEvent.type(screen.getByPlaceholderText("audience"), "audience");
@@ -594,7 +603,7 @@ describe("authorize parameters (035g)", () => {
       screen.getByPlaceholderText("api.atlassian.com"),
       "api.atlassian.com",
     );
-    await userEvent.click(screen.getByRole("button", { name: "Save consent flow" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save OAuth app" }));
 
     await waitFor(() =>
       expect(api.configureOAuth).toHaveBeenCalledWith(
@@ -615,7 +624,7 @@ describe("authorize parameters (035g)", () => {
     show();
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Configure a consent flow" }),
+      await screen.findByRole("button", { name: "Set up OAuth app" }),
     );
     await userEvent.type(
       screen.getByLabelText(/Authorize endpoint/),
@@ -625,10 +634,10 @@ describe("authorize parameters (035g)", () => {
       screen.getByLabelText(/Token endpoint/),
       "https://auth.acme.com/token",
     );
-    await userEvent.type(screen.getByLabelText(/Client id/), "client-abc");
+    await userEvent.type(screen.getByLabelText(/Client ID/), "client-abc");
     await userEvent.type(screen.getByLabelText(/Client secret/), "s3cret");
     await userEvent.click(screen.getByRole("button", { name: "Add a parameter" }));
-    await userEvent.click(screen.getByRole("button", { name: "Save consent flow" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save OAuth app" }));
 
     await waitFor(() =>
       expect(api.configureOAuth).toHaveBeenCalledWith(
@@ -654,7 +663,7 @@ describe("authorize parameters (035g)", () => {
     show();
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Configure a consent flow" }),
+      await screen.findByRole("button", { name: "Set up OAuth app" }),
     );
     await userEvent.type(
       screen.getByLabelText(/Authorize endpoint/),
@@ -664,12 +673,12 @@ describe("authorize parameters (035g)", () => {
       screen.getByLabelText(/Token endpoint/),
       "https://auth.acme.com/token",
     );
-    await userEvent.type(screen.getByLabelText(/Client id/), "client-abc");
+    await userEvent.type(screen.getByLabelText(/Client ID/), "client-abc");
     await userEvent.type(screen.getByLabelText(/Client secret/), "s3cret");
     await userEvent.click(screen.getByRole("button", { name: "Add a parameter" }));
     await userEvent.type(screen.getByPlaceholderText("audience"), "state");
     await userEvent.type(screen.getByPlaceholderText("api.atlassian.com"), "guessable");
-    await userEvent.click(screen.getByRole("button", { name: "Save consent flow" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save OAuth app" }));
 
     expect(
       await screen.findByText(/makes every consent flow in this tenant forgeable/),
@@ -710,14 +719,17 @@ describe("authorize parameters (035g)", () => {
     expect(screen.getByText("prompt=consent")).toBeInTheDocument();
   });
 
-  it("says nothing extra when there are none", async () => {
+  it("says none when there are none", async () => {
     show(connector({ oauth: oauthApp() }));
 
-    expect(await screen.findByText("nothing extra")).toBeInTheDocument();
+    // Scoped to its own row: the Revoke endpoint row above says "none" too, for a
+    // different fact.
+    const extra = (await screen.findByText("Extra parameters")).nextElementSibling;
+    expect(extra).toHaveTextContent(/^none$/);
   });
 });
 
-describe("replacing a consent flow (035g)", () => {
+describe("replacing an OAuth app (035g)", () => {
   it("opens with what is configured in it, because the PUT replaces wholesale", async () => {
     // **The defect this chunk would otherwise have widened.** The form opened empty, so
     // pressing Replace, filling the four required fields and saving silently cleared the
@@ -732,7 +744,7 @@ describe("replacing a consent flow (035g)", () => {
       }),
     );
 
-    await userEvent.click(await screen.findByRole("button", { name: "Replace it" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Replace" }));
 
     expect(screen.getByLabelText(/Scopes/)).toHaveValue("read:issues offline_access");
     expect(screen.getByPlaceholderText("audience")).toHaveValue("audience");
@@ -746,9 +758,9 @@ describe("replacing a consent flow (035g)", () => {
     // than discovered at the submit button.
     show(connector({ oauth: oauthApp() }));
 
-    await userEvent.click(await screen.findByRole("button", { name: "Replace it" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Replace" }));
 
-    expect(screen.getByText(/replaces the whole consent flow/)).toBeInTheDocument();
+    expect(screen.getByText(/replaces the whole OAuth app/)).toBeInTheDocument();
     expect(screen.getByLabelText(/Client secret/)).toHaveValue("");
   });
 
@@ -756,10 +768,10 @@ describe("replacing a consent flow (035g)", () => {
     show(connector());
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Configure a consent flow" }),
+      await screen.findByRole("button", { name: "Set up OAuth app" }),
     );
 
-    expect(screen.queryByText(/replaces the whole consent flow/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/replaces the whole OAuth app/)).not.toBeInTheDocument();
   });
 });
 
@@ -781,7 +793,8 @@ describe("approving again (035g's edge pass)", () => {
     });
     show(connector({ vetted: 1, tools: [APPROVED] }));
     await userEvent.click(await screen.findByRole("button", { name: "Discover" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Approve…" }));
+    // An already-approved tool opens under a different verb than a new one.
+    await userEvent.click(await screen.findByRole("button", { name: "Edit approval" }));
   }
 
   it("opens on the last review rather than on an empty form", async () => {
@@ -795,7 +808,7 @@ describe("approving again (035g's edge pass)", () => {
     expect(screen.getByLabelText(/Effect/)).toHaveValue("write");
     expect(screen.getByLabelText(/Acts as/)).toHaveValue("user");
     expect(screen.getByLabelText(/^Note/)).toHaveValue("Finance owns this project.");
-    expect(screen.getByLabelText(/Response ceiling/)).toHaveValue(200000);
+    expect(screen.getByLabelText(/Response limit/)).toHaveValue(200000);
   });
 
   it("restores what it touches, and says why it cannot restore the argument", async () => {
@@ -805,7 +818,7 @@ describe("approving again (035g's edge pass)", () => {
     await reopen();
 
     expect(screen.getByPlaceholderText("jira.project")).toHaveValue("jira.project");
-    expect(screen.getByText(/pick them again/)).toBeInTheDocument();
+    expect(screen.getByText(/Pick the argument for each again/)).toBeInTheDocument();
   });
 
   it("refuses a resource with no argument rather than dropping it silently", async () => {
@@ -816,7 +829,7 @@ describe("approving again (035g's edge pass)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Approve again" }));
 
     expect(
-      await screen.findByText(/would be silently dropped/),
+      await screen.findByText(/Every resource needs the argument that names it/),
     ).toBeInTheDocument();
     expect(api.vetTool).not.toHaveBeenCalled();
   });
@@ -902,7 +915,7 @@ describe("authoring a REST tool", () => {
 
     // Scoped to the mapping group: "model" also appears in the usage-map example, and
     // an unscoped match would pass on the placeholder rather than on the row.
-    const group = (await screen.findByText("Where each argument travels")).closest("div")!;
+    const group = (await screen.findByText("Argument mapping")).closest("div")!;
     expect(within(group).getByText("model")).toBeInTheDocument();
     expect(within(group).getByText("messages")).toBeInTheDocument();
   });
@@ -914,9 +927,14 @@ describe("authoring a REST tool", () => {
     await userEvent.click(screen.getByLabelText(/Input schema/));
     await userEvent.paste(SCHEMA);
     await userEvent.type(screen.getByPlaceholderText("/repos/{owner}/{repo}/issues"), "/messages");
-    await userEvent.click(screen.getByRole("button", { name: "Approve this tool" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
-    expect(await screen.findByText(/has to travel somewhere/)).toBeInTheDocument();
+    // The refusal names the arguments, which is what tells somebody what to map.
+    expect(
+      await screen.findByText(
+        /model, messages are in the schema but not in the path, query or body/,
+      ),
+    ).toBeInTheDocument();
     expect(api.vetTool).not.toHaveBeenCalled();
   });
 
@@ -948,10 +966,10 @@ describe("authoring a REST tool", () => {
     // The prompt is the caller's content and `audit` is append-only.
     await userEvent.click(screen.getByRole("checkbox", { name: "messages" }));
 
-    await userEvent.click(screen.getByLabelText(/Where token usage lives/));
+    await userEvent.click(screen.getByLabelText(/Token usage paths/));
     await userEvent.paste('{"input_tokens":"usage.input_tokens"}');
 
-    await userEvent.click(screen.getByRole("button", { name: "Approve this tool" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() =>
       expect(api.vetTool).toHaveBeenCalledWith(
@@ -973,7 +991,7 @@ describe("authoring a REST tool", () => {
     );
   });
 
-  it("offers a consent flow, which REST can carry and stdio cannot", async () => {
+  it("offers an OAuth app, which REST can carry and stdio cannot", async () => {
     // The bug 047 found by making a REST connector clickable at last. The gate read
     // `transport !== "http"`, so REST was told it could never have a consent flow and
     // the form was hidden — while `oauth.configure` refuses stdio and only stdio, and
@@ -982,18 +1000,19 @@ describe("authoring a REST tool", () => {
     show(rest());
 
     expect(await screen.findByText("Author a tool")).toBeInTheDocument();
-    expect(screen.queryByText(/speaks stdio/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/uses stdio/)).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Configure a consent flow" }),
+      screen.getByRole("button", { name: "Set up OAuth app" }),
     ).toBeInTheDocument();
   });
 
   it("says the tools are authored, not advertised, when none are approved yet", async () => {
     show(rest());
 
-    expect(await screen.findByText(/A REST API advertises nothing/)).toBeInTheDocument();
+    expect(await screen.findByText(/Author each tool below/)).toBeInTheDocument();
+    expect(screen.getByText(/A REST API does not describe its tools/)).toBeInTheDocument();
     expect(
-      screen.queryByText(/Look at what the server advertises/),
+      screen.queryByText(/Discover the server's tools below/),
     ).not.toBeInTheDocument();
   });
 
@@ -1012,7 +1031,9 @@ describe("authoring a REST tool", () => {
     await userEvent.type(await screen.findByPlaceholderText("chat"), "chat");
 
     expect(await screen.findByText(/is already approved/)).toBeInTheDocument();
-    expect(screen.getByText(/have to be typed again in full/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/enter the method, path and schema again/),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve again" })).toBeInTheDocument();
   });
 });

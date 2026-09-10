@@ -25,14 +25,14 @@ export function Kind({ token }: { token: OwnedToken }) {
     return (
       <>
         <Badge tone="warn">personal</Badge>
-        <div className="tiny muted token-note">you, capped at user</div>
+        <div className="tiny muted token-note">your access</div>
       </>
     );
   }
   return (
     <>
       <Badge tone="good">service</Badge>
-      <div className="tiny muted token-note">only its own grants</div>
+      <div className="tiny muted token-note">its own grants</div>
     </>
   );
 }

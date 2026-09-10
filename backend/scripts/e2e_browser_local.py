@@ -214,7 +214,7 @@ def drive():
         page.wait_for_timeout(1500)
         check("the shell renders under the shipped CSP", True)
         check("named by address in the corner", ADMIN in page.locator(".whoami").inner_text())
-        check("the first account is the administrator", "Administration" in nav(page))
+        check("the first account is the administrator", "Audit log" in nav(page))
 
         say("the marquee assertion: a reload re-enters SILENTLY")
         page.reload()
@@ -262,7 +262,7 @@ def drive():
         sam_page.wait_for_selector("aside.sidebar", timeout=30000)
         sam_page.wait_for_timeout(1500)
         check("sam is in", "sam@local.test" in sam_page.locator(".whoami").inner_text())
-        check("sam has no Administration item", "Administration" not in nav(sam_page))
+        check("sam has no Audit log item", "Audit log" not in nav(sam_page))
 
         say("and two people are signed in at once, from one provider — per-browser sessions")
         check(

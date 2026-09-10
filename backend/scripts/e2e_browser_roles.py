@@ -144,18 +144,21 @@ def main():
         page.wait_for_timeout(1500)
         check("she is signed in", "priya@acme.com" in page.content(), True)
         # The member's nav, as it stands after 078 deleted the runtime (Agents,
-        # Conversations and Runs went with it) and 091–093 renamed what stayed. Step
-        # 099's census found this check still asserting the 014 nav — the harness had
-        # rotted, not the product.
+        # Conversations and Runs went with it), 091–093 renamed what stayed, and the
+        # vocabulary pass renamed it again (Tokens → Access tokens, Overview → Usage).
+        # Step 099's census found this check still asserting the 014 nav — the harness
+        # had rotted, not the product.
         check("the nav offers four items", nav_items(page),
-              ["Create MCP", "Connections", "Tokens", "Overview"])
-        check("and NOT Administration", "Administration" in nav_items(page), False)
+              ["Agents", "Connections", "Access tokens", "Usage"])
+        check("and NOT the audit log", "Audit log" in nav_items(page), False)
 
         say("she types the URL anyway — the route exists and the server refuses her")
         page.goto(f"{APP}/admin")
         page.wait_for_timeout(1500)
         body = page.inner_text("main")
-        check("the page renders", "Administration" in body, True)
+        # The page head paints before the request answers, so the title is what says
+        # the route rendered at all; the 403 sentence below it is the server's.
+        check("the page renders", "Audit log" in body, True)
         check("with the server's own sentence", "you are not one" in body, True)
         check("and what to do about it", "can grant it" in body, True)
         check("and it does not offer to sign her in again",
@@ -176,11 +179,13 @@ def main():
         # both sides: nothing administrative is offered before the grant, all of it
         # after, and the counterpart check below watches them disappear again on revoke.
         check("the nav now offers the five administrative sections", nav_items(page),
-              ["Create MCP", "Connections", "Tokens", "Overview",
-               "Administration", "Door traffic", "Access denials", "Groups", "Connectors"])
+              ["Agents", "Connections", "Access tokens", "Usage",
+               "Audit log", "Request log", "Access denied", "Groups", "Connectors"])
 
         say("and the log is a screen")
-        page.click("text=Administration")
+        # Anchored to the rail: `text=` is a case-insensitive substring match, and
+        # "audit log" is a phrase the pages themselves use in hints and ledes.
+        page.click("nav.sidebar-nav a:has-text('Audit log')")
         page.wait_for_timeout(2000)
         body = page.inner_text("main")
         check("the log rendered", "role.grant" in body, True)
@@ -210,7 +215,7 @@ def main():
         page.goto(f"{APP}/agents")
         page.wait_for_timeout(2000)
         check("the nav is four again", nav_items(page),
-              ["Create MCP", "Connections", "Tokens", "Overview"])
+              ["Agents", "Connections", "Access tokens", "Usage"])
         page.goto(f"{APP}/admin")
         page.wait_for_timeout(1500)
         check("and the deep link refuses her again",

@@ -53,7 +53,7 @@ async function ask(tool = "github_mcp_list_issues", args: [string, string][] = [
       target: { value },
     });
   });
-  fireEvent.click(screen.getByRole("button", { name: "Would this be allowed?" }));
+  fireEvent.click(screen.getByRole("button", { name: "Check" }));
 }
 
 beforeEach(() => {
@@ -122,7 +122,7 @@ describe("asking", () => {
     await ask("t", [["owner", "acme"]]);
     expect(await screen.findByText("Would be allowed")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Would this be allowed?" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check" }));
 
     await waitFor(() =>
       expect(screen.queryByText("Would be allowed")).not.toBeInTheDocument(),
@@ -149,7 +149,7 @@ describe("the answer", () => {
 
     await ask("t", [["owner", "other"]]);
 
-    expect(await screen.findByText("Would be refused")).toBeInTheDocument();
+    expect(await screen.findByText("Would be denied")).toBeInTheDocument();
     expect(screen.getByText("only secrets")).toBeInTheDocument();
     expect(screen.getByText("only acme")).toBeInTheDocument();
   });
@@ -171,7 +171,7 @@ describe("the answer", () => {
 
     await ask("t");
 
-    await screen.findByText("Would be refused");
+    await screen.findByText("Would be denied");
     expect(screen.getAllByText("only acme")).toHaveLength(1);
   });
 
@@ -224,12 +224,12 @@ describe("the answer", () => {
 
     await ask("t");
 
-    expect(await screen.findByText("This did not check:")).toBeInTheDocument();
-    expect(screen.getByText(/whether the token still works/)).toBeInTheDocument();
-    expect(screen.getByText(/Nothing was dialled/)).toBeInTheDocument();
-    expect(screen.getByText(/on somebody else's behalf/)).toBeInTheDocument();
+    expect(await screen.findByText("Not checked:")).toBeInTheDocument();
+    expect(screen.getByText(/whether the token is active/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing was called/)).toBeInTheDocument();
+    expect(screen.getByText(/on-behalf-of claim could be verified/)).toBeInTheDocument();
     expect(screen.getByText(/No credential was read/)).toBeInTheDocument();
-    expect(screen.getByText(/daily call ceiling/)).toBeInTheDocument();
+    expect(screen.getByText(/daily rate limit/)).toBeInTheDocument();
   });
 
   it("names the rule that decided, beside the verdict", async () => {
@@ -255,7 +255,7 @@ describe("the answer", () => {
 
     await ask("t");
 
-    await screen.findByText("Would be refused");
+    await screen.findByText("Would be denied");
     // Once beside the verdict and once beside the row it was attributed to.
     const labels = screen.getAllByText("no grant at this effect");
     expect(labels).toHaveLength(2);
@@ -283,7 +283,7 @@ describe("the answer", () => {
 
     await ask("t");
 
-    await screen.findByText("Would be refused");
+    await screen.findByText("Would be denied");
     expect(screen.getByText("resource argument missing")).toBeInTheDocument();
     expect(screen.getAllByText("outside the scope")).toHaveLength(2);
   });
@@ -318,7 +318,7 @@ describe("the answer", () => {
 
     await ask("t");
 
-    await screen.findByText("Would be refused");
+    await screen.findByText("Would be denied");
     expect(screen.getAllByText("something_later")).toHaveLength(2);
   });
 
@@ -351,7 +351,7 @@ describe("the answer", () => {
     await ask("x");
 
     expect(
-      await screen.findByText(/No agent was considered/),
+      await screen.findByText(/No agent was checked/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Recorded under/)).not.toBeInTheDocument();
   });
@@ -375,7 +375,7 @@ describe("the answer", () => {
     await ask(" post_message ");
 
     expect(await screen.findByText(/could not name one/)).toBeInTheDocument();
-    expect(screen.getByText(/No agent was considered/)).toBeInTheDocument();
+    expect(screen.getByText(/No agent was checked/)).toBeInTheDocument();
     expect(screen.queryByText(/carries that tool/)).not.toBeInTheDocument();
   });
 });
@@ -387,14 +387,14 @@ describe("what it promises about itself", () => {
     render(<Simulate tokenId="m_8f2c1a" />);
 
     expect(
-      screen.getByText(/Nothing is executed, nothing is dialled, and no record is written/),
+      screen.getByText(/Nothing is executed and no record is written/),
     ).toBeInTheDocument();
   });
 
   it("cannot be submitted without a tool", () => {
     render(<Simulate tokenId="m_8f2c1a" />);
 
-    expect(screen.getByRole("button", { name: "Would this be allowed?" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check" })).toBeDisabled();
   });
 });
 

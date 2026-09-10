@@ -82,10 +82,10 @@ import type { AgentDetail } from "../../lib/types";
  *  the blockers exist to avoid. */
 export function renameBlocker(agent: AgentDetail, typed: string): string {
   const next = typed.trim();
-  if (!next) return "Type the new name first.";
-  if (next === agent.name) return `It is already called ${agent.name}.`;
+  if (!next) return "Enter the new name.";
+  if (next === agent.name) return `The name is already ${agent.name}.`;
   if (!nameIsUsable(next))
-    return "Use lowercase letters, digits and single hyphens between them — 'triage-bot', not 'Triage Bot'.";
+    return "Use lowercase letters, digits and single hyphens, for example triage-bot.";
   return "";
 }
 
@@ -130,19 +130,15 @@ export default function RenameBox({
 
   return (
     <Notice tone="warn" title={`Rename ${agent.name}?`}>
+      <p className="sentence">Grants, history and sharing are kept.</p>
       <p className="sentence">
-        Its grants, version history and everything it has already done
-        come with it. Nothing is lost and nobody loses access.
-      </p>
-      <p className="sentence">
-        What breaks is the address. Anything holding the old one — a bookmark, a runbook,
-        another system's configuration — points at nothing afterwards, and there is no
-        redirect.
+        The URL changes. Bookmarks and client configurations that use the old name stop
+        working. There is no redirect.
       </p>
 
       <Field
         label="New name"
-        hint="Lowercase letters, digits and single hyphens. This is its URL and the name in every record of what it does from now on."
+        hint="Lowercase letters, digits and single hyphens. Used in the URL and in the audit log."
       >
         <input
           type="text"
@@ -168,10 +164,10 @@ export default function RenameBox({
 
       <div className="spread">
         <Button kind="primary" busy={renaming} disabled={Boolean(blocker)} onClick={rename}>
-          {renaming ? "Renaming" : "Rename it"}
+          {renaming ? "Renaming" : "Rename"}
         </Button>
         <Button disabled={renaming} onClick={onCancel}>
-          Keep this name
+          Cancel
         </Button>
         {blocker && <span className="muted">{blocker}</span>}
       </div>

@@ -23,7 +23,7 @@
  *     the server would refuse.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -148,10 +148,10 @@ describe("the ordering", () => {
   it("refuses to offer registration before a host is approved, and says why", async () => {
     show([], []);
 
-    expect(await screen.findByText(/Nothing can be added yet/)).toBeInTheDocument();
-    // And the allowlist card says the same thing about itself, in its own words.
+    expect(await screen.findByText(/Approve a host first/)).toBeInTheDocument();
+    // And the hosts card says the same thing about itself, in its own words.
     expect(
-      screen.getByText(/cannot connect anywhere. That is the safe default/),
+      screen.getByText(/No approved hosts\. Connectors can only connect to approved hosts/),
     ).toBeInTheDocument();
     // Not hidden. A page that dropped the form would look finished while the next thing
     // to do was nowhere.
@@ -170,7 +170,7 @@ describe("the ordering", () => {
     // refusal arrives at the first run instead of here.
     show([host({ host: "localhost", warning: "Recorded, but 'localhost' will NOT be dialled" })]);
 
-    expect(await screen.findByText(/Nothing can be added yet/)).toBeInTheDocument();
+    expect(await screen.findByText(/Approve a host first/)).toBeInTheDocument();
   });
 });
 
@@ -201,8 +201,8 @@ describe("somebody who may not administer this workspace", () => {
   });
 
   it("is not told the allowlist is empty when it merely could not be read", async () => {
-    // Two different facts, and only one of them is true. "Approve one above" points at a
-    // form that is not there and would not work if it were.
+    // Two different facts, and only one of them is true. "Approve a host first" points at
+    // a form that is not there and would not work if it were.
     vi.mocked(api.listHosts).mockRejectedValue(new ApiError(403, "not an administrator"));
     vi.mocked(api.listConnectors).mockResolvedValue([]);
     render(
@@ -212,7 +212,7 @@ describe("somebody who may not administer this workspace", () => {
     );
 
     await screen.findAllByText(/not an administrator/);
-    expect(screen.queryByText(/Approve one above/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Approve a host first/)).not.toBeInTheDocument();
   });
 });
 
@@ -270,10 +270,10 @@ describe("hosts", () => {
 
     expect(api.revokeHost).not.toHaveBeenCalled();
     expect(
-      screen.getByText(/stops connecting at its next\s+dial/),
+      screen.getByText(/Every connector on this host stops connecting/),
     ).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Keep it" }));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(api.revokeHost).not.toHaveBeenCalled();
     expect(screen.queryByText(/Revoke mcp.acme.com\?/)).not.toBeInTheDocument();
   });
@@ -287,18 +287,23 @@ describe("hosts", () => {
     show([host()], [connector()]);
 
     await userEvent.click(await screen.findByRole("button", { name: "Revoke" }));
-    await userEvent.click(screen.getByRole("button", { name: "Revoke it" }));
+    // The confirm is the one alert on the page, and its Revoke is the one that acts.
+    await userEvent.click(
+      within(screen.getByRole("alert")).getByRole("button", { name: "Revoke" }),
+    );
 
     expect(await screen.findByText(/jira, linear/)).toBeInTheDocument();
-    expect(screen.getByText(/Nothing was deleted/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Their registrations and approved tools are kept/),
+    ).toBeInTheDocument();
   });
 
-  it("marks a never-dialled row in the list, not only at the moment of approval", async () => {
+  it("marks an unreachable row in the list, not only at the moment of approval", async () => {
     // Whoever reads the allowlist next was not the person who approved it, and this row
     // is indistinguishable from a working one otherwise.
     show([host({ host: "127.0.0.1", warning: "it is a loopback address" })]);
 
-    expect(await screen.findByText("never dialled")).toBeInTheDocument();
+    expect(await screen.findByText("not reachable")).toBeInTheDocument();
   });
 });
 
@@ -345,7 +350,7 @@ describe("registering", () => {
     vi.mocked(api.registerConnector).mockResolvedValue(connector());
     show([host()]);
 
-    await userEvent.click(await screen.findByLabelText(/A REST API/));
+    await userEvent.click(await screen.findByLabelText(/REST API/));
     await userEvent.type(screen.getByPlaceholderText("jira"), "anthropic");
     await userEvent.type(
       screen.getByPlaceholderText("https://api.acme.com/v1"),
@@ -381,7 +386,7 @@ describe("registering", () => {
     vi.mocked(api.registerConnector).mockResolvedValue(connector());
     show([host()]);
 
-    await userEvent.click(await screen.findByLabelText(/A REST API/));
+    await userEvent.click(await screen.findByLabelText(/REST API/));
     expect(screen.getByLabelText(/Credential prefix/)).toHaveValue("Bearer ");
     await userEvent.type(screen.getByPlaceholderText("jira"), "openmeteo");
     await userEvent.type(
@@ -405,7 +410,7 @@ describe("registering", () => {
     vi.mocked(api.registerConnector).mockResolvedValue(connector());
     show([host()]);
 
-    await userEvent.click(await screen.findByLabelText(/A REST API/));
+    await userEvent.click(await screen.findByLabelText(/REST API/));
     await userEvent.type(screen.getByPlaceholderText("jira"), "openmeteo");
     await userEvent.type(
       screen.getByPlaceholderText("https://api.acme.com/v1"),
@@ -456,16 +461,16 @@ describe("registering", () => {
     show([host()]);
 
     expect(
-      await screen.findByText(/exactly as honest as the app\s+making the call/),
+      await screen.findByText(/may name who it acts on behalf of without verification/),
     ).toBeInTheDocument();
     // And it points at the place a change gets its own record, so this form does not become
     // a second toggle.
     expect(
-      screen.getByText(/change this later on the connector's own page/),
+      screen.getByText(/change this later on the connector's page/),
     ).toBeInTheDocument();
   });
 
-  it("says that adding a connector switches nothing on", async () => {
+  it("says that adding a connector approves nothing, and what to do next", async () => {
     show([host()]);
 
     // The state a person is in for as long as it takes them to read a vendor's
@@ -473,8 +478,9 @@ describe("registering", () => {
     // the sentence and kept it: it is one of the three on this page that exist because
     // somebody once got the opposite impression.
     expect(
-      await screen.findByText(/does not switch anything on/),
+      await screen.findByText(/Next: approve the tools you want to make available/),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Tools are unavailable until approved/)).toBeInTheDocument();
   });
 });
 
@@ -482,13 +488,13 @@ describe("the sentence per connector", () => {
   it("says a revoked host keeps everything, and leads with that", () => {
     const said = describeConnector(connector({ host_allowed: false, vetted: 3 }));
 
-    expect(said).toContain("no longer on the allowed list");
-    expect(said).toContain("Nothing was deleted");
+    expect(said).toMatch(/^mcp\.acme\.com is not an approved host/);
+    expect(said).toContain("Its approved tools are kept");
   });
 
   it("says nothing is reachable when nothing is vetted", () => {
     expect(describeConnector(connector({ vetted: 0 }))).toContain(
-      "Nothing is switched on yet",
+      "No tools approved yet",
     );
   });
 
@@ -514,14 +520,15 @@ describe("the sentence per connector", () => {
 
     // The distinction is *whose account a run acts as*, which is the whole of 7a and 7b
     // and is invisible from a tool count.
-    expect(without).toContain("Everyone shares one login");
-    expect(with_).toContain("their own accounts");
+    expect(without).toContain("cannot connect their own accounts");
+    expect(without).toContain("Calls use the shared credential");
+    expect(with_).toContain("Users can connect their own accounts");
     expect(without).not.toEqual(with_);
   });
 
   it("gets the singular right", () => {
-    expect(describeConnector(connector({ vetted: 1 }))).toContain("1 tool switched on");
-    expect(describeConnector(connector({ vetted: 2 }))).toContain("2 tools switched on");
+    expect(describeConnector(connector({ vetted: 1 }))).toContain("1 tool approved");
+    expect(describeConnector(connector({ vetted: 2 }))).toContain("2 tools approved");
   });
 });
 
@@ -540,7 +547,7 @@ describe("which connectors believe a caller's claim", () => {
 
     await screen.findByText("jira");
     expect(row("jira")).toHaveTextContent("asserted identity");
-    expect(row("jira")).toHaveTextContent(/believed without verification/);
+    expect(row("jira")).toHaveTextContent(/without verification/);
   });
 
   it("says nothing at all on the resting posture", async () => {
@@ -551,7 +558,7 @@ describe("which connectors believe a caller's claim", () => {
 
     await screen.findByText("jira");
     expect(row("jira")).not.toHaveTextContent("asserted identity");
-    expect(row("jira")).not.toHaveTextContent(/believed without verification/);
+    expect(row("jira")).not.toHaveTextContent(/without verification/);
   });
 
   it("is a second function beside describe(), and answers a different question", () => {
@@ -580,8 +587,8 @@ describe("recipes — step 068", () => {
   it("says plainly when a recipe has never been checked against the vendor", async () => {
     show([host()], [], [recipe()]);
     await userEvent.click(await screen.findByRole("radio", { name: /Jira/ }));
-    expect(screen.getByText(/Nobody here has signed in to this vendor/)).toBeInTheDocument();
-    expect(screen.getByText(/Every field below is yours to change/)).toBeInTheDocument();
+    expect(screen.getByText(/have not been verified/)).toBeInTheDocument();
+    expect(screen.getByText(/You can edit every field below/)).toBeInTheDocument();
   });
 
   it("renders a checked recipe's date rather than a warning", async () => {
@@ -592,9 +599,7 @@ describe("recipes — step 068", () => {
     );
     await userEvent.click(await screen.findByRole("radio", { name: /Jira/ }));
     expect(screen.getByText("checked 2026-09-02")).toBeInTheDocument();
-    expect(
-      screen.queryByText(/Nobody here has signed in to this vendor/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/have not been verified/)).not.toBeInTheDocument();
   });
 
   it("marks which of the hosts it needs are approved, and does not approve them", async () => {
@@ -692,7 +697,9 @@ describe("recipes — step 068", () => {
       ],
     );
     await userEvent.click(await screen.findByRole("radio", { name: /Jira/ }));
-    expect(screen.getByText(/has switched none of them on/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approve each one on the connector's page after registering/),
+    ).toBeInTheDocument();
   });
 
   it("keeps registration usable when the catalogue cannot be loaded", async () => {
@@ -707,7 +714,7 @@ describe("recipes — step 068", () => {
       </MemoryRouter>,
     );
     expect(
-      await screen.findByText(/Filling the form in by hand below still works/),
+      await screen.findByText(/You can still register a connector below/),
     ).toBeInTheDocument();
     expect(screen.getByPlaceholderText("jira")).toBeInTheDocument();
   });
@@ -801,7 +808,7 @@ it("sends a vault reference instead of a variable, and never both", async () => 
   await userEvent.type(screen.getByPlaceholderText("JIRA_TOKEN"), "JIRA_TOKEN");
 
   await userEvent.click(
-    screen.getByRole("radio", { name: /In your own vault/ }),
+    screen.getByRole("radio", { name: /Vault reference/ }),
   );
   await userEvent.type(
     screen.getByPlaceholderText("op://Engineering/Jira/credential"),
@@ -829,7 +836,7 @@ it("shows one credential box at a time, so both can never be typed", async () =>
     screen.queryByPlaceholderText("op://Engineering/Jira/credential"),
   ).not.toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole("radio", { name: /In your own vault/ }));
+  await userEvent.click(screen.getByRole("radio", { name: /Vault reference/ }));
 
   expect(screen.queryByPlaceholderText("JIRA_TOKEN")).not.toBeInTheDocument();
   expect(
@@ -843,9 +850,9 @@ it("says what a vault-held credential costs, on the form where it is chosen", as
   // presented it as a free upgrade would be the form making a promise the runtime
   // cannot keep.
   show([host()]);
-  const option = await screen.findByRole("radio", { name: /In your own vault/ });
+  const option = await screen.findByRole("radio", { name: /Vault reference/ });
   expect(option.closest("label")).toHaveTextContent(/on every call/);
-  expect(option.closest("label")).toHaveTextContent(/while your vault is down/);
+  expect(option.closest("label")).toHaveTextContent(/while the vault is unavailable/);
 });
 
 
@@ -861,7 +868,7 @@ describe("connectors, as cards", () => {
     expect(card.querySelector(".brandmark")).toHaveAttribute("aria-hidden", "true");
     expect(card.querySelector("img")).toBeNull();
     expect(card).toHaveTextContent("Ready");
-    expect(card).toHaveTextContent(/3 tools switched on/);
+    expect(card).toHaveTextContent(/3 tools approved/);
   });
 
   it("says the plain thing about a connector nobody has finished", async () => {
@@ -869,13 +876,14 @@ describe("connectors, as cards", () => {
 
     const card = (await screen.findByText("jira")).closest(".conn-card") as HTMLElement;
     expect(card).toHaveTextContent("Needs setup");
-    expect(card).toHaveTextContent(/Open it to choose what it can do/);
+    expect(card).toHaveTextContent(/Open it to discover and approve tools/);
   });
 
   it("answers an empty list as a fact rather than as a fault", async () => {
     show([host()], []);
 
-    expect(await screen.findByText("Nothing connected yet")).toBeInTheDocument();
+    expect(await screen.findByText("No connectors")).toBeInTheDocument();
+    expect(screen.getByText(/Add one below/)).toBeInTheDocument();
   });
 });
 
@@ -885,15 +893,15 @@ describe("the badge and the sentence", () => {
   it("agrees with describe() on every branch", () => {
     const paused = connector({ host_allowed: false, vetted: 3 });
     expect(status(paused).word).toBe("Paused");
-    expect(describeConnector(paused)).toContain("Paused");
+    expect(describeConnector(paused)).toContain("cannot connect until the host is approved again");
 
     const bare = connector({ vetted: 0 });
     expect(status(bare).word).toBe("Needs setup");
-    expect(describeConnector(bare)).toContain("Nothing is switched on yet");
+    expect(describeConnector(bare)).toContain("No tools approved yet");
 
     const ready = connector({ vetted: 2 });
     expect(status(ready).word).toBe("Ready");
-    expect(describeConnector(ready)).toContain("2 tools switched on");
+    expect(describeConnector(ready)).toContain("2 tools approved");
   });
 
   it("leads with the address, not with the tool count, when a host was revoked", () => {
@@ -979,7 +987,7 @@ describe("what 091 folded away, and what it refused to", () => {
   it("puts the API-vendor credential scheme behind a disclosure", async () => {
     show([host()]);
 
-    await userEvent.click(await screen.findByLabelText(/A REST API/));
+    await userEvent.click(await screen.findByLabelText(/REST API/));
     // Still reachable, still sent, still REST-only — just not in the way of somebody
     // registering an MCP server, which is most people most of the time.
     expect(screen.getByPlaceholderText("x-api-key").closest("details")).not.toBeNull();

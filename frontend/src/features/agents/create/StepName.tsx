@@ -17,9 +17,9 @@ import { type Draft, nameIsUsable, slugify } from "../../../lib/draft";
 import type { StepProps } from "./CreateAgentPage";
 
 export function nameBlocker(draft: Draft): string {
-  if (!draft.typed.trim()) return "Give it a name first.";
-  if (!draft.name) return "That name has no letters or digits in it — try another.";
-  if (!nameIsUsable(draft.name)) return "That identifier cannot be used. Edit it below.";
+  if (!draft.typed.trim()) return "Enter a name.";
+  if (!draft.name) return "The name needs at least one letter or digit.";
+  if (!nameIsUsable(draft.name)) return "The ID is not valid. Edit it below.";
   return "";
 }
 
@@ -48,18 +48,13 @@ export default function StepName({ draft, set, locked = false }: StepProps) {
     // this is a different operation — plus where to find it.
     return (
       <>
-        <Card title="What is it called?">
-          <Field
-            label="Identifier"
-            hint="Its address, and the name in every record of what it does."
-          >
+        <Card title="Name">
+          <Field label="ID" hint="Used in the URL and in the audit log.">
             <input type="text" className="mono" value={draft.name} disabled readOnly />
           </Field>
           <p className="muted">
-            Renaming an agent changes its URL and nothing else — its grants and history
-            come with it, and every record of what it has already
-            done keeps the name it had at the time. It is a different operation and this is
-            not it: it is on the agent's own page, and it belongs to whoever owns the agent.
+            The owner can rename the agent from its page. Renaming changes the URL.
+            Grants and history are kept.
           </p>
         </Card>
       </>
@@ -80,11 +75,8 @@ function FullStep({ draft, set }: Pick<StepProps, "draft" | "set">) {
 
   return (
     <>
-      <Card title="What is it called?">
-        <Field
-          label="Name"
-          hint="What you would call it. This is what people see in their list."
-        >
+      <Card title="Name">
+        <Field label="Name" hint="Shown in lists.">
           <input
             type="text"
             value={draft.typed}
@@ -98,8 +90,8 @@ function FullStep({ draft, set }: Pick<StepProps, "draft" | "set">) {
         </Field>
 
         <Field
-          label="Identifier"
-          hint="Its web address, and the name in every record of what it does. Made from the name above — change it if you would rather."
+          label="ID"
+          hint="Used in the URL and in the audit log. Generated from the name. You cannot change it after the agent has been used."
         >
           <input
             type="text"
@@ -114,21 +106,19 @@ function FullStep({ draft, set }: Pick<StepProps, "draft" | "set">) {
           // (migration 019) and refused with a sentence by the server; this exists so
           // nobody reaches step 5 to find out. Where the two disagree the server wins,
           // and its message is what gets rendered.
-          <Notice tone="warn" title="That identifier will not be accepted">
+          <Notice tone="warn" title="Invalid ID">
             <p className="sentence">
-              Use lowercase letters, digits and single hyphens between them — like{" "}
-              <span className="mono">triage-bot</span>. It has to work in a URL and read
-              unambiguously in an audit log, so two names that look alike in a list cannot
-              be different agents.
+              Use lowercase letters, digits and single hyphens, for example{" "}
+              <span className="mono">triage-bot</span>.
             </p>
           </Notice>
         )}
 
         {draft.typed.trim() && !draft.name && (
-          <Notice tone="warn" title="We need something to call it in a URL">
+          <Notice tone="warn" title="ID required">
             <p className="sentence">
-              There is nothing in that name we can use as an address. Type an identifier
-              above using letters and digits — the name you chose stays as it is.
+              The name has no letters or digits to make an ID from. Enter an ID above.
+              The name stays as typed.
             </p>
           </Notice>
         )}

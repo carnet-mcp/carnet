@@ -130,10 +130,10 @@ export default function AgentDetailPage() {
 export const UNREAD: { key: string; label: string }[] = [
   { key: "system", label: "Instructions" },
   { key: "model", label: "Model" },
-  { key: "max_tokens", label: "Answer-length ceiling" },
+  { key: "max_tokens", label: "Answer-length limit" },
   { key: "runtime", label: "Runtime tier" },
-  { key: "private_runs", label: "Private runs" },
-  { key: "limits", label: "Per-run ceilings" },
+  { key: "private_runs", label: "Privacy setting" },
+  { key: "limits", label: "Limits" },
   { key: "output", label: "Answer schema" },
 ];
 
@@ -142,21 +142,9 @@ function StoredNotRead({ agent }: { agent: AgentDetail }) {
   if (present.length === 0) return null;
 
   return (
-    <Card
-      title="Stored, and not read here"
-      hint="kept exactly as written — nothing reads them when a call is made"
-    >
+    <Card title="Unused settings">
       <p className="sentence">
-        This deployment brokers tool calls. What it reads out of an agent on every call is
-        the tool list and the scope above, and nothing else; the fields below were written
-        by an earlier version of this form, by the API, or for a deployment that runs
-        agents. They are kept exactly as they were — an edit here never removes them.
-      </p>
-      <p className="muted">
-        They are still checked for shape when somebody writes them, so none of these is a
-        value nobody looked at. What no longer happens is anything acting on them: no
-        ceiling is enforced from here, no answer is checked against a schema, and nothing
-        is hidden from a colleague. What bounds this agent is the token it is called with.
+        These were set by an earlier version. The MCP endpoint does not read them.
       </p>
       <table>
         <tbody>
@@ -231,9 +219,9 @@ function Actions({ agent }: { agent: AgentDetail }) {
         // hand, deliberately not enough to make an undo button look feasible.
         <Notice tone="bad" title={`Delete ${agent.name}?`}>
           <p className="sentence">
-            This cannot be undone. Everyone it is shared with loses it, and anybody who
-            reached it through a team loses it too. Every call it admitted stays in the
-            audit record, and any token granted only this agent can call nothing.
+            This cannot be undone. Everyone it is shared with loses access, including
+            through groups. Its past calls stay in the audit log. A token granted only
+            this agent can call nothing.
           </p>
           {failure ? <Failure error={failure} /> : null}
           <div className="spread">
@@ -252,10 +240,10 @@ function Actions({ agent }: { agent: AgentDetail }) {
                   });
               }}
             >
-              {deleting ? "Deleting" : "Delete it"}
+              {deleting ? "Deleting" : "Delete"}
             </Button>
             <Button disabled={deleting} onClick={() => setConfirming(false)}>
-              Keep it
+              Cancel
             </Button>
           </div>
         </Notice>

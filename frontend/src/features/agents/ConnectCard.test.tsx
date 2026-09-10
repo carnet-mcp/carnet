@@ -53,7 +53,7 @@ afterEach(() => {
 });
 
 describe("the address", () => {
-  it("shows the door's endpoint and a config an assistant can hold", async () => {
+  it("shows the MCP server URL and a config a client can hold", async () => {
     vi.mocked(api.doorActivity).mockResolvedValue({ calls: 0, last_call_at: null });
     show();
 
@@ -75,12 +75,12 @@ describe("the address", () => {
     show({ mcp_url: undefined });
 
     expect(
-      await screen.findByText(/has not told the application its public address/),
+      await screen.findByText(/The MCP server URL is not configured/),
     ).toBeInTheDocument();
     expect(screen.getByText("CARNET_PUBLIC_ORIGIN")).toBeInTheDocument();
   });
 
-  it("points at the tokens page, where a real token is minted", async () => {
+  it("points at Access tokens, where a real token is generated", async () => {
     vi.mocked(api.doorActivity).mockResolvedValue({ calls: 0, last_call_at: null });
     show();
 
@@ -109,7 +109,7 @@ describe("the dialects (075)", () => {
     const pane = within(screen.getByRole("tabpanel"));
     expect(pane.getByText(/\[mcp_servers\.carnet\]/)).toBeInTheDocument();
     expect(pane.getByText(/Bearer <your token>/)).toBeInTheDocument();
-    expect(pane.getByText(/has not been tried against the real client/)).toBeInTheDocument();
+    expect(pane.getByText(/Untested from here/)).toBeInTheDocument();
   });
 
   it("offers an OAuth client the URL alone, with no token to paste", async () => {
@@ -121,11 +121,11 @@ describe("the dialects (075)", () => {
     const pane = within(screen.getByRole("tabpanel"));
     expect(pane.queryByText("cannot connect")).not.toBeInTheDocument();
     expect(pane.queryByText(/Bearer <your token>/)).not.toBeInTheDocument();
-    expect(pane.getByText(/the address above and nothing else/)).toBeInTheDocument();
+    expect(pane.getByText(/Add the URL above to/)).toBeInTheDocument();
     expect(pane.getByText(/Add custom connector/)).toBeInTheDocument();
   });
 
-  it("renders the reason instead of a snippet for a client that refuses plain http", async () => {
+  it("renders the reason instead of a snippet for a client that requires https", async () => {
     vi.mocked(api.doorActivity).mockResolvedValue({ calls: 0, last_call_at: null });
     show({ mcp_url: "http://localhost:8000/mcp" });
     await screen.findByText("http://localhost:8000/mcp");
@@ -133,7 +133,7 @@ describe("the dialects (075)", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Claude.ai and Claude Desktop" }));
     const pane = within(screen.getByRole("tabpanel"));
     expect(pane.getByText("cannot connect")).toBeInTheDocument();
-    expect(pane.getByText(/plain http:\/\//)).toBeInTheDocument();
+    expect(pane.getByText(/requires an https:\/\/ address/)).toBeInTheDocument();
   });
 });
 
@@ -146,7 +146,7 @@ describe("waiting for the first call", () => {
     expect(screen.getByText(/updates by itself/)).toBeInTheDocument();
   });
 
-  it("says refused, in the door's words, when the door turned the last call away", async () => {
+  it("says denied, in the server's words, when the server turned the last call away", async () => {
     // Zero admitted calls and a denial naming one of this agent's tools: the case the
     // card exists for — a token pasted right but not granted this agent — which
     // rendered as "waiting" until 070.
@@ -162,16 +162,16 @@ describe("waiting for the first call", () => {
     });
     show();
 
-    expect(await screen.findByText("refused")).toBeInTheDocument();
-    expect(screen.getByText(/no agent token m_4f2a is granted provides a tool called 'post_message'/)).toBeInTheDocument();
+    expect(await screen.findByText("denied")).toBeInTheDocument();
+    expect(screen.getByText(/no agent granted to token m_4f2a provides a tool called 'post_message'/)).toBeInTheDocument();
     expect(screen.queryByText("no calls yet")).not.toBeInTheDocument();
   });
 
-  it("says a token the door does not recognise leaves no record", async () => {
+  it("says a token the server does not recognise leaves no record", async () => {
     vi.mocked(api.doorActivity).mockResolvedValue({ calls: 0, last_call_at: null });
     show();
 
-    expect(await screen.findByText(/does not recognise at all leaves no record/)).toBeInTheDocument();
+    expect(await screen.findByText(/does not recognise leaves no record/)).toBeInTheDocument();
   });
 
   it("shows a refusal beside the connected line only when it is newer than the last call", async () => {
@@ -188,8 +188,8 @@ describe("waiting for the first call", () => {
     });
     const first = show();
     expect(await screen.findByText("connected")).toBeInTheDocument();
-    expect(screen.getByText("refused since")).toBeInTheDocument();
-    expect(screen.getByText(/acting-for claim the door could not accept/)).toBeInTheDocument();
+    expect(screen.getByText("denied since")).toBeInTheDocument();
+    expect(screen.getByText(/on-behalf-of claim the server could not accept/)).toBeInTheDocument();
     first.unmount();
 
     // Older than the last admitted call: not news, and not shown.
@@ -200,7 +200,7 @@ describe("waiting for the first call", () => {
     });
     show();
     expect(await screen.findByText("connected")).toBeInTheDocument();
-    expect(screen.queryByText("refused since")).not.toBeInTheDocument();
+    expect(screen.queryByText("denied since")).not.toBeInTheDocument();
   });
 
   it("flips to connected when calls have arrived", async () => {
@@ -211,7 +211,7 @@ describe("waiting for the first call", () => {
     show();
 
     expect(await screen.findByText("connected")).toBeInTheDocument();
-    expect(screen.getByText(/3 calls through the door/)).toBeInTheDocument();
+    expect(screen.getByText(/3 requests/)).toBeInTheDocument();
   });
 
   it("polls while waiting, and stops at first contact", async () => {

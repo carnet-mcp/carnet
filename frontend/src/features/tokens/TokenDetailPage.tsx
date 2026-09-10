@@ -106,11 +106,11 @@ export default function TokenDetailPage() {
   return (
     <>
       <Link className="back" to="/tokens">
-        ← Your tokens
+        ← Access tokens
       </Link>
       <PageHead title={token ? token.name : tokenId} />
 
-      {listing.loading && <Spinner label="Reading your tokens…" />}
+      {listing.loading && <Spinner label="Loading tokens…" />}
       {/* Before the not-yours sentence and never beside it. **A failed listing is not an
           absent token** — the same distinction `TokensPage` asserts, where a 503 would
           otherwise say *you have no tokens* to somebody who has four. Here it would say
@@ -118,10 +118,10 @@ export default function TokenDetailPage() {
       {listing.error && <Failure error={listing.error} />}
 
       {listing.data && !token && (
-        <Notice tone="warn" title="No token of yours has that id">
+        <Notice tone="warn" title="Token not found">
           <p className="sentence">
-            This page reads your own tokens. If the id belongs to a colleague&rsquo;s
-            credential, they can open it — and an administrator can read it with the API.
+            This page shows only your own tokens. A colleague&rsquo;s token is visible to
+            them and to administrators through the API.
           </p>
         </Notice>
       )}
@@ -136,11 +136,11 @@ export default function TokenDetailPage() {
         <RevokeBox token={token} onRevoked={listing.reload} />
       )}
 
-      {budget.loading && <Spinner label="Reading what it has spent…" />}
+      {budget.loading && <Spinner label="Loading usage…" />}
       {budget.error && <Failure error={budget.error} />}
       {budget.data && <Spent spend={budget.data} />}
 
-      {reach.loading && <Spinner label="Working out what it can reach…" />}
+      {reach.loading && <Spinner label="Loading access…" />}
       {reach.error && <Failure error={reach.error} />}
 
       {reach.data && (
@@ -196,7 +196,7 @@ function RevokeBox({
   if (!confirming) {
     return (
       <div className="spread">
-        <Button onClick={() => setConfirming(true)}>Revoke this token</Button>
+        <Button onClick={() => setConfirming(true)}>Revoke token</Button>
       </div>
     );
   }
@@ -204,17 +204,16 @@ function RevokeBox({
   return (
     <Notice tone="warn" title={`Revoke "${token.name}"?`}>
       <p className="sentence">
-        Immediate and permanent. Every request it makes from now on is refused. The row stays
-        listed — records that name <code className="mono">{token.id}</code> still need to
-        resolve it — and the name is freed for a replacement.
+        Immediate and permanent. Every request it makes from now on is denied. The token
+        stays listed as <code className="mono">{token.id}</code>. Its name can be reused.
       </p>
       {failure ? <Failure error={failure} /> : null}
       <div className="spread">
         <Button onClick={() => setConfirming(false)} disabled={busy}>
-          Keep it
+          Cancel
         </Button>
         <Button kind="primary" busy={busy} onClick={revoke}>
-          {busy ? "Revoking" : "Revoke it"}
+          {busy ? "Revoking" : "Revoke"}
         </Button>
       </div>
     </Notice>
@@ -234,15 +233,15 @@ function RevokeBox({
  *  which person is the entire point of an offboarding review. */
 function Identity({ token, reach }: { token: OwnedToken; reach: TokenReach | null }) {
   return (
-    <Card title="This credential" hint="what it is, and whether it still works">
+    <Card title="Token" hint="identity and state">
       <table>
         <tbody>
           <tr>
-            <th>Id</th>
+            <th>ID</th>
             <td className="mono">{token.id}</td>
           </tr>
           <tr>
-            <th>Acts as</th>
+            <th>Kind</th>
             <td>
               <Kind token={token} />
               {/* Only once the server has said so. Deriving it from `acts_as_owner`
@@ -328,17 +327,16 @@ function Spent({ spend }: { spend: TokenSpend }) {
 
   if (!spend.metered) {
     return (
-      <Card title="What it has spent" hint="through the MCP door">
-        <Notice tone="warn" title="Door calls are not metered here">
+      <Card title="Usage" hint="through the MCP server">
+        <Notice tone="warn" title="Requests are not metered">
           <p className="sentence">
-            <code>CARNET_MCP_CALLS_PER_DAY</code> is {spend.ceiling} on the deployment
-            that answered, so the door admits every call without counting it.{" "}
-            <strong>Nothing is written</strong> — this token could have made a million
-            calls today and there would be no row to say so.
+            The daily request limit on this deployment is {spend.ceiling}, which turns
+            metering off. Requests are allowed without being counted.{" "}
+            <strong>Nothing is recorded here.</strong>
           </p>
           <p className="muted sentence">
-            What it <em>did</em> is still recorded: every brokered call is in the audit
-            log, and an administrator can read the door&rsquo;s traffic and its refusals.
+            Every allowed request is still in the audit log. An administrator can read
+            the request log and the access denied log.
           </p>
         </Notice>
         {/* Rendered anyway, and captioned. Turning the dial off deletes nothing, so a
@@ -346,8 +344,8 @@ function Spent({ spend }: { spend: TokenSpend }) {
             zero since is not a quiet day. */}
         {week}
         <p className="muted sentence">
-          Anything above was counted while the meter was running. A zero is not a quiet
-          day here; it is a day nobody was counting.
+          The figures above were counted while metering was on. A zero may be a day
+          nobody was counting.
         </p>
         {/* **Rendered in this branch too, and the omission would have been a real gap.**
             The call dial and the money dials are three independent settings: a deployment
@@ -362,13 +360,13 @@ function Spent({ spend }: { spend: TokenSpend }) {
   const quiet = spend.history.every((window) => window.calls === 0);
 
   return (
-    <Card title="What it has spent" hint="through the MCP door">
+    <Card title="Usage" hint="through the MCP server">
       {quiet ? (
         // A sentence rather than seven rows of zeros. Safe here and not above: the
         // ceiling is on, so a zero really is a day with no admitted calls.
         <p className="sentence">
-          This token has had no calls admitted through the door in the last seven days.
-          Its ceiling is {spend.ceiling.toLocaleString()} a day.
+          No requests were allowed in the last seven days. The rate limit is{" "}
+          {spend.ceiling.toLocaleString()} requests a day.
         </p>
       ) : (
         <>
@@ -376,34 +374,28 @@ function Spent({ spend }: { spend: TokenSpend }) {
             <strong>
               {spend.calls.toLocaleString()} of {spend.ceiling.toLocaleString()}
             </strong>{" "}
-            calls admitted today — the UTC day beginning {spend.window}.
+            requests allowed today, the UTC day beginning {spend.window}.
           </p>
           {week}
         </>
       )}
 
       {spend.calls >= spend.ceiling && (
-        <Notice tone="warn" title="At its ceiling for today">
+        <Notice tone="warn" title="Rate limit reached">
           <p className="sentence">
-            Further calls are refused until the window frees at midnight UTC, with a
-            sentence naming this limit. Nothing else about the credential has changed —
-            it is not revoked, and what it reaches below is unaffected.
+            Further requests are denied until midnight UTC. The token is not revoked and
+            its access below is unchanged.
           </p>
           <p className="muted sentence">
-            The ceiling is <code>CARNET_MCP_CALLS_PER_DAY</code>, a setting on the
-            deployment rather than a property of this token. Raising it is an operator&rsquo;s
-            decision at the command line; there is nothing here that could do it.
+            The rate limit is set by an operator for the whole deployment.
           </p>
         </Notice>
       )}
 
       {/* The label's honesty, said where the number is rather than in a tooltip. */}
       <p className="muted sentence">
-        <strong>Admitted, not attempted.</strong> A call refused for scope, or refused by
-        this ceiling, costs nothing and is not counted here — so a token being denied
-        repeatedly shows up as whatever it succeeded at. An administrator can see the
-        rest: every brokered call on the door traffic log, and the refusals that never
-        reached a broker on the denial log.
+        <strong>Allowed requests only.</strong> A denied request costs nothing and is not
+        counted here. An administrator can see denied requests on the access denied log.
       </p>
 
       <Cost spend={spend} />
@@ -447,11 +439,8 @@ function Cost({ spend }: { spend: TokenSpend }) {
   if (!metered) {
     return (
       <p className="muted sentence">
-        <strong>Spend at the model is not bounded here.</strong>{" "}
-        <code>CARNET_MCP_USD_PER_DAY</code> and{" "}
-        <code>CARNET_MCP_TOKENS_PER_DAY</code> are both off on the deployment that
-        answered, so nothing this credential spends will refuse it. What it did spend is
-        still recorded on every call.
+        <strong>No spend limit.</strong> Model spend is not limited on this deployment.
+        What is spent is still recorded on every call.
       </p>
     );
   }
@@ -465,48 +454,40 @@ function Cost({ spend }: { spend: TokenSpend }) {
             ? `${money(spend.usd)} of ${money(spend.usd_ceiling)}`
             : `${tokens(spend.tokens)} of ${tokens(spend.tokens_ceiling)}`}
         </strong>{" "}
-        spent at a model today — the same UTC day above. The allowance belongs to whoever
-        holds this credential, and it frees at midnight UTC.
+        spent at a model today, the same UTC day. The limit resets at midnight UTC.
       </p>
 
       {/* Both rows when both dials are on, because whichever is met first refuses and a
           reader who only saw the dollar figure would not understand a token refusal. */}
       {spend.usd_metered && spend.tokens_metered && (
         <p className="muted sentence">
-          Underneath it, {tokens(spend.tokens)} of {tokens(spend.tokens_ceiling)} tokens.
-          Whichever ceiling is met first refuses, and the refusal names which.
+          Also {tokens(spend.tokens)} of {tokens(spend.tokens_ceiling)} tokens. Whichever
+          limit is reached first denies the next call.
         </p>
       )}
 
       {spend.tokens === 0 ? (
         <p className="muted sentence">
-          Nothing has been spent at a model through this credential today. Most brokered
-          tools spend nothing here at all — a token counter appears only when the tool on
-          the other side reports one, which is what a brokered model call does.
+          Nothing has been spent at a model today. Most tools spend nothing here. A token
+          count appears only when a tool reports one.
         </p>
       ) : null}
 
       {spend.unpriced_models.length > 0 && (
         <p className="muted sentence">
           The dollar figure <strong>excludes</strong> {spend.unpriced_models.join(", ")},
-          which the price list cannot value — those tokens count against the token ceiling
-          and against nobody&rsquo;s dollars. A model with no rate is reported as unpriced
-          rather than billed at some other model&rsquo;s. To price{" "}
-          {spend.unpriced_models.length === 1 ? "it" : "them"}, an operator adds{" "}
-          {spend.unpriced_models.length === 1 ? "the id" : "those ids"} to the rate table
-          at <code>CARNET_MODEL_RATES</code>; until then the token ceiling is the one
-          bounding this spend.
+          which {spend.unpriced_models.length === 1 ? "has" : "have"} no rate in the
+          price list. {spend.unpriced_models.length === 1 ? "Its" : "Their"} tokens count
+          against the token limit only. An operator can add rates to the price list.
         </p>
       )}
 
       {(spend.usd_metered && spend.usd >= spend.usd_ceiling) ||
       (spend.tokens_metered && spend.tokens >= spend.tokens_ceiling) ? (
-        <Notice tone="warn" title="At its spend ceiling for today">
+        <Notice tone="warn" title="Spend limit reached">
           <p className="sentence">
-            Further calls are refused until midnight UTC, with a sentence naming this
-            limit and the figure above. The call that crossed the line completed — a
-            call&rsquo;s cost is only known once it returns, so this bounds the next one
-            rather than holding anything back.
+            Further requests are denied until midnight UTC. The call that crossed the
+            limit completed.
           </p>
         </Notice>
       ) : null}
@@ -525,8 +506,8 @@ function Week({ windows, today }: { windows: SpentWindow[]; today: string }) {
     <table>
       <thead>
         <tr>
-          <th>Window (UTC)</th>
-          <th>Calls admitted</th>
+          <th>Day (UTC)</th>
+          <th>Requests allowed</th>
         </tr>
       </thead>
       <tbody>
@@ -562,18 +543,25 @@ function Reached({
 }) {
   if (reach.agents.length === 0) {
     return (
-      <Card title="What it can reach" hint="the grant, as stored">
+      <Card title="Access" hint="as granted">
         {/* **A sentence, not an empty table.** Empty-denies is this product's default, so
             nothing here is a loading failure — and a blank table is read as one. */}
         <p className="sentence">
-          This token is granted nothing. An MCP client presenting it gets an empty
-          <code>tools/list</code>, and every call it tries is refused.
+          This token has no agents. A client using it gets an empty{" "}
+          <code>tools/list</code>, and every call is denied.
         </p>
         <p className="muted sentence">
-          Access is granted by sharing an <em>agent</em>
-          {reach.acts_as_owner
-            ? " with the person this token acts as — it holds no grants of its own, by design."
-            : " with this token. Nothing on this page can do that."}
+          {reach.acts_as_owner ? (
+            <>
+              A personal token uses its owner&rsquo;s access. Share an{" "}
+              <Link to="/agents">agent</Link> with yourself to use it here.
+            </>
+          ) : (
+            <>
+              Grant one from the <Link to="/agents">agent</Link>&rsquo;s{" "}
+              <strong>Share</strong> dialog.
+            </>
+          )}
         </p>
         {reach.invalid_agents.length > 0 && <Broken names={reach.invalid_agents} />}
       </Card>
@@ -582,21 +570,20 @@ function Reached({
 
   return (
     <>
-      <Card title="What it can reach" hint="the grant, as stored">
+      <Card title="Access" hint="as granted">
         <p className="sentence">
           {reach.tools.length === 1 ? "One tool" : `${reach.tools.length} tools`}, through{" "}
           {reach.agents.length === 1 ? "one agent" : `${reach.agents.length} agents`}.
           {reach.acts_as_owner
-            ? " These are its owner's grants, live — they change when the owner's do."
+            ? " These are its owner's grants and change when the owner's do."
             : " These are the token's own grants."}
         </p>
         {/* The union rule, said once, above the thing that would otherwise look like a
             contradiction. One tool under two agents at two scopes is not a mistake and
             neither scope is the winner: the call decides, from its own arguments. */}
         <p className="muted sentence">
-          A tool granted by more than one agent keeps <em>each</em> agent&rsquo;s scope,
-          and which one applies is decided per call. That is why this is one section per
-          agent rather than one list.
+          A tool granted by more than one agent keeps <em>each</em> agent&rsquo;s scope.
+          Which one applies is decided per call.
         </p>
         {/* Rendered as text rather than as tags: it is the answer to "does this match what
             my client shows", which somebody reads across rather than scans. */}
@@ -624,7 +611,7 @@ function Reached({
           catalogue={catalogue}
           failed={failed}
           title={agent.name}
-          hint="what this token reaches through this agent"
+          hint="through this agent"
         />
       ))}
     </>
@@ -639,14 +626,13 @@ function Reached({
  *  nothing saying where the third went, is an absence that reads as a fact. */
 function Broken({ names }: { names: string[] }) {
   return (
-    <Notice tone="warn" title="Granted, and cannot be read">
+    <Notice tone="warn" title="Granted, and not valid">
       <p className="sentence">
-        {names.join(", ")} {names.length === 1 ? "is" : "are"} granted to this token and{" "}
-        {names.length === 1 ? "its" : "their"} stored configuration no longer validates,
-        so the door skips {names.length === 1 ? "it" : "them"} and nothing above counts{" "}
-        {names.length === 1 ? "it" : "them"}. Whatever{" "}
-        {names.length === 1 ? "it grants is" : "they grant are"} unreachable until that is
-        fixed, on the <Link to="/agents">agents</Link> page.
+        {names.join(", ")} {names.length === 1 ? "is" : "are"} granted to this token, and{" "}
+        {names.length === 1 ? "its" : "their"} configuration is not valid. The MCP server
+        skips {names.length === 1 ? "it" : "them"}, and nothing above counts{" "}
+        {names.length === 1 ? "it" : "them"}. Fix{" "}
+        {names.length === 1 ? "it" : "them"} on <Link to="/agents">Agents</Link>.
       </p>
     </Notice>
   );

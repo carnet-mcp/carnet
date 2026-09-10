@@ -150,9 +150,9 @@ const ME = {
   admin: false,
 };
 
-/** The "What it may reach" card. */
+/** The "Resource access" card. */
 function reach() {
-  return screen.getByRole("heading", { name: "What it may reach" }).closest("section")!;
+  return screen.getByRole("heading", { name: "Resource access" }).closest("section")!;
 }
 
 /** The tool blocks, in the order they are rendered.
@@ -201,8 +201,8 @@ describe("which tools write", () => {
 
     // Both headings, and the write one above the read one. Burying two writes among
     // nine reads answers "what can this change" only for somebody who reads all eleven.
-    const change = await screen.findByRole("heading", { name: "It can change things" });
-    const read = screen.getByRole("heading", { name: "It can read" });
+    const change = await screen.findByRole("heading", { name: "Write tools" });
+    const read = screen.getByRole("heading", { name: "Read tools" });
     expect(change.compareDocumentPosition(read)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 
     expect(toolNames()).toEqual(["post_message", "github_mcp_list_issues"]);
@@ -210,7 +210,7 @@ describe("which tools write", () => {
 
   it("labels each tool with its effect", async () => {
     show();
-    await screen.findByRole("heading", { name: "It can change things" });
+    await screen.findByRole("heading", { name: "Write tools" });
 
     expect(within(toolBlock("post_message")).getByText("write")).toBeInTheDocument();
     expect(
@@ -219,13 +219,14 @@ describe("which tools write", () => {
   });
 
   it("agrees with itself about number — one tool is singular", async () => {
-    // The bug this chunk shipped: "One tool that alter a system outside this one."
+    // The bug this chunk shipped: "One tool that alter a system" — the singular sentence
+    // wearing the plural verb. Pinned as: the singular sentence exact, the plural absent.
     show({ tools: ["post_message"], scope: { "chat.channel": { write: ["#eng"] } } });
 
     expect(
-      await screen.findByText(/One tool that alters a system outside this one/),
+      await screen.findByText("One tool that can change data in the connected system."),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/One tool that alter a/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/tools that can change data/)).not.toBeInTheDocument();
   });
 
   it("agrees with itself about number — two tools are plural", async () => {
@@ -235,7 +236,7 @@ describe("which tools write", () => {
     });
 
     expect(
-      await screen.findByText(/2 tools that alter systems outside this one/),
+      await screen.findByText(/2 tools that can change data in connected systems/),
     ).toBeInTheDocument();
   });
 
@@ -246,12 +247,12 @@ describe("which tools write", () => {
       scope: { "github.repo": { read: ["a/b"] } },
     });
 
-    expect(await screen.findByRole("heading", { name: "It can read" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Read tools" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("heading", { name: "It can change things" }),
+      screen.queryByRole("heading", { name: "Write tools" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByText(/One tool that looks and changes nothing/),
+      screen.getByText(/One tool that reads data and changes nothing/),
     ).toBeInTheDocument();
   });
 });
@@ -281,13 +282,13 @@ describe("what each tool is", () => {
     ]);
 
     expect(
-      await screen.findByText("No description was recorded when this tool was vetted."),
+      await screen.findByText("No description."),
     ).toBeInTheDocument();
   });
 
   it("says where a tool came from", async () => {
     show();
-    await screen.findByRole("heading", { name: "It can change things" });
+    await screen.findByRole("heading", { name: "Write tools" });
     expect(within(toolBlock("post_message")).getByText("built in")).toBeInTheDocument();
     expect(
       within(toolBlock("github_mcp_list_issues")).getByText("from github-mcp"),
@@ -296,7 +297,7 @@ describe("what each tool is", () => {
 
   it("never renders argument names — decision 2, at the last place it could leak", async () => {
     show();
-    await screen.findByRole("heading", { name: "It can change things" });
+    await screen.findByRole("heading", { name: "Write tools" });
     // `github.repo` is composed from `owner` and `repo`; a client that learned those
     // could build a scope out of them, which the resource type exists to prevent.
     expect(reach().textContent).not.toMatch(/\bowner\b/);
@@ -307,7 +308,7 @@ describe("what each tool is", () => {
 describe("the resources table", () => {
   it("joins each scope row to the granted tools that use it", async () => {
     show();
-    await screen.findByRole("heading", { name: "It can change things" });
+    await screen.findByRole("heading", { name: "Write tools" });
 
     // Scoped to the table: a resource type appears in its tool's block too, which is
     // the same deliberate duplication as the tool names.
@@ -332,13 +333,14 @@ describe("the resources table", () => {
     });
 
     const stale = (await screen.findByText("jira.project")).closest("tr")!;
-    expect(within(stale).getByText("nothing granted uses this")).toBeInTheDocument();
+    expect(within(stale).getByText("no granted tool uses this")).toBeInTheDocument();
   });
 
-  it("says no scope means everything those tools accept", async () => {
-    show({ tools: [], scope: {} });
+  it("says no selected resources means any resource the caller can reach", async () => {
+    // `list_issues` declares `github.repo`, so the open-access sentence is the true one.
+    show({ tools: ["github_mcp_list_issues"], scope: {} });
     expect(
-      await screen.findByText(/No scope is set, so every resource these tools accept/),
+      await screen.findByText(/No resources are selected.*any resource the caller's account can reach/),
     ).toBeInTheDocument();
   });
 });
@@ -351,11 +353,11 @@ describe("when the catalogue is not there", () => {
     show({}, new ApiError(503, "the service cannot reach its database"));
 
     expect(
-      await screen.findByText(/cannot say which of these change anything/),
+      await screen.findByText(/could not be loaded. Tool effects are not shown/),
     ).toBeInTheDocument();
     expect(screen.getByText("post_message")).toBeInTheDocument();
     expect(
-      screen.queryByRole("heading", { name: "It can change things" }),
+      screen.queryByRole("heading", { name: "Write tools" }),
     ).not.toBeInTheDocument();
   });
 
@@ -367,7 +369,7 @@ describe("when the catalogue is not there", () => {
 
     expect(await screen.findByText(/Granted, and no longer available/)).toBeInTheDocument();
     expect(
-      screen.getByText(/github_mcp_list_issues is in this agent's grant/),
+      screen.getByText(/github_mcp_list_issues is granted to this agent and no longer available/),
     ).toBeInTheDocument();
   });
 });
@@ -376,7 +378,7 @@ describe("an agent granted nothing", () => {
   it("says so plainly rather than showing an empty list", async () => {
     show({ tools: [], scope: {} });
     expect(
-      await screen.findByText(/It is granted no tools at all/),
+      await screen.findByText("This agent has no tools."),
     ).toBeInTheDocument();
   });
 });
@@ -398,7 +400,7 @@ describe("what is stored and not read here", () => {
   };
 
   function card() {
-    return screen.getByRole("heading", { name: "Stored, and not read here" })
+    return screen.getByRole("heading", { name: "Unused settings" })
       .closest("section")!;
   }
 
@@ -414,23 +416,16 @@ describe("what is stored and not read here", () => {
       },
     });
 
-    await screen.findByRole("heading", { name: "Stored, and not read here" });
+    await screen.findByRole("heading", { name: "Unused settings" });
     expect(within(card()).getByText("Instructions")).toBeInTheDocument();
     expect(within(card()).getByText("Runtime tier")).toBeInTheDocument();
-    expect(within(card()).getByText("Private runs")).toBeInTheDocument();
-    expect(within(card()).getByText("Per-run ceilings")).toBeInTheDocument();
+    expect(within(card()).getByText("Privacy setting")).toBeInTheDocument();
+    expect(within(card()).getByText("Limits")).toBeInTheDocument();
     expect(within(card()).getByText("Answer schema")).toBeInTheDocument();
+    // The one claim the card makes: nothing at call time reads these.
     expect(
-      within(card()).getByText(/an edit here never removes them/),
+      within(card()).getByText(/The MCP endpoint does not read them/),
     ).toBeInTheDocument();
-    // **The card is precise about which claim it is making, and this pins that.** These
-    // fields *are* checked when they are written — `agents.validate` refuses an unknown
-    // limit key, a non-boolean `private_runs` and a malformed schema — so a card saying
-    // "nothing acts on it" would be false in the other direction. What stopped is
-    // anything acting on them at call time.
-    expect(within(card()).getByText(/still checked for shape when somebody writes/))
-      .toBeInTheDocument();
-    expect(within(card()).getByText(/no ceiling is enforced from here/)).toBeInTheDocument();
   });
 
   it("renders the stored schema pretty-printed, which is why it is still shown", async () => {
@@ -438,7 +433,7 @@ describe("what is stored and not read here", () => {
     // as whatever one line it was written on, and being able to read it is the whole ask.
     show({ config: { name: "minimal", output: { schema: SCHEMA } } });
 
-    await screen.findByRole("heading", { name: "Stored, and not read here" });
+    await screen.findByRole("heading", { name: "Unused settings" });
     // The whole `output` section, not the schema unwrapped from it. What is shown is the
     // stored config key verbatim — unwrapping would be this card having an opinion about
     // the shape of a value it is explicitly not reading.
@@ -449,7 +444,7 @@ describe("what is stored and not read here", () => {
   it("renders a system prompt as prose rather than as quoted JSON", async () => {
     show({ config: { name: "minimal", system: "You summarise." } });
 
-    await screen.findByRole("heading", { name: "Stored, and not read here" });
+    await screen.findByRole("heading", { name: "Unused settings" });
     expect(within(card()).getByText("You summarise.")).toBeInTheDocument();
   });
 
@@ -468,10 +463,10 @@ describe("what is stored and not read here", () => {
       },
     });
 
-    await screen.findByRole("heading", { name: "Stored, and not read here" });
-    expect(within(card()).getByText("Private runs")).toBeInTheDocument();
-    expect(within(card()).getByText("Per-run ceilings")).toBeInTheDocument();
-    expect(within(card()).getByText("Answer-length ceiling")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Unused settings" });
+    expect(within(card()).getByText("Privacy setting")).toBeInTheDocument();
+    expect(within(card()).getByText("Limits")).toBeInTheDocument();
+    expect(within(card()).getByText("Answer-length limit")).toBeInTheDocument();
     const rendered = [...card().querySelectorAll("pre")].map((el) => el.textContent);
     expect(rendered).toEqual(expect.arrayContaining(["false", "{}", "0"]));
   });
@@ -481,9 +476,9 @@ describe("what is stored and not read here", () => {
     // this replaces already set: absent rather than a card announcing a non-fact.
     show({ config: { name: "minimal", permissions: { tools: [], scope: {} } } });
 
-    await screen.findByRole("heading", { name: "What it may reach" });
+    await screen.findByRole("heading", { name: "Resource access" });
     expect(
-      screen.queryByRole("heading", { name: "Stored, and not read here" }),
+      screen.queryByRole("heading", { name: "Unused settings" }),
     ).not.toBeInTheDocument();
   });
 
@@ -495,7 +490,7 @@ describe("what is stored and not read here", () => {
       config: { name: "minimal", limits: { max_writes: 0 }, output: { schema: SCHEMA } },
     });
 
-    await screen.findByRole("heading", { name: "Stored, and not read here" });
+    await screen.findByRole("heading", { name: "Unused settings" });
     expect(screen.queryByText(/every run is checked against this/)).not.toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "The answer it must give" }),
@@ -513,7 +508,7 @@ describe("renaming", () => {
   async function openBox() {
     await screen.findByRole("button", { name: "Rename" });
     await userEvent.click(screen.getByRole("button", { name: "Rename" }));
-    return screen.getByRole("heading", { name: "Rename minimal?" }).closest("div")!;
+    return screen.getByRole("heading", { name: "Rename minimal?" }).closest(".notice") as HTMLElement;
   }
 
   it("offers no Rename to an editor, who would be refused", async () => {
@@ -528,7 +523,7 @@ describe("renaming", () => {
   it("offers no Rename to a user, who has no toolbar at all", async () => {
     show({ your_role: "user" });
 
-    await screen.findByRole("heading", { name: "What it may reach" });
+    await screen.findByRole("heading", { name: "Resource access" });
     expect(screen.queryByRole("button", { name: "Rename" })).not.toBeInTheDocument();
   });
 
@@ -539,10 +534,11 @@ describe("renaming", () => {
     // Both halves. The survival half first, because saying only the breakage is what
     // makes people delete the agent and rebuild it — the operation a rename exists to
     // stop being.
-    expect(
-      screen.getByText(/grants, version history .* come with it/),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/points at nothing afterwards, and there is no/)).toBeInTheDocument();
+    const kept = screen.getByText("Grants, history and sharing are kept.");
+    const breaks = screen.getByText(/stop working. There is no redirect/);
+    expect(kept).toBeInTheDocument();
+    expect(breaks).toBeInTheDocument();
+    expect(kept.compareDocumentPosition(breaks)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it("shows the two addresses as they will read, live", async () => {
@@ -560,8 +556,8 @@ describe("renaming", () => {
     await openBox();
 
     // The default state of this form: opened, unchanged, submitted.
-    expect(screen.getByRole("button", { name: "Rename it" })).toBeDisabled();
-    expect(screen.getByText("It is already called minimal.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rename" })).toBeDisabled();
+    expect(screen.getByText("The name is already minimal.")).toBeInTheDocument();
     expect(api.renameAgent).not.toHaveBeenCalled();
   });
 
@@ -570,8 +566,8 @@ describe("renaming", () => {
     await openBox();
     await userEvent.clear(screen.getByLabelText(/New name/));
 
-    expect(screen.getByRole("button", { name: "Rename it" })).toBeDisabled();
-    expect(screen.getByText("Type the new name first.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rename" })).toBeDisabled();
+    expect(screen.getByText("Enter the new name.")).toBeInTheDocument();
   });
 
   it("blocks a name that is not a slug, in the words the server would use", async () => {
@@ -580,7 +576,7 @@ describe("renaming", () => {
     await userEvent.clear(screen.getByLabelText(/New name/));
     await userEvent.type(screen.getByLabelText(/New name/), "Triage Bot");
 
-    expect(screen.getByRole("button", { name: "Rename it" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Rename" })).toBeDisabled();
     expect(screen.getByText(/lowercase letters, digits and single hyphens/)).toBeInTheDocument();
   });
 
@@ -598,8 +594,8 @@ describe("renaming", () => {
     await userEvent.clear(screen.getByLabelText(/New name/));
     await userEvent.type(screen.getByLabelText(/New name/), "validate");
 
-    expect(screen.getByRole("button", { name: "Rename it" })).toBeEnabled();
-    await userEvent.click(screen.getByRole("button", { name: "Rename it" }));
+    expect(screen.getByRole("button", { name: "Rename" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Rename" }));
 
     expect(
       await screen.findByText(/is reserved and cannot be used as an agent name/),
@@ -625,14 +621,14 @@ describe("renaming", () => {
     await openBox();
     await userEvent.clear(screen.getByLabelText(/New name/));
     await userEvent.type(screen.getByLabelText(/New name/), "triage");
-    await userEvent.click(screen.getByRole("button", { name: "Rename it" }));
+    await userEvent.click(screen.getByRole("button", { name: "Rename" }));
 
     expect(
       await screen.findByText("an agent named 'triage' already exists"),
     ).toBeInTheDocument();
     // Still on the box, still holding what they typed, so the fix is one edit away.
     expect(screen.getByLabelText(/New name/)).toHaveValue("triage");
-    expect(screen.queryByText(/The server refused \(409\)/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Request failed \(409\)/)).not.toBeInTheDocument();
   });
 
   it("sends new_name and nothing else, with no precondition", async () => {
@@ -641,7 +637,7 @@ describe("renaming", () => {
     await openBox();
     await userEvent.clear(screen.getByLabelText(/New name/));
     await userEvent.type(screen.getByLabelText(/New name/), "support-triage");
-    await userEvent.click(screen.getByRole("button", { name: "Rename it" }));
+    await userEvent.click(screen.getByRole("button", { name: "Rename" }));
 
     // Two arguments. `updated_at` is deliberately not among them — this is the one write
     // on an agent that takes no `If-Match`, and the neighbouring `updateAgent` takes one.
@@ -652,8 +648,8 @@ describe("renaming", () => {
 
   it("closes without renaming when the name is kept", async () => {
     show({ your_role: "owner" });
-    await openBox();
-    await userEvent.click(screen.getByRole("button", { name: "Keep this name" }));
+    const box = await openBox();
+    await userEvent.click(within(box).getByRole("button", { name: "Cancel" }));
 
     expect(screen.queryByRole("heading", { name: "Rename minimal?" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rename" })).toBeInTheDocument();
@@ -663,13 +659,13 @@ describe("renaming", () => {
 
 
 describe("the page is the permission list", () => {
-  it("renders the reach, the ceilings and the sheet, and nothing that runs anything", async () => {
+  it("renders the resource access and the sheet, and nothing that runs anything", async () => {
     show();
 
     expect(
-      await screen.findByRole("heading", { name: "What it may reach" }),
+      await screen.findByRole("heading", { name: "Resource access" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "It can change things" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Write tools" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Run it" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /Schedules/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /Triggers/ })).not.toBeInTheDocument();

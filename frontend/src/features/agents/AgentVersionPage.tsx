@@ -102,7 +102,7 @@ export default function AgentVersionPage() {
             {stored.data.restored_from !== null && (
               <> · restored from v{stored.data.restored_from}</>
             )}
-            {live && <> · this is the version running now</>}
+            {live && <> · this is the live version</>}
           </>
         }
       />
@@ -112,12 +112,10 @@ export default function AgentVersionPage() {
         // is read, because what may be live moves under stored configs — so this is the
         // ordinary state of an old version rather than a broken agent, and the restore
         // below is disabled rather than merely failing.
-        <Notice tone="warn" title="This version can no longer be restored">
+        <Notice tone="warn" title="This version cannot be restored">
           <p className="sentence">{stored.data.error}</p>
           <p className="muted">
-            It was a valid configuration when it was saved. Something it names — a tool, a
-            connector — is no longer something this workspace grants, so saving it again
-            is not possible until that changes.
+            It names a tool or connector that is no longer available in this workspace.
           </p>
         </Notice>
       )}
@@ -129,7 +127,7 @@ export default function AgentVersionPage() {
       />
 
       {typeof stored.data.config.system === "string" && stored.data.config.system && (
-        <Card title="Instructions" hint="what it was told it is, in this version">
+        <Card title="Instructions" hint="in this version">
           <pre className="block">{stored.data.config.system as string}</pre>
         </Card>
       )}
@@ -139,12 +137,10 @@ export default function AgentVersionPage() {
         // is no in-progress edit to lose here, so the answer is simply to look again.
         // Reloading is a navigation rather than a state reset, which is why there is no
         // `Conflict` component call — the whole page is derived from two reads.
-        <Notice tone="warn" title="Somebody else saved while this was open">
+        <Notice tone="warn" title="Someone else saved this agent">
           <p className="sentence">
-            The version you were restoring over is gone. Nothing was written. Open the
-            agent again and decide from what is there now — restoring an older
-            configuration over somebody's change you have not seen is exactly what this
-            refusal is for.
+            The agent changed since you opened this page. Nothing was written. Open the
+            agent to see the current version, then restore again if you still want to.
           </p>
           <Button onClick={() => navigate(`/agents/${name}`)}>Open {name}</Button>
         </Notice>
@@ -155,9 +151,8 @@ export default function AgentVersionPage() {
       {mayRestore && !live && (
         <Card title="Restore this version">
           <p className="sentence">
-            This becomes v{agent.data.version + 1}. Version {stored.data.version} stays
-            where it is and so does v{agent.data.version}, so this can be undone the same
-            way it is being done.
+            Restoring creates v{agent.data.version + 1} with this configuration. Versions{" "}
+            {stored.data.version} and {agent.data.version} are kept.
           </p>
           <div className="spread">
             <Button
@@ -169,8 +164,8 @@ export default function AgentVersionPage() {
               {restoring ? "Restoring" : `Restore v${stored.data.version}`}
             </Button>
             <span className="muted">
-              It changes the agent for everybody it is shared with, from the next run
-              onwards. Calls that have already happened are unaffected.
+              Applies to everyone this agent is shared with, from the next call. Past
+              calls are unaffected.
             </span>
           </div>
         </Card>

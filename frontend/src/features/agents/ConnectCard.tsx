@@ -97,9 +97,8 @@ function Dialects({ url }: { url: string }) {
         // a token it minted for itself — no header, no secret, nothing this page sees.
         <>
           <p className="sentence">
-            Give {entry.label} the address above and nothing else. It will send you here to
-            sign in and approve, and hold a token of its own — on your tokens page, revocable
-            there.
+            Add the URL above to {entry.label}. It sends you here to sign in and approve,
+            then holds a token of its own. You can revoke that token on Access tokens.
           </p>
           <p className="muted">{entry.where}</p>
         </>
@@ -110,18 +109,14 @@ function Dialects({ url }: { url: string }) {
             {entry.verified ? (
               entry.where
             ) : (
-              <>
-                From {entry.label}&rsquo;s own documentation of where it keeps MCP servers —
-                this dialect has not been tried against the real client from here, so check
-                that documentation for the file before pasting.
-              </>
+              <>Untested from here. Check the client&rsquo;s documentation for the file location.</>
             )}
           </p>
         </>
       ),
     };
   });
-  return <Tabs tabs={tabs} active={client} onSelect={setClient} label="Assistant" />;
+  return <Tabs tabs={tabs} active={client} onSelect={setClient} label="Client" />;
 }
 
 /** The door's own sentence for a refusal, by the denial's `required`. Two values
@@ -131,19 +126,18 @@ function refusalSentence(refusal: DoorRefusal): string {
   const who = `token ${refusal.token}`;
   if (refusal.reason === "grant") {
     return (
-      `The last call, at ${when}, was refused: no agent ${who} is granted provides a ` +
-      `tool called '${refusal.tool}'. If that token was minted for this agent, check ` +
-      `its grant — a personal token carries its owner's agents, a service token only ` +
-      `what has been shared with it.`
+      `The last call, at ${when}, was denied: no agent granted to ${who} provides a ` +
+      `tool called '${refusal.tool}'. Check the token's grants. A personal token can use ` +
+      `its owner's agents; a service token can use only the agents granted to it.`
     );
   }
   if (refusal.reason === "acting-for") {
     return (
-      `The last call, at ${when}, was refused: ${who} called '${refusal.tool}' with an ` +
-      `acting-for claim the door could not accept.`
+      `The last call, at ${when}, was denied: ${who} called '${refusal.tool}' with an ` +
+      `on-behalf-of claim the server could not accept.`
     );
   }
-  return `The last call, at ${when}, was refused: ${who} called '${refusal.tool}' (${refusal.reason}).`;
+  return `The last call, at ${when}, was denied: ${who} called '${refusal.tool}' (${refusal.reason}).`;
 }
 
 /** A refusal is news when nothing has been admitted, or when it is newer than the last
@@ -183,33 +177,18 @@ export default function ConnectCard({ name }: { name?: string }) {
   const refusal = activity.data ? newsworthy(activity.data) : null;
 
   return (
-    <Card
-      title="Connect an assistant"
-      hint="every call lands scoped, metered and audited"
-    >
+    <Card title="Connect a client">
       <p className="sentence">
-        {name ? (
-          <>
-            Any MCP client — Claude, or anything that speaks the protocol — can call
-            this agent's tools through the door. It presents one token instead of
-            holding any credential of its own, sees exactly the tools this agent
-            grants, and every call is scoped to this agent's reach.
-          </>
-        ) : (
-          <>
-            Any MCP client — Claude, or anything that speaks the protocol — can call
-            tools through this workspace's door. It presents one token instead of
-            holding any credential of its own, and what it may call is decided by that
-            token: the agents it can reach, each with its own tools and limits.
-          </>
-        )}
+        Add this server to Claude, Cursor, VS Code or any MCP client. The client
+        authenticates with an access token and can use the tools of the agents that token
+        is granted.
       </p>
 
       {url ? (
         <>
           <div className="reveal">
-            <span className="label">Endpoint — where the assistant connects</span>
-            <code tabIndex={0} aria-label="Endpoint, where the assistant connects">
+            <span className="label">MCP server URL</span>
+            <code tabIndex={0} aria-label="MCP server URL">
               {url}
             </code>
           </div>
@@ -217,17 +196,22 @@ export default function ConnectCard({ name }: { name?: string }) {
         </>
       ) : (
         <p className="muted">
-          This deployment has not told the application its public address, so the
-          endpoint cannot be shown here — it is <code>&lt;the API's origin&gt;/mcp</code>
-          , and <code>CARNET_PUBLIC_ORIGIN</code> is where an operator sets the origin.
+          The MCP server URL is not configured. It is{" "}
+          <code>&lt;the API's origin&gt;/mcp</code>. An operator sets it with{" "}
+          <code>CARNET_PUBLIC_ORIGIN</code>.
         </p>
       )}
 
       <p className="muted">
-        <code>&lt;your token&gt;</code> is an API token, minted{" "}
-        {name ? <Link to="/tokens">on your tokens page</Link> : "on this page"} and
-        shown once. The token decides what the assistant may call: a personal token
-        carries your own agents, a service token carries what has been shared with it.
+        Replace <code>&lt;your token&gt;</code> with an access token
+        {name ? (
+          <>
+            {" "}
+            from <Link to="/tokens">Access tokens</Link>
+          </>
+        ) : null}
+        . A personal token can use everything shared with you. A service token can use
+        only the agents granted to it.
       </p>
 
       {/* The waiting line. Errors render as silence rather than a warning — this is a
@@ -238,20 +222,20 @@ export default function ConnectCard({ name }: { name?: string }) {
           {activity.data.calls === 0 ? (
             refusal ? (
               <>
-                <Badge tone="bad">refused</Badge> {refusalSentence(refusal)} Nothing
-                has been admitted yet — this updates by itself.
+                <Badge tone="bad">denied</Badge> {refusalSentence(refusal)} No call has
+                been allowed yet. This updates by itself.
               </>
             ) : (
               <>
-                <Badge tone="warn">no calls yet</Badge> Waiting for the first call —
-                this updates by itself. A token the door does not recognise at all
-                leaves no record here.
+                <Badge tone="warn">no calls yet</Badge> Waiting for the first call. This
+                updates by itself. A token the server does not recognise leaves no record
+                here.
               </>
             )
           ) : (
             <>
               <Badge tone="good">connected</Badge> {activity.data.calls}{" "}
-              {activity.data.calls === 1 ? "call" : "calls"} through the door
+              {activity.data.calls === 1 ? "request" : "requests"}
               {activity.data.last_call_at
                 ? `, the last at ${on(activity.data.last_call_at)}`
                 : ""}
@@ -259,7 +243,7 @@ export default function ConnectCard({ name }: { name?: string }) {
               {refusal ? (
                 <>
                   {" "}
-                  <Badge tone="bad">refused since</Badge> {refusalSentence(refusal)}
+                  <Badge tone="bad">denied since</Badge> {refusalSentence(refusal)}
                 </>
               ) : null}
             </>

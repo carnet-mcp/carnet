@@ -51,7 +51,7 @@ describe("the transpose", () => {
 
     expect(screen.queryByText(/attributed to security-triage/i)).not.toBeInTheDocument();
     expect(
-      screen.getByText(/decided per call, so this page cannot say in advance/),
+      screen.getByText(/Which grant applies is decided per call/),
     ).toBeInTheDocument();
   });
 
@@ -59,7 +59,9 @@ describe("the transpose", () => {
     render(<EffectiveReach rows={[SHARED]} />);
 
     expect(
-      screen.getByText(/attributed to the first of them whose scope admits/),
+      screen.getByText(
+        /attributed to the first agent, in the order below, whose scope allows the arguments/,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -93,7 +95,7 @@ describe("the transpose", () => {
 
     expect(screen.getByText("vanished_tool")).toBeInTheDocument();
     expect(screen.getByText("not described")).toBeInTheDocument();
-    expect(screen.getByText(/every call to it is refused/)).toBeInTheDocument();
+    expect(screen.getByText(/every call to it is denied/)).toBeInTheDocument();
   });
 
   it("calls out an agent that carries a tool and grants nothing at its effect", () => {
@@ -125,6 +127,10 @@ describe("the transpose", () => {
   it("says nothing about more than one agent when there is only one", () => {
     render(<EffectiveReach rows={[WRITE]} />);
 
-    expect(screen.queryByText(/granted by more than one agent/)).not.toBeInTheDocument();
+    // The rule sentence always mentions more than one agent; the *count* sentence
+    // ("One tool here is granted by...") is the one that must be absent.
+    expect(
+      screen.queryByText(/here (is|are) granted by more than one agent/),
+    ).not.toBeInTheDocument();
   });
 });

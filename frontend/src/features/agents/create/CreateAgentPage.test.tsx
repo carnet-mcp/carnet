@@ -142,7 +142,7 @@ function open(catalogue: ToolGroup[] = CATALOGUE) {
 // regexes are anchored at the start only, deliberately: they assert the label and say
 // nothing about the hint beside it.
 const nameBox = () => screen.getByRole("textbox", { name: /^Name/ });
-const slugBox = () => screen.getByRole("textbox", { name: /^Identifier/ }) as HTMLInputElement;
+const slugBox = () => screen.getByRole("textbox", { name: /^ID/ }) as HTMLInputElement;
 const next = () => screen.getByRole("button", { name: "Continue" });
 
 function type(field: HTMLElement, value: string) {
@@ -205,7 +205,7 @@ describe("the name becomes a slug", () => {
     type(slugBox(), "Triage Bot");
 
     expect(next()).toBeDisabled();
-    expect(screen.getByText(/That identifier will not be accepted/)).toBeInTheDocument();
+    expect(screen.getByText("Invalid ID")).toBeInTheDocument();
     // The rule, said rather than shown as a regex — this is read by the person who typed
     // it, who by assumption does not know what one is.
     expect(screen.getByText(/lowercase letters, digits and single hyphens/)).toBeInTheDocument();
@@ -214,7 +214,7 @@ describe("the name becomes a slug", () => {
   it("says why it will not continue, rather than only greying the button", async () => {
     open();
     await screen.findByRole("textbox", { name: /^Name/ });
-    expect(screen.getByText("Give it a name first.")).toBeInTheDocument();
+    expect(screen.getByText("Enter a name.")).toBeInTheDocument();
   });
 });
 
@@ -234,7 +234,7 @@ describe("a REST-vetted tool is an ordinary connector tool", () => {
 
     // And its resource joins the scope step exactly as an MCP tool's would.
     expect(await screen.findByText("github.repo")).toBeInTheDocument();
-    expect(screen.getByText(/because you ticked tracker_list_issues/)).toBeInTheDocument();
+    expect(screen.getByText(/used by tracker_list_issues/)).toBeInTheDocument();
   });
 });
 
@@ -249,7 +249,7 @@ describe("the scope questions are derived from the ticked tools", () => {
     expect(screen.queryByText("github.repo")).not.toBeInTheDocument();
     // And it says *why* it is asking — the same join the detail page's Through column
     // renders and `_validate_scope_matches_tools` enforces.
-    expect(screen.getByText(/because you ticked post_message/)).toBeInTheDocument();
+    expect(screen.getByText(/used by post_message/)).toBeInTheDocument();
   });
 
   it("stops asking when the tool is unticked", async () => {
@@ -281,7 +281,7 @@ describe("the scope questions are derived from the ticked tools", () => {
     expect(document.body.textContent).not.toMatch(/wildcard/i);
   });
 
-  it("will not continue with 'only these' and nothing in it", async () => {
+  it("will not continue with 'only selected' and nothing in it", async () => {
     // A perfectly valid config that denies every call the tool could make: the scope
     // entry exists, so the validator is satisfied, and the agent reads as capable and is
     // not. The one failure the derivation cannot prevent on its own.
@@ -290,22 +290,24 @@ describe("the scope questions are derived from the ticked tools", () => {
     tick("post_message");
     fireEvent.click(next());
     fireEvent.click(
-      await screen.findByRole("radio", { name: "Only the ones I list" }),
+      await screen.findByRole("radio", { name: "Only selected channels" }),
     );
 
     expect(next()).toBeDisabled();
     expect(screen.getByText(/Add at least one chat.channel/)).toBeInTheDocument();
   });
 
-  it("says what 'anything' means in its own voice", async () => {
+  it("says what 'All' means in its own voice", async () => {
     open();
     await nameIt();
     tick("post_message");
     fireEvent.click(next());
-    fireEvent.click(await screen.findByRole("radio", { name: "Anything of this type" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "All channels" }));
 
-    expect(screen.getByText(/This is the widest thing you can grant/)).toBeInTheDocument();
-    expect(screen.getByText(/every chat.channel their own account can/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "All channels" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/change every channel the caller's account can access/),
+    ).toBeInTheDocument();
     expect(next()).toBeEnabled();
   });
 });
@@ -325,7 +327,7 @@ describe("what the wizard stopped asking for", () => {
     await nameIt();
     tick("post_message");
     fireEvent.click(next());
-    fireEvent.click(await screen.findByRole("radio", { name: "Anything of this type" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "All channels" }));
     fireEvent.click(next());
   }
 
@@ -333,14 +335,14 @@ describe("what the wizard stopped asking for", () => {
     await toTheEnd();
 
     expect(
-      await screen.findByRole("heading", { name: "What it will be able to reach" }),
+      await screen.findByRole("heading", { name: "Resource access" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("listitem", { name: /Ceilings/ })).not.toBeInTheDocument();
   });
 
   it("offers no per-run ceiling, no answer-length box and no privacy tick", async () => {
     await toTheEnd();
-    await screen.findByRole("heading", { name: "What it will be able to reach" });
+    await screen.findByRole("heading", { name: "Resource access" });
 
     expect(
       screen.queryByRole("checkbox", { name: /may not change anything/ }),
@@ -359,16 +361,16 @@ describe("what the wizard stopped asking for", () => {
     // spend siblings — and the review step is where it gets named.
     await toTheEnd();
 
-    const card = (await screen.findByRole("heading", { name: "What bounds it" }))
+    const card = (await screen.findByRole("heading", { name: "Limits" }))
       .closest("section")!;
     expect(card.textContent).toMatch(/token/);
-    expect(card.textContent).toMatch(/belongs to the token rather than to the agent/);
+    expect(card.textContent).toMatch(/set per token, not per agent/);
   });
 
   it("sends a config that is a name and a permission list, and nothing else", async () => {
     vi.mocked(api.createAgent).mockResolvedValue({ name: "triage-bot", owner: "user:u1" });
     await toTheEnd();
-    fireEvent.click(await screen.findByRole("button", { name: "Create this agent" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create agent" }));
 
     await waitFor(() => expect(api.createAgent).toHaveBeenCalled());
     const config = vi.mocked(api.createAgent).mock.calls[0][0] as Record<string, unknown>;
@@ -387,14 +389,14 @@ describe("creating it", () => {
 
     await screen.findByText("chat.channel");
     fireEvent.click(
-      reachCard("chat.channel").getByRole("radio", { name: "Anything of this type" }),
+      reachCard("chat.channel").getByRole("radio", { name: "All channels" }),
     );
-    fireEvent.click(reachCard("github.repo").getByRole("button", { name: "Add a github.repo" }));
+    fireEvent.click(reachCard("github.repo").getByRole("button", { name: "Add a repository" }));
     type(screen.getByLabelText("github.repo 1"), "anthropics/anthropic-sdk-python");
     fireEvent.click(next());
 
-    await screen.findByRole("heading", { name: "What it will be able to reach" });
-    fireEvent.click(screen.getByRole("button", { name: "Create this agent" }));
+    await screen.findByRole("heading", { name: "Resource access" });
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
 
     await waitFor(() => expect(api.createAgent).toHaveBeenCalled());
     return vi.mocked(api.createAgent).mock.calls[0][0];
@@ -421,7 +423,7 @@ describe("creating it", () => {
     fireEvent.click(next());
     fireEvent.click(next());
 
-    expect(await screen.findByText(/The server accepts this/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Ready to create" })).toBeInTheDocument();
     expect(api.validateDraft).toHaveBeenCalled();
   });
 
@@ -441,7 +443,7 @@ describe("creating it", () => {
     fireEvent.click(next());
     fireEvent.click(next());
 
-    expect(await screen.findByText(/The server will not accept this/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Configuration not accepted" })).toBeInTheDocument();
     expect(screen.getByText(/none of its granted tools touch/)).toBeInTheDocument();
   });
 
@@ -453,7 +455,7 @@ describe("creating it", () => {
 
     // Back on the name step, because that is where the fixable field is — not left on a
     // review screen holding a message about something not on it.
-    expect(await screen.findByRole("textbox", { name: /^Identifier/ })).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: /^ID/ })).toBeInTheDocument();
     expect(screen.getByText(/already has an agent called/)).toBeInTheDocument();
   });
 
@@ -468,7 +470,7 @@ describe("creating it", () => {
     // backwards — skipping ahead past an unanswered step is how somebody arrives at the
     // review screen with a scope row they never filled in.
     for (let i = 0; i < 3; i++) fireEvent.click(next());
-    fireEvent.click(await screen.findByRole("button", { name: "Create this agent" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create agent" }));
 
     await waitFor(() =>
       expect(sessionStorage.getItem("carnet.draft.v1")).toBeNull(),
@@ -479,12 +481,12 @@ describe("creating it", () => {
 describe("the review step and the agent's own page are one screen", () => {
   /** The permission model as each screen renders it, with the card's own title removed.
    *
-   *  The title is the only difference the two are permitted — "what it may reach" against
-   *  "what it will be able to reach", present tense against future — and it is a prop
-   *  rather than a branch precisely so that a second difference would take an argument. */
+   *  The title line is the only difference the two are permitted — the hint reads "as
+   *  stored" against "as it will be stored", present tense against future — and it is a
+   *  prop rather than a branch precisely so that a second difference would take an argument. */
   function reachBody(): string {
     const card = screen
-      .getByRole("heading", { name: /What it (may|will be able to) reach/ })
+      .getByRole("heading", { name: "Resource access" })
       .closest("section")!;
     const clone = card.cloneNode(true) as HTMLElement;
     clone.querySelector(".card-title")!.remove();
@@ -500,15 +502,15 @@ describe("the review step and the agent's own page are one screen", () => {
     fireEvent.click(next());
     await screen.findByText("chat.channel");
     fireEvent.click(
-      reachCard("chat.channel").getByRole("radio", { name: "Anything of this type" }),
+      reachCard("chat.channel").getByRole("radio", { name: "All channels" }),
     );
-    fireEvent.click(reachCard("github.repo").getByRole("button", { name: "Add a github.repo" }));
+    fireEvent.click(reachCard("github.repo").getByRole("button", { name: "Add a repository" }));
     type(screen.getByLabelText("github.repo 1"), "anthropics/anthropic-sdk-python");
     fireEvent.click(next());
-    await screen.findByRole("heading", { name: "What it will be able to reach" });
+    await screen.findByRole("heading", { name: "Resource access" });
 
     const inTheForm = reachBody();
-    screen.getByRole("button", { name: "Create this agent" }); // still on the review step
+    screen.getByRole("button", { name: "Create agent" }); // still on the review step
     cleanupBetween();
 
     // The detail page, over the agent that draft would have created.
@@ -541,7 +543,7 @@ describe("the review step and the agent's own page are one screen", () => {
         </MemoryRouter>,
       ),
     );
-    await screen.findByRole("heading", { name: "What it may reach" });
+    await screen.findByRole("heading", { name: "Resource access" });
 
     expect(reachBody()).toBe(inTheForm);
   });
@@ -552,14 +554,14 @@ describe("the review step and the agent's own page are one screen", () => {
     await nameIt();
     tick("post_message");
     fireEvent.click(next());
-    fireEvent.click(await screen.findByRole("radio", { name: "Anything of this type" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "All channels" }));
     fireEvent.click(next());
 
-    const card = (await screen.findByRole("heading", { name: /will be able to reach/ }))
+    const card = (await screen.findByRole("heading", { name: "Resource access" }))
       .closest("section")!;
-    expect(within(card).getByText("It can change things")).toBeInTheDocument();
+    expect(within(card).getByText("Write tools")).toBeInTheDocument();
     expect(
-      within(card).getByText(/One tool that alters a system outside this one/),
+      within(card).getByText(/One tool that can change data in the connected system/),
     ).toBeInTheDocument();
   });
 });
@@ -599,7 +601,7 @@ describe("a tool that was ticked and then withdrawn", () => {
     open();
     await nameIt();
 
-    expect(await screen.findByText(/Ticked, and no longer available/)).toBeInTheDocument();
+    expect(await screen.findByText(/Selected tools no longer available/)).toBeInTheDocument();
     expect(screen.getByText(/deepwiki_read_content/)).toBeInTheDocument();
     // The thing that made it a dead end: no checkbox exists for it.
     expect(
@@ -615,7 +617,7 @@ describe("a tool that was ticked and then withdrawn", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Remove/ }));
 
     await waitFor(() =>
-      expect(screen.queryByText(/Ticked, and no longer available/)).not.toBeInTheDocument(),
+      expect(screen.queryByText(/Selected tools no longer available/)).not.toBeInTheDocument(),
     );
     // The tool that is still in the catalogue stays ticked — the fix must not clear the
     // draft, which is what closing the tab did.
@@ -627,7 +629,7 @@ describe("a tool that was ticked and then withdrawn", () => {
     await nameIt();
     tick("github_mcp_list_issues");
 
-    expect(screen.queryByText(/Ticked, and no longer available/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Selected tools no longer available/)).not.toBeInTheDocument();
   });
 });
 
@@ -660,14 +662,14 @@ describe("what the wizard does not ask", () => {
     fireEvent.click(next());
     await screen.findByText("chat.channel");
     fireEvent.click(
-      reachCard("chat.channel").getByRole("radio", { name: "Anything of this type" }),
+      reachCard("chat.channel").getByRole("radio", { name: "All channels" }),
     );
     fireEvent.click(next());
 
     // Step 4 is the review. Until 081 it was *Ceilings*, whose controls all wrote config
     // keys nothing in this tree reads — see the describe above.
     expect(
-      await screen.findByRole("heading", { name: "What it will be able to reach" }),
+      await screen.findByRole("heading", { name: "Resource access" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "May it change anything?" }),
@@ -725,15 +727,15 @@ describe("the tools step, at the size a real deployment reaches", () => {
   async function onTools() {
     open(big());
     await nameIt();
-    await screen.findByText(/of 13 chosen/);
+    await screen.findByText(/of 13 selected/);
   }
 
   it("says how many are chosen out of how many there are", async () => {
     await onTools();
-    expect(screen.getByText("0 of 13 chosen")).toBeInTheDocument();
+    expect(screen.getByText("0 of 13 selected")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("checkbox", { name: /jira_list_issues/ }));
-    expect(screen.getByText("1 of 13 chosen")).toBeInTheDocument();
+    expect(screen.getByText("1 of 13 selected")).toBeInTheDocument();
   });
 
   it("narrows by name, by description and by which app it came from", async () => {

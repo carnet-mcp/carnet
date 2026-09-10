@@ -181,8 +181,7 @@ function SignIn({ reason }: { reason: string }) {
       <div className="signin">
         <h1 className="brand">carnet</h1>
         <p className="sentence">
-          Sign in with your work account to see the agents that have been shared with
-          you.
+          Sign in with your work account.
         </p>
         {reason && (
           <Notice tone="warn" title="You were signed out">

@@ -80,8 +80,8 @@ export default function ConnectionNotice({
       tone="warn"
       title={
         reconnecting.length > 0
-          ? "One of your connections has stopped working"
-          : "This agent reaches systems you have not connected"
+          ? "A connection needs attention"
+          : "This agent uses accounts you have not connected"
       }
     >
       <ul className="sentence">
@@ -99,12 +99,11 @@ export default function ConnectionNotice({
             saying: running anyway is not "it will fail", it is "it may act as somebody
             else". That is the thing 7a's delegated credentials exist to prevent and the
             thing a person cannot otherwise tell has happened. */}
-        Until you connect, this agent either cannot reach {missing[0].connector_id} at
-        all, or reaches it using a shared account your organisation configured — which
-        sees different data from yours.
+        Until you connect, calls to {missing[0].connector_id} are denied or use a shared
+        account set up by your administrator.
       </p>
       <Button kind="primary" to="/connections">
-        Go to Connections
+        Connections
       </Button>
     </Notice>
   );

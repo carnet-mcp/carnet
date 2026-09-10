@@ -115,11 +115,11 @@ describe("the list", () => {
       rows.find((row) => row.textContent?.includes(name))!;
 
     expect(byName("oncall")).toHaveTextContent("managed here");
-    expect(byName("oncall")).toHaveTextContent("An administrator adds and removes people");
+    expect(byName("oncall")).toHaveTextContent("An administrator adds and removes members");
     expect(byName("oncall")).not.toHaveTextContent("from your directory");
 
     expect(byName("eng")).toHaveTextContent("from your directory");
-    expect(byName("eng")).toHaveTextContent("Nobody edits it here");
+    expect(byName("eng")).toHaveTextContent("Membership comes from your directory");
     expect(byName("eng")).not.toHaveTextContent("managed here");
 
     // The boolean rides on the listing. A badge that cost one request per group would be
@@ -139,7 +139,7 @@ describe("the list", () => {
     const { container } = show([ENG]);
 
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
-    await screen.findByText(/Membership follows your directory/);
+    await screen.findByText(/Membership follows the directory group/);
 
     const row = container.querySelector(".row")!;
     // The row label is outside the nested panel, which is what makes it a property of the
@@ -152,15 +152,16 @@ describe("the list", () => {
     expect(nested.textContent).toContain("from your directory");
   });
 
-  it("says an empty group reaches nobody", async () => {
+  it("says an empty group has no members", async () => {
     vi.mocked(api.getGroup).mockResolvedValue(detail({ members: [] }));
     show();
 
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
 
     // The mistake this prevents: sharing an agent with an empty group and believing a
-    // team now has access.
-    expect(await screen.findByText(/sharing an agent with it reaches nobody/)).toBeInTheDocument();
+    // team now has access. The page says the group is empty rather than rendering
+    // an empty table.
+    expect(await screen.findByText(/No members yet/)).toBeInTheDocument();
   });
 });
 
@@ -185,7 +186,7 @@ describe("creating", () => {
   it("says why the button is unavailable rather than only disabling it", async () => {
     show();
 
-    expect(await screen.findByText("A group needs a name.")).toBeInTheDocument();
+    expect(await screen.findByText("Enter a name.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create group" })).toBeDisabled();
   });
 });
@@ -215,19 +216,20 @@ describe("membership", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
 
     expect(
-      await screen.findByText(/on every agent, immediately — and nothing tells them/),
+      await screen.findByText(/ends their access through this group on every agent/),
     ).toBeInTheDocument();
   });
 
-  it("explains why members are added by id rather than by email", async () => {
+  it("takes a member by user id, the form the audit log shows", async () => {
     vi.mocked(api.getGroup).mockResolvedValue(detail());
     show();
 
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
 
-    // A limit rather than a preference: a route resolving an address to a principal would
-    // be an enumeration oracle over the company directory for anybody in the tenant.
-    expect(await screen.findByText(/enumerate the company/)).toBeInTheDocument();
+    // By id and not by email, and that is a limit rather than a preference: a route
+    // resolving an address to a principal would be an enumeration oracle over the
+    // company directory. The screen says which id it wants and where to read it from.
+    expect(await screen.findByText(/The user ID, as shown in the audit log/)).toBeInTheDocument();
   });
 
   it("reports a member who was already in the group", async () => {
@@ -257,12 +259,12 @@ describe("deleting", () => {
     show();
 
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Delete this group" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete group" }));
 
     // "Are you sure" asks a question a person cannot answer. This one they can.
-    const warning = await screen.findByText(/stops being reachable through it/);
-    expect(warning).toHaveTextContent("for all 2 members");
-    expect(warning).toHaveTextContent("Nobody is told");
+    const warning = await screen.findByText(/lose access to every agent shared with this group/);
+    expect(warning).toHaveTextContent("All 2 members");
+    expect(warning).toHaveTextContent("immediately");
     expect(warning).toHaveTextContent("cannot be undone");
   });
 
@@ -271,12 +273,12 @@ describe("deleting", () => {
     show();
 
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Delete this group" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete group" }));
 
     // In place rather than in a modal: the thing being deleted, and who is in it, stay on
     // screen while somebody decides.
     expect(screen.getByText("user:u_sam")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Keep it" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
   it("gets the singular right for a group of one", async () => {
@@ -286,9 +288,9 @@ describe("deleting", () => {
     show();
 
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Delete this group" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete group" }));
 
-    expect(await screen.findByText(/for all 1 member,/)).toBeInTheDocument();
+    expect(await screen.findByText(/All 1 member lose/)).toBeInTheDocument();
   });
 
   it("does not delete until the second button is pressed", async () => {
@@ -297,10 +299,10 @@ describe("deleting", () => {
     show();
 
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Delete this group" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete group" }));
     expect(api.deleteGroup).not.toHaveBeenCalled();
 
-    await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(api.deleteGroup).toHaveBeenCalledWith("g-oncall"));
   });
@@ -350,7 +352,7 @@ describe("following a directory", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
 
     expect(
-      await screen.findByText(/not listed until they next sign in/),
+      await screen.findByText(/listed after their next sign-in/),
     ).toBeInTheDocument();
   });
 
@@ -393,7 +395,7 @@ describe("following a directory", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
     await screen.findByText(/nightly/);
 
-    expect(screen.queryByText(/have signed in since/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/listed after their next sign-in/)).not.toBeInTheDocument();
   });
 
   it("unlinks without removing anybody, and says so", async () => {

@@ -1007,7 +1007,7 @@ in a browser, refused every valid value it was given. And a front container that
 could not start now says so: an `ENTRYPOINT` without a restated `CMD` exited 0 with
 no output on a loop while `docker compose up` reported success, so the deploy e2e
 asserts the front container is running and has never crash-looped. The full account
-is `docs/plans/DEFERRED.md`, *What step 031's testing pass found* — ten defects, all
+is the deferred-work register, *What step 031's testing pass found* — ten defects, all
 of them on paths nothing had ever executed.
 
 Upgrading a compose deployment from 0.6.0 **requires two new `.env` variables** and

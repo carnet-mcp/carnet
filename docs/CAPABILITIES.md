@@ -405,23 +405,23 @@ and five more to an administrator.
 
 | Page | Path | What is on it |
 | --- | --- | --- |
-| Create MCP | `/agents` | the agents shared with you, each with what it reaches and whether anyone has knocked |
-| Create wizard | `/agents/new` | four steps — name, tools, reach, review — that build a permission list and validate it before saving |
-| Agent detail | `/agents/:name` | the connect card with the door's URL and a paste-ready token, the share sheet, effective reach, version history, rename and delete |
+| Agents | `/agents` | the agents shared with you, each with the apps it touches and whether anyone has called through it |
+| Create wizard | `/agents/new` | four steps — name, tools, resources, review — that build a permission list and validate it before saving |
+| Agent detail | `/agents/:name` | the connect card with the MCP server URL and a paste-ready token, the share sheet, resource access, version history, rename and delete |
 | Edit | `/agents/:name/edit` | the same form over an existing agent, refusing to overwrite an edit somebody else made meanwhile |
 | A version | `/agents/:name/versions/:version` | one stored configuration and a Restore button |
-| Connections | `/connections` | every vetted connector and your own state for each: a Connect button that starts consent, what it will ask for, who you are connected as, Disconnect |
-| Tokens | `/tokens` | your tokens: mint one, see its secret once, revoke it |
-| A token | `/tokens/:tokenId` | its four stamps, effective reach, the simulator (*would this call be allowed*), and today's spend against the ceiling |
-| Overview | `/overview` (also `/admin/overview`) | a month of door traffic drawn: calls per day, how long they took, how big the answers were, who called, under which permission list, what was refused and by which control, what it cost |
+| Connections | `/connections` | every approved connector and your own state for each: a Connect button that starts consent, what it will ask for, who you are connected as, Disconnect |
+| Access tokens | `/tokens` | your tokens: generate one, see its secret once, revoke it |
+| A token | `/tokens/:tokenId` | its four stamps, resource access, the simulator (*would this call be allowed*), and today's spend against its limit |
+| Usage | `/overview` (also `/admin/overview`) | a month of requests drawn: calls per day, how long they took, how big the answers were, who called, under which agent, what was denied and by which control, what it cost |
 | Approve a client | `/oauth/authorize` | the consent page a Claude Desktop or Cursor lands on: which client, what it will reach, Approve or Deny |
 | Sign-in callback | `/login/callback` | where the identity provider sends the browser back |
-| Administration | `/admin` | the administrative log |
-| Door traffic | `/admin/door-calls` | the door log, row by row, with each refusal's own sentence |
-| Access denials | `/admin/denials` | who tried what, and was refused |
+| Audit log | `/admin` | every change to access in the workspace |
+| Request log | `/admin/door-calls` | every tool call through the MCP server, row by row, with each denial's own sentence |
+| Access denied | `/admin/denials` | who tried what, and was denied |
 | Groups | `/admin/groups` | groups, their members, and whether a directory owns the membership |
 | Connectors | `/admin/connectors` | approve a host, register a connector, from a recipe or by hand |
-| A connector | `/admin/connectors/:connectorId` | discovery against the live server, vet each tool with its effect and resources, configure the consent flow |
+| A connector | `/admin/connectors/:connectorId` | discovery against the live server, approve each tool with its effect and resources, set up the OAuth app |
 
 `/` redirects to the agents page; anything unrouted is a Not found page.
 

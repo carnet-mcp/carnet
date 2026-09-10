@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import Failure from "../../components/Failure";
 import {
@@ -16,6 +16,7 @@ import {
 import { api } from "../../lib/api";
 import { runConsent } from "../../lib/consentWindow";
 import { day, passed } from "../../lib/format";
+import { useAdmin } from "../../lib/me";
 import type { ConnectionSummary } from "../../lib/types";
 import { useResource } from "../../lib/useResource";
 
@@ -36,7 +37,7 @@ import { useResource } from "../../lib/useResource";
  *
  *     Jira      Connected as priya@acme.com          [Disconnect]
  *     GitHub    Not connected                        [Connect]
- *     Linear    Not connected — no consent flow yet   ask an administrator
+ *     Linear    Sign-in has not been set up          ask an administrator
  *
  * A **Connect** button on the third would be the *"a control that exists and does nothing
  * reads as a bug"* failure 10d's share sheet already learned: somebody presses it, nothing
@@ -100,15 +101,14 @@ export default function ConnectionsPage() {
     <>
       <PageHead
         title="Connections"
-        lede="Sign in to the apps your agents use, with your own account. Anything an agent does there is done as you, with your access."
+        lede="Connect your accounts so agents can use them on your behalf. A connected tool uses your access, not an administrator's."
       />
 
       {connected && (
         <Notice tone="info" title={`${connected} is connected`}>
           <p className="sentence">
-            Agents you run can now reach {connected} as you. Nobody here saw the
-            credential — it went from {connected} straight into storage and is never sent
-            anywhere except to {connected} itself.
+            Agents can now use {connected} as you. The credential is stored on the server
+            and sent only to {connected}.
           </p>
           <Button kind="quiet" onClick={clearOutcome}>
             Dismiss
@@ -117,12 +117,12 @@ export default function ConnectionsPage() {
       )}
 
       {failed && (
-        <Notice tone="warn" title="That did not finish">
+        <Notice tone="warn" title="Connection not completed">
           {/* The server's own sentence. It covers a person pressing Deny, a link that
               expired, and a `state` we never issued — and this page must not guess which,
               because two of those are ordinary and one is somebody probing. */}
           <p className="sentence">{failed}</p>
-          <p className="muted">Nothing was stored. You can try again below.</p>
+          <p className="muted">Nothing was stored. Try again below.</p>
           <Button kind="quiet" onClick={clearOutcome}>
             Dismiss
           </Button>
@@ -133,10 +133,10 @@ export default function ConnectionsPage() {
       {error && <Failure error={error} />}
 
       {data && data.length === 0 && (
-        <Empty title="Nothing to connect yet" icon="connections">
+        <Empty title="No connectors" icon="connections">
           <p className="sentence">
-            Your organisation has not set up any connectors. Until it does, agents here
-            can only use the tools that ship with the platform.
+            Your organisation has not set up any connectors yet. Agents can only use the
+            built-in tools.
           </p>
         </Empty>
       )}
@@ -168,6 +168,7 @@ function ConnectionRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const { admin } = useAdmin();
 
   // Abandon any flow in progress when this row goes away. Without it, navigating off the
   // page while a consent popup is open leaves a poll running for the life of the tab and
@@ -215,9 +216,9 @@ function ConnectionRow({
         // this page the reason they believe something untrue.
         if (outcome.revoked_upstream === false) {
           setNote(
-            `Disconnected here, but ${row.connector_id} could not be told to revoke the ` +
-              `token. It may still be live there — revoke it in your ${row.connector_id} ` +
-              `account settings if that matters to you.`,
+            `Disconnected here. ${row.connector_id} could not be told to revoke the ` +
+              `token, so it may still be active there. Revoke it in your ` +
+              `${row.connector_id} account settings.`,
           );
         }
         onChange();
@@ -261,6 +262,18 @@ function ConnectionRow({
         )}
         {row.description && <p className="muted">{row.description}</p>}
         <p className="sentence">{describe(row)}</p>
+        {row.state === "unavailable" &&
+          (admin ? (
+            <p className="muted">
+              <Link to={`/admin/connectors/${encodeURIComponent(row.connector_id)}`}>
+                Set up OAuth app
+              </Link>
+            </p>
+          ) : (
+            // The remedy for everyone else. Who the administrator is cannot be said
+            // here — there is no route listing people with a role (DEFERRED, 107).
+            <p className="muted">Ask an administrator to set it up.</p>
+          ))}
 
         {/* A full sentence rather than a muted note, because on the row it appears on it
             *corrects* the one above it: `describe` says "Connected as priya@acme.com" for
@@ -373,8 +386,8 @@ function lapse(row: ConnectionSummary): string {
   if (row.credential_kind === "static" && row.expires_at) {
     const when = day(row.expires_at);
     return passed(row.expires_at)
-      ? `This credential expired on ${when}. Nothing here can renew it — somebody pasted it in, so it stays expired until an administrator replaces it.`
-      : `This credential expires on ${when}. Nothing here can renew it, so an administrator will have to replace it.`;
+      ? `This credential expired on ${when}. An administrator has to replace it.`
+      : `This credential expires on ${when}. An administrator has to replace it.`;
   }
 
   if (row.credential_kind === "oauth" && row.refresh_expires_at) {
@@ -387,8 +400,8 @@ function lapse(row: ConnectionSummary): string {
     // something that has already happened, on exactly the connection whose next run will
     // fail. Found by rendering one.
     return passed(row.refresh_expires_at)
-      ? `This connection lapsed on ${when}. Renewing cannot fix that, so the next agent that needs it will fail — connect the account again.`
-      : `This connection lapses on ${when}. It renews itself until then; after that you will need to connect it again.`;
+      ? `This connection lapsed on ${when}. Connect the account again.`
+      : `This connection lapses on ${when}. It renews itself until then. After that, connect it again.`;
   }
 
   return "";
@@ -437,7 +450,7 @@ function asks(row: ConnectionSummary): string {
   }
 
   if (row.state === "connected" && row.credential_kind === "oauth") {
-    return `${row.connector_id} asks for: ${list} — what this connector requests today, not a record of what this connection was granted.`;
+    return `${row.connector_id} asks for: ${list}. This is what the connector requests today, not what this connection was granted.`;
   }
 
   return "";
@@ -487,27 +500,15 @@ function describe(row: ConnectionSummary): string {
     case "connected":
       return row.account_label
         ? `Connected as ${row.account_label}.`
-        : "Connected. This connector did not say which account, so there is no name to show.";
+        : "Connected. The connector did not report an account name.";
     case "reconnect":
       // The provider's own reason, verbatim. The badge is what to do; this is what
       // says whether doing it will help — and if consent was withdrawn deliberately,
       // the person needs to know that is what they are undoing.
-      return row.reconsent_reason;
+      return `Needs reconnecting: ${row.reconsent_reason}`;
     case "connectable":
-      // What connecting *buys* you, first — that is the question somebody looking at a
-      // Connect button has — and then what happens if they do not.
-      return `Sign in and agents you run will act as you in ${row.connector_id}. Until then they use your organisation's shared account, if it set one up.`;
+      return "Not connected. Agents use the shared account set up by your administrator, if there is one.";
     case "unavailable":
-      // **The sentence 093a rewrote.** It used to read *"There is no way to connect it
-      // yourself yet — nobody has set up a sign-in flow for this connector. Ask whoever
-      // administers your workspace."* Three problems, and they compound: it opened with
-      // a passive negative, it explained the block in the product's own vocabulary
-      // (*consent flow*, softened to *sign-in flow*, and *connector* — a word for the
-      // thing an administrator registers, not for the app a person recognises), and it
-      // asked somebody to go to an administrator without saying what to ask for.
-      //
-      // So: who is blocked, what is missing in words a person owns, what to ask for by
-      // name, and what happens meanwhile. The badge beside it already says the state.
-      return `Nobody has switched on personal sign-in for ${row.connector_id} yet, so you cannot use your own account here. Ask an administrator to set it up. Until then agents use your organisation's shared account, if it set one up.`;
+      return `Sign-in for ${row.connector_id} has not been set up.`;
   }
 }

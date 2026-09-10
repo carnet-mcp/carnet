@@ -71,12 +71,10 @@ describe("the log", () => {
     expect(screen.getByText("allow")).toBeInTheDocument();
   });
 
-  it("says so when nothing has come through the door yet", async () => {
+  it("says so when no request has come through the MCP server yet", async () => {
     show([]);
 
-    expect(
-      await screen.findByText(/Nothing has come through the door yet/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("No requests yet")).toBeInTheDocument();
   });
 
   it("titles a full page as the most recent, not as the total (061)", async () => {
@@ -93,15 +91,15 @@ describe("the log", () => {
     // is the recent end of a *match*, and a title that said "calls" would read as the
     // recent end of the log.
     expect(
-      await screen.findByText("The 200 most recent matching calls"),
+      await screen.findByText("The 200 most recent matching requests"),
     ).toBeInTheDocument();
-    expect(screen.getByText(/older records stay in the database/)).toBeInTheDocument();
+    expect(screen.getByText(/older records are not shown/)).toBeInTheDocument();
   });
 
   it("titles a partial page as a plain count, which it honestly is", async () => {
     show([record(), record({ run_id: "door-ffffffffffff" })]);
 
-    expect(await screen.findByText("2 calls")).toBeInTheDocument();
+    expect(await screen.findByText("2 requests")).toBeInTheDocument();
   });
 
   it("asks for the log once and does not poll it", async () => {
@@ -290,28 +288,24 @@ describe("the filters come from the URL", () => {
     expect(
       await screen.findByText(/Only calls to acme_list_issues/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Only refusals/)).toBeInTheDocument();
+    expect(screen.getByText(/Only denied calls/)).toBeInTheDocument();
   });
 
   it("tells an empty narrowing apart from an empty log", async () => {
-    // A reader arrives here by clicking a bar. An empty result that read "nothing has
-    // come through the door yet" would contradict the bar they just clicked, and one of
-    // the two would be believed.
+    // A reader arrives here by clicking a bar. An empty result that read "no requests
+    // yet" would contradict the bar they just clicked, and one of the two would be
+    // believed.
     show([], "/admin/door-calls?tool=nonesuch");
 
-    expect(await screen.findByText("Nothing here matches")).toBeInTheDocument();
-    expect(
-      screen.queryByText(/Nothing has come through the door yet/),
-    ).not.toBeInTheDocument();
+    expect(await screen.findByText("No matching requests")).toBeInTheDocument();
+    expect(screen.queryByText("No requests yet")).not.toBeInTheDocument();
   });
 
   it("still says the log is empty when it is, and no filter is on", async () => {
     show([]);
 
-    expect(
-      await screen.findByText(/Nothing has come through the door yet/),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Nothing here matches")).not.toBeInTheDocument();
+    expect(await screen.findByText("No requests yet")).toBeInTheDocument();
+    expect(screen.queryByText("No matching requests")).not.toBeInTheDocument();
   });
 
   it("drops one narrowing without touching the others", async () => {
@@ -330,7 +324,7 @@ describe("the filters come from the URL", () => {
         screen.queryByText(/Only calls to acme_list_issues/),
       ).not.toBeInTheDocument(),
     );
-    expect(screen.getByText(/Only refusals/)).toBeInTheDocument();
+    expect(screen.getByText(/Only denied calls/)).toBeInTheDocument();
   });
 
   it("shows no filter bar at all on an unfiltered page", async () => {

@@ -216,8 +216,8 @@ describe("how somebody has access", () => {
     // 061: the two-step every other destructive control already had. The first
     // click removes nothing; the confirm carries the group-shaped consequence.
     expect(api.unshareAgent).not.toHaveBeenCalled();
-    expect(group).toHaveTextContent(/Everybody reaching it through this group/);
-    await user.click(within(group).getByRole("button", { name: "Remove it" }));
+    expect(group).toHaveTextContent(/Everyone in this group loses access now/);
+    await user.click(within(group).getByRole("button", { name: "Remove" }));
 
     expect(api.unshareAgent).toHaveBeenCalledWith("minimal", "group", "g_6f5b");
   });
@@ -261,7 +261,7 @@ describe("how somebody has access", () => {
 
     const sam = await row("u_sam");
     await user.click(within(sam).getByRole("button", { name: "Remove" }));
-    await user.click(within(sam).getByRole("button", { name: "Remove it" }));
+    await user.click(within(sam).getByRole("button", { name: "Remove" }));
 
     await screen.findByText(/their access comes from/);
     screen.getByText(/Nothing was changed/);
@@ -273,7 +273,7 @@ describe("who is waiting", () => {
     // Merging them would report access that does not exist. Nobody has this yet.
     show();
 
-    await screen.findByRole("heading", { name: "Waiting for a first sign-in" });
+    await screen.findByRole("heading", { name: "Pending first sign-in" });
     const listed = await screen.findByText("newhire@acme.com");
     expect(listed.closest("table")).not.toBe((await row("u_priya")).closest("table"));
   });
@@ -282,7 +282,7 @@ describe("who is waiting", () => {
     show({ waiting: [] });
 
     await screen.findByText("u_priya");
-    expect(screen.queryByRole("heading", { name: "Waiting for a first sign-in" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Pending first sign-in" })).toBeNull();
   });
 });
 
@@ -305,7 +305,7 @@ describe("sharing", () => {
     );
     await user.click(screen.getByRole("button", { name: "Share" }));
 
-    await screen.findByText("Nobody has this access yet");
+    await screen.findByText(/Nobody has signed in as/);
     expect(api.shareAgent).toHaveBeenCalledWith(
       "minimal", "email", "newhire@acme.com", "user",
     );
@@ -342,8 +342,8 @@ describe("sharing", () => {
       .getAllByRole("radio")
       .filter((input) => (input as HTMLInputElement).name === "share-role")
       .map((input) => input.closest("label")!.textContent);
-    expect(levels).toEqual(["Can run it — run it, and see what it may reach",
-                            "Can change it — …and edit it, and share it on"]);
+    expect(levels).toEqual(["Can use — Use its tools and see its settings.",
+                            "Can edit — Also edit and share it."]);
   });
 
   it("labels a machine grantee as a token rather than as another person", async () => {
@@ -367,7 +367,7 @@ describe("sharing", () => {
     });
 
     await screen.findByText("token m_4ceece1001b54da8");
-    screen.getByText("an API token, acting unattended");
+    screen.getByText("an access token");
   });
 
   it("shows a reader the sheet and not the controls", async () => {
@@ -378,7 +378,7 @@ describe("sharing", () => {
     await screen.findByText("u_priya");
     expect(screen.queryByLabelText(/Email address/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
-    screen.getByText(/Changing it needs the level above yours/);
+    screen.getByText(/Only editors and the owner can change sharing/);
     // And makes no request for a tenant-wide group listing. `GET /groups` is open to
     // everybody authenticated, which is a reason to fetch it where it is used rather than
     // a reason not to care: a reader of this sheet has not asked what teams exist.
@@ -433,12 +433,12 @@ describe("sharing with a group", () => {
     await user.selectOptions(await screen.findByLabelText(/^Group/), "g_dir");
 
     // The one case where "who will this reach" has no answer this screen can give.
-    screen.getByText(/including people who have never signed in here/);
+    screen.getByText(/Its members are not listed here/);
     expect(screen.queryByText(/managed by an administrator/)).toBeNull();
 
     await user.selectOptions(screen.getByLabelText(/^Group/), "g_6f5b");
     screen.getByText(/managed by an administrator/);
-    expect(screen.queryByText(/never signed in here/)).toBeNull();
+    expect(screen.queryByText(/members are not listed here/)).toBeNull();
   });
 
   it("renders an empty list as the sentence it is, and names who makes one", async () => {
@@ -448,7 +448,7 @@ describe("sharing with a group", () => {
 
     // Making a group is `POST /groups`, administrator surface. A create control here is
     // how somebody invents a group to solve a share and leaves an unmanaged one behind.
-    await screen.findByText(/There are no groups in this workspace yet/);
+    await screen.findByText(/No groups yet. An administrator creates groups/);
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.getByRole("button", { name: "Share" })).toBeDisabled();
   });
@@ -488,7 +488,7 @@ describe("sharing with a group", () => {
     await chooseGroups(user);
 
     await screen.findByText(/storage unavailable/);
-    expect(screen.queryByText(/There are no groups in this workspace yet/)).toBeNull();
+    expect(screen.queryByText(/No groups yet. An administrator creates groups/)).toBeNull();
     expect(screen.getByRole("button", { name: "Share" })).toBeDisabled();
   });
 
@@ -499,7 +499,7 @@ describe("sharing with a group", () => {
     });
     show();
 
-    await user.click(await screen.findByRole("radio", { name: /Can change it/ }));
+    await user.click(await screen.findByRole("radio", { name: /Can edit/ }));
     await chooseGroups(user);
     await user.selectOptions(await screen.findByLabelText(/^Group/), "g_dir");
     await user.click(screen.getByRole("button", { name: "Share" }));
@@ -618,7 +618,7 @@ describe("sharing with a token", () => {
     show({}, {}, GROUPS, [TOKENS[1]]);
     await chooseTokens(user);
 
-    expect(await screen.findByText(/all personal ones/)).toBeTruthy();
+    expect(await screen.findByText(/active tokens are all personal/)).toBeTruthy();
     expect(screen.queryByLabelText(/^Token/)).toBeNull();
   });
 
@@ -636,8 +636,8 @@ describe("sharing with a token", () => {
     await chooseTokens(user);
 
     await screen.findByLabelText(/^Token/);
-    expect(screen.queryByRole("radio", { name: /Can change it/ })).toBeNull();
-    expect(screen.getByText(/does not edit the list that bounds it/)).toBeTruthy();
+    expect(screen.queryByRole("radio", { name: /Can edit/ })).toBeNull();
+    expect(screen.getByText(/cannot edit the agent/)).toBeTruthy();
   });
 
   it("**confirms in terms of what the assistant does next**, since nothing is sent", async () => {
@@ -656,7 +656,7 @@ describe("sharing with a token", () => {
 
     const notice = await screen.findByText(/appear in its next/);
     expect(notice.textContent).toContain("support-bot");
-    expect(notice.textContent).toContain("shown once");
+    expect(notice.textContent).toContain("tools/list");
   });
 
   it("renders a refusal from the route rather than reporting success", async () => {

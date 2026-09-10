@@ -75,7 +75,7 @@ describe("the list", () => {
   it("states an empty list as what the account can reach, with no word of breakage", async () => {
     show([]);
 
-    expect(await screen.findByText("No agents here yet")).toBeInTheDocument();
+    expect(await screen.findByText("No agents")).toBeInTheDocument();
     expect(screen.queryByText(/error|failed/i)).not.toBeInTheDocument();
   });
 
@@ -85,10 +85,10 @@ describe("the list", () => {
     // to be told to ask a person who does not exist.
     show([]);
 
-    await screen.findByText("No agents here yet");
-    expect(screen.getByText(/Ask whoever owns the agent you need/)).toBeInTheDocument();
+    await screen.findByText("No agents");
+    expect(screen.getByText(/An agent's owner can share it with you/)).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: /Create your first MCP/ }),
+      screen.getByRole("link", { name: /Create your first agent/ }),
     ).toHaveAttribute("href", "/agents/new");
   });
 });
@@ -109,7 +109,7 @@ describe("the standing pair", () => {
     ).toBeInTheDocument();
     // The decision the docstring argues: creation does not depend on the request
     // having succeeded, so the action survives the error branch.
-    expect(screen.getByRole("link", { name: /New MCP/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /New agent/ })).toBeInTheDocument();
   });
 
   it("asks once and does not poll", async () => {
@@ -163,7 +163,7 @@ describe("the badge and the sentence", () => {
 
     const bare = agent({ tools: [] });
     expect(status(bare).word).toBe("No tools");
-    expect(describeAgent(bare)).toContain("touch nothing");
+    expect(describeAgent(bare)).toContain("can call nothing");
 
     const ready = agent({ tools: ["github_list_issues"] });
     expect(status(ready).word).toBe("Ready");

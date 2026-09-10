@@ -86,21 +86,14 @@ export default function DenialsPage() {
   return (
     <>
       <PageHead
-        title="Access denials"
-        lede={
-          <>
-            Every request this workspace refused, oldest first — an agent somebody may
-            not see, an administrative surface they may not use, a tool the MCP door
-            would not carry. This is a record rather than a control: nothing on this page
-            changes anything.
-          </>
-        }
+        title="Access denied"
+        lede="Requests that were denied: an agent the user cannot see, an admin page they cannot open, or a tool their token is not granted. Oldest first."
       />
 
       <div className="log-filters">
-        <span className="muted">About:</span>
+        <span className="muted">Kind:</span>
         <Button kind={kind === "" ? "primary" : "quiet"} onClick={() => setKind("")}>
-          anything
+          all
         </Button>
         {DENIAL_RESOURCE_KINDS.map((option) => (
           <Button
@@ -113,7 +106,7 @@ export default function DenialsPage() {
         ))}
         {filtered && (
           <Button kind="quiet" onClick={clear}>
-            Show everything
+            Clear filters
           </Button>
         )}
       </div>
@@ -122,30 +115,29 @@ export default function DenialsPage() {
         <p className="muted sentence">
           {principalId && (
             <Narrowed
-              label={`Only what ${principalId} was refused.`}
-              clearLabel="Stop filtering by principal"
+              label={`Only requests by ${principalId}.`}
+              clearLabel="Clear actor filter"
               onClear={() => setPrincipalId("")}
             />
           )}
           {resourceId && (
             <Narrowed
-              label={`Only refusals about ${resourceId}.`}
-              clearLabel="Stop filtering by resource"
+              label={`Only requests for ${resourceId}.`}
+              clearLabel="Clear target filter"
               onClear={() => setResourceId("")}
             />
           )}
         </p>
       )}
 
-      {loading && <Spinner label="Reading the log…" />}
+      {loading && <Spinner label="Loading…" />}
       {error && <Failure error={error} />}
 
       {data && data.length === 0 && !filtered && (
-        <Empty title="Nothing has been refused yet">
+        <Empty title="No denied requests">
           <p className="sentence">
-            This log fills up when somebody asks for an agent nobody shared with them, an
-            administrative surface they do not have the role for, or a tool their token
-            was never granted. An empty log is a true answer, not a missing one.
+            Denied requests appear here: an agent the user cannot see, an admin page they
+            cannot open, or a tool their token is not granted.
           </p>
         </Empty>
       )}
@@ -154,25 +146,25 @@ export default function DenialsPage() {
         // Told apart from the empty log on purpose. "Nothing was ever refused" and "your
         // filter matched nothing" look identical and are different facts, and one of them
         // has something to do about it.
-        <Empty title="Nothing here matches that">
-          <p className="sentence">
-            The log may still hold refusals of another kind, or about somebody else.
-          </p>
+        <Empty title="No matching requests">
+          <p className="sentence">Remove a filter to widen the search.</p>
           <Button kind="quiet" onClick={clear}>
-            Show everything
+            Clear filters
           </Button>
         </Empty>
       )}
 
       {data && data.length > 0 && (
-        <Card title={`${data.length} ${data.length === 1 ? "refusal" : "refusals"}`}>
+        <Card
+          title={`${data.length} denied ${data.length === 1 ? "request" : "requests"}`}
+        >
           <table>
             <thead>
               <tr>
                 <th>When</th>
-                <th>Who</th>
-                <th>What they asked for</th>
-                <th>Needed</th>
+                <th>Actor</th>
+                <th>Target</th>
+                <th>Required</th>
                 <th>Held</th>
               </tr>
             </thead>
@@ -189,7 +181,7 @@ export default function DenialsPage() {
                     <FilterValue
                       value={record.principal_id}
                       onPick={setPrincipalId}
-                      title="Show only what this principal was refused"
+                      title="Show only requests by this actor"
                     />
                   </td>
                   <td className="mono">
@@ -200,7 +192,7 @@ export default function DenialsPage() {
                         <FilterValue
                           value={record.resource_id}
                           onPick={setResourceId}
-                          title="Show only refusals about this"
+                          title="Show only requests for this target"
                         />
                       </>
                     ) : null}

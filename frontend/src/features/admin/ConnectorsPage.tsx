@@ -23,7 +23,7 @@ import { useResource } from "../../lib/useResource";
  * proof. Step 091.
  *
  * ```
- * allow an address   →   add a connector   →   open it   →   switch on what it may do
+ * approve a host   →   add a connector   →   open it   →   approve the tools it may offer
  * ```
  *
  * **The ordering is real and it is no longer the first thing on the page.** A credential
@@ -47,9 +47,11 @@ import { useResource } from "../../lib/useResource";
  *
  * Every paragraph of *why* on this page was true and is now in these comments. Three
  * sentences are load-bearing in the other direction — somebody got the opposite impression
- * once — and all three stayed, shortened: registering switches nothing on, revoking an
- * address strands connectors rather than deleting them, and an asserted identity is
- * believed without verification.
+ * once — and all three stayed, shortened: registering approves nothing, revoking a host
+ * strands connectors rather than deleting them, and an asserted identity is believed
+ * without verification. Step 107 then put every sentence on this screen into the plain
+ * register the rest of the product uses (*approved hosts*, *approve*, *OAuth app*); the
+ * structure 091 gave it is unchanged.
  */
 export default function ConnectorsPage() {
   const hosts = useResource(() => api.listHosts(), []);
@@ -65,7 +67,7 @@ export default function ConnectorsPage() {
     <>
       <PageHead
         title="Connectors"
-        lede="Connect the apps your team already uses. Add one here, then choose exactly what it is allowed to do."
+        lede="A connector is an MCP server or REST API that agents can use tools from. To add one: approve its host, register it, then approve each tool you want to make available. Tools are unavailable until approved."
       />
 
       {/* **What is connected, first and as cards.** The page used to reach this last, as a
@@ -80,10 +82,9 @@ export default function ConnectorsPage() {
         {connectors.error ? <Failure error={connectors.error} /> : null}
 
         {connectors.data && live.length === 0 && (
-          <Empty title="Nothing connected yet" icon="connectors">
+          <Empty title="No connectors" icon="connectors">
             <p className="sentence">
-              Add your first connector below — your assistants can only use the tools
-              that ship with the platform until you do.
+              Add one below. Until then, agents can only use the built-in tools.
             </p>
           </Empty>
         )}
@@ -126,10 +127,9 @@ export default function ConnectorsPage() {
             card it points at had rendered. */}
         {hosts.loading || hosts.error ? null : approved.length === 0 ? (
           <p className="sentence">
-            Nothing can be added yet. A connector&rsquo;s address has to be on this
-            workspace&rsquo;s allowed list first — add it under{" "}
-            <strong>Allowed addresses</strong> at the bottom of this page, or pick an app
-            above and allow what it asks for.
+            Approve a host first. A connector&rsquo;s URL must be on an approved host.
+            Approve one under <strong>Approved hosts</strong> at the bottom of this page,
+            or pick a preset above and approve the hosts it needs.
           </p>
         ) : (
           <NewConnector
@@ -213,14 +213,13 @@ function Hosts({ resource }: { resource: ReturnType<typeof useResource<HostEntry
   };
 
   return (
-    <Card title="Allowed addresses" hint="the servers this workspace may connect to">
-      {resource.loading && <Spinner label="Loading…" />}
+    <Card title="Approved hosts" hint="the hosts connectors may connect to">
+      {resource.loading && <Spinner label="Loading hosts…" />}
       {resource.error ? <Failure error={resource.error} /> : null}
 
       {resource.data && resource.data.length === 0 && (
         <p className="sentence">
-          Nothing is allowed yet, so this workspace cannot connect anywhere. That is the
-          safe default, not a fault.
+          No approved hosts. Connectors can only connect to approved hosts.
         </p>
       )}
 
@@ -243,7 +242,7 @@ function Hosts({ resource }: { resource: ReturnType<typeof useResource<HostEntry
                     {/* Marked in the list and not only at the moment of approval: this row
                         looks exactly like a working one otherwise, and whoever reads the
                         allowlist next was not the person who approved it. */}
-                    {row.warning && <Tag write>never dialled</Tag>}
+                    {row.warning && <Tag write>not reachable</Tag>}
                   </td>
                   <td className="mono">{row.allowed_by}</td>
                   <td className="row-sub">{row.warning || row.note}</td>
@@ -263,17 +262,15 @@ function Hosts({ resource }: { resource: ReturnType<typeof useResource<HostEntry
                           after the fact, said here before it. */}
                       <Notice tone="warn" title={`Revoke ${row.host}?`}>
                         <p className="sentence">
-                          Every connector on this host stops connecting at its next
-                          dial — registrations and vetting records stay, so approving
-                          the host again restores them, but until then their tools
-                          vanish from every caller&rsquo;s list. Approvals by other
-                          administrators go with it: the allowlist is the
-                          workspace&rsquo;s, not yours.
+                          Every connector on this host stops connecting. Their tools
+                          become unavailable to every caller. Registrations and
+                          approved tools are kept, and approving the host again
+                          restores them.
                         </p>
                         <div className="spread">
-                          <Button onClick={() => setConfirming("")}>Keep it</Button>
+                          <Button onClick={() => setConfirming("")}>Cancel</Button>
                           <Button kind="primary" onClick={() => revoke(row.host)}>
-                            Revoke it
+                            Revoke
                           </Button>
                         </div>
                       </Notice>
@@ -295,7 +292,7 @@ function Hosts({ resource }: { resource: ReturnType<typeof useResource<HostEntry
           is the only way it could have been found. */}
       {resource.data && (
         <div className="inline-form">
-          <FieldGroup label="Allow an address" hint="Just the hostname — no https://, no port, no path.">
+          <FieldGroup label="Approve a host" hint="Hostname only, without scheme, port or path.">
             <div className="spread">
               <input
                 value={host}
@@ -304,7 +301,7 @@ function Hosts({ resource }: { resource: ReturnType<typeof useResource<HostEntry
               />
               <input
                 value={note}
-                placeholder="why (optional)"
+                placeholder="Note (optional)"
                 onChange={(e) => setNote(e.target.value)}
               />
               <Button busy={busy} disabled={!host.trim()} onClick={approve}>
@@ -323,16 +320,15 @@ function Hosts({ resource }: { resource: ReturnType<typeof useResource<HostEntry
         </Notice>
       )}
       {warning && (
-        <Notice tone="warn" title="Saved, but it will not be dialled">
+        <Notice tone="warn" title="Approved, and not reachable">
           <p className="sentence">{warning}</p>
         </Notice>
       )}
       {stranded.length > 0 && (
-        <Notice tone="warn" title="Connectors still point at that address">
+        <Notice tone="warn" title="Connectors on this host">
           <p className="sentence">
-            {stranded.join(", ")} — they keep their registration and everything switched
-            on, and will refuse to connect until the address is allowed again. Nothing was
-            deleted.
+            {stranded.join(", ")} cannot connect until the host is approved again. Their
+            registrations and approved tools are kept.
           </p>
         </Notice>
       )}
@@ -374,15 +370,15 @@ function RecipeChooser({
   const [allowing, setAllowing] = useState("");
   const [failure, setFailure] = useState("");
 
-  if (resource.loading) return <Spinner label="Loading apps…" />;
+  if (resource.loading) return <Spinner label="Loading presets…" />;
   // A failed catalogue is not a failed page: everything below still works, and the whole
   // feature is a convenience over a form somebody can fill in by hand. Saying so beats
   // rendering `Failure` and implying registration is broken.
   if (resource.error)
     return (
       <p className="sentence muted">
-        The presets could not be loaded ({String(resource.error)}). Filling the form in by
-        hand below still works.
+        Presets could not be loaded ({String(resource.error)}). You can still register a
+        connector below.
       </p>
     );
   const recipes = resource.data ?? [];
@@ -404,7 +400,7 @@ function RecipeChooser({
 
   return (
     <>
-      <FieldGroup label="Which app?" hint="Presets for the services people ask for most. They fill the form in — nothing more.">
+      <FieldGroup label="Start from a preset" hint="A preset fills in the form below.">
         <div className="pick-grid">
           {recipes.map((recipe) => (
             <label
@@ -453,13 +449,13 @@ function RecipeChooser({
           <p className="sentence muted">{chosen.description}</p>
 
           {chosen.staleness !== "verified" && (
-            <Notice tone="warn" title="Check these against the vendor">
+            <Notice tone="warn" title="Check these values against the vendor">
               <p className="sentence">
                 {chosen.staleness === "unverified"
-                  ? "Nobody here has signed in to this vendor to confirm these details."
-                  : `These details were last checked on ${chosen.verified_on}.`}{" "}
-                Vendors move endpoints and rename permissions without telling anybody.
-                Every field below is yours to change before you add it.
+                  ? "These endpoints and scopes have not been verified."
+                  : `These values were last checked on ${chosen.verified_on}.`}{" "}
+                Vendors change OAuth endpoints and scopes. You can edit every field below
+                before you register.
               </p>
             </Notice>
           )}
@@ -468,8 +464,8 @@ function RecipeChooser({
               needed. Allowing is still a separate deliberate act — it is the same act,
               in the place the question is asked. */}
           <p className="sentence">
-            <strong>It needs these addresses allowed.</strong> That is your call, not
-            its: a preset cannot widen where this workspace may connect.
+            <strong>Hosts this preset needs.</strong> Connectors can only connect to
+            approved hosts.
           </p>
           <ul className="needs">
             {chosen.hosts.map((host) => (
@@ -506,14 +502,14 @@ function RecipeChooser({
           )}
 
           {/* The two things a preset deliberately did not do, said out loud. Silence here
-              is how somebody concludes a preset with four proposed tools switched four on. */}
+              is how somebody concludes a preset with four proposed tools approved four. */}
           {(chosen.tools.length > 0 || chosen.oauth) && (
             <p className="sentence muted">
               {chosen.tools.length > 0
-                ? `It suggests ${chosen.tools.length} tool${chosen.tools.length === 1 ? "" : "s"} and has switched none of them on — you choose those on the connector's own page once it is added. `
+                ? `The preset suggests ${chosen.tools.length} tool${chosen.tools.length === 1 ? "" : "s"}. Approve each one on the connector's page after registering. `
                 : ""}
               {chosen.oauth
-                ? "Its sign-in details are set up separately, and the client id and secret are yours: you create them in the vendor's own console."
+                ? "The OAuth app is set up on the connector's page. The client ID and secret come from the vendor's console."
                 : ""}
             </p>
           )}
@@ -654,7 +650,7 @@ function NewConnector({
 
   return (
     <div className="inline-form">
-      <Field label="Name it" hint="Lowercase letters, digits and hyphens. It goes in front of every tool name.">
+      <Field label="ID" hint="Lowercase letters, digits and hyphens. Prefixes every tool name.">
         <input value={id} placeholder="jira" onChange={(e) => setId(e.target.value)} />
       </Field>
 
@@ -671,8 +667,11 @@ function NewConnector({
             onChange={() => setKind("http")}
           />
           <span>
-            <strong>An MCP server</strong>
-            <span className="muted"> It lists its own tools, so you pick from a list.</span>
+            <strong>MCP server</strong>
+            <span className="muted">
+              {" "}
+              — Tools are discovered from the server. Streamable HTTP.
+            </span>
           </span>
         </label>
         <label className={`choice big${rest ? " on" : ""}`}>
@@ -683,11 +682,11 @@ function NewConnector({
             onChange={() => setKind("rest")}
           />
           <span>
-            <strong>A REST API</strong>
+            <strong>REST API</strong>
             <span className="muted">
               {" "}
-              It lists nothing, so you describe each tool yourself. This is the shape an AI
-              model provider takes.
+              — You write each tool&rsquo;s schema and request mapping. Used for model
+              providers.
             </span>
           </span>
         </label>
@@ -697,10 +696,12 @@ function NewConnector({
         label="Address"
         hint={
           rest
-            ? `The base URL each tool's path is added to. Must be on: ${hosts
+            ? `The base URL each tool's path is joined to. Its host must be one of: ${hosts
                 .map((h) => h.host)
                 .join(", ")}`
-            : `Where the server answers. Must be on: ${hosts.map((h) => h.host).join(", ")}`
+            : `The Streamable HTTP endpoint. Its host must be one of: ${hosts
+                .map((h) => h.host)
+                .join(", ")}`
         }
       >
         <input
@@ -731,11 +732,10 @@ function NewConnector({
             onChange={() => setHeld("env")}
           />
           <span>
-            <strong>In this deployment</strong>
+            <strong>Environment variable</strong>
             <span className="muted">
               {" "}
-              An environment variable this platform reads. The default, and it costs
-              nothing per call.
+              — Read from this deployment&rsquo;s environment. The default.
             </span>
           </span>
         </label>
@@ -747,12 +747,11 @@ function NewConnector({
             onChange={() => setHeld("vault")}
           />
           <span>
-            <strong>In your own vault &mdash; we never hold it</strong>
+            <strong>Vault reference</strong>
             <span className="muted">
               {" "}
-              A 1Password reference, read at call time and never stored here. Costs one
-              to three requests to your vault on every call, so a call to this connector
-              is slower and stops working while your vault is down.
+              — A 1Password reference, read on every call and never stored here. Calls
+              are slower and fail while the vault is unavailable.
             </span>
           </span>
         </label>
@@ -760,8 +759,8 @@ function NewConnector({
 
       {held === "env" ? (
         <Field
-          label="Key variable"
-          hint="Optional. The environment variable holding the key everyone shares. A per-person sign-in is set up later instead."
+          label="Credential variable"
+          hint="Optional. The environment variable holding the shared credential."
         >
           <input
             value={credentialEnv}
@@ -772,7 +771,7 @@ function NewConnector({
       ) : (
         <Field
           label="Vault reference"
-          hint="Where in your 1Password vault the key is — a location, never the value. Item ids resolve in one request and names in three, so use ids for a connector that is called often."
+          hint="The credential's location in your 1Password vault. Item IDs resolve faster than names."
         >
           <input
             value={credentialRef}
@@ -794,7 +793,7 @@ function NewConnector({
             <>
               <Field
                 label="Credential header"
-                hint="Blank means Authorization. The header this API reads its key from."
+                hint="The header the API reads the credential from. Blank means Authorization."
               >
                 <input
                   value={credentialHeader}
@@ -804,7 +803,7 @@ function NewConnector({
               </Field>
               <Field
                 label="Credential prefix"
-                hint="Sent exactly as shown before the key, trailing space included. Clear it to send the bare token, which is what an x-api-key vendor wants."
+                hint="Sent before the credential, trailing space included. Clear it to send the bare token."
               >
                 <input
                   value={credentialPrefix}
@@ -813,7 +812,7 @@ function NewConnector({
               </Field>
               <FieldGroup
                 label="Other headers"
-                hint="Sent on every request — an API version, typically. Not secret: anything typed here is stored in the connector's manifest."
+                hint="Sent on every request, for example an API version. Not secret."
               >
                 {headers.map((header, index) => (
                   <div className="spread" key={index}>
@@ -854,7 +853,7 @@ function NewConnector({
             </>
           )}
 
-          <Field label="Description" hint="Optional. Shown to whoever is choosing tools.">
+          <Field label="Description" hint="Optional. Shown when choosing tools.">
             <input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -882,14 +881,12 @@ function NewConnector({
           onChange={(e) => setAsserts(e.target.checked)}
         />
         <span>
-          <strong>A calling app may say who it is acting for.</strong>
+          <strong>Accept asserted identity</strong>
           <span className="muted">
             {" "}
-            An email address, believed without verification — exactly as honest as the app
-            making the call, and every such call is logged as <code>asserted</code>, kept
-            apart from <code>verified</code>. Leave it clear and only a verified
-            acting-for is accepted. You can change this later on the connector&apos;s own
-            page, which is where the change gets its own record.
+            — A calling service may name who it acts on behalf of without verification.
+            Such calls are logged as <code>asserted</code>, not <code>verified</code>. You
+            can change this later on the connector&apos;s page.
           </span>
         </span>
       </label>
@@ -908,10 +905,7 @@ function NewConnector({
       >
         Register
       </Button>
-      <p className="muted">
-        Adding it does not switch anything on. Nothing the server offers can be used until
-        you switch a tool on, one at a time, on its page.
-      </p>
+      <p className="muted">Next: approve the tools you want to make available.</p>
     </div>
   );
 }
@@ -983,24 +977,25 @@ export function status(connector: ConnectorSummary): { tone: Tone; word: string 
  * true **and** what it means — a tool count on its own does not tell an administrator
  * whether anybody can use this, and the answer differs by state.
  *
- * **091 rewrote every branch and changed none of them.** *Vetted* is "switched on",
- * *the allowlist* is "the allowed list", and the oauth split — the whole of 7a and 7b — is
- * "everyone shares one login" against "people sign in with their own account". The
- * vocabulary a customer meets here is the vocabulary of their own working day; the
- * vocabulary of the schema is in the schema.
+ * **091 rewrote every branch and changed none of them; 107 rewrote them again**, in the
+ * register of the reference consoles: *vetted* is "approved", *the allowlist* is "an
+ * approved host", and the oauth split — the whole of 7a and 7b — is "the shared
+ * credential" against "users can connect their own accounts". The vocabulary a customer
+ * meets here is the vocabulary of the other consoles they use; the vocabulary of the
+ * schema is in the schema.
  */
 export function describe(connector: ConnectorSummary): string {
   if (!connector.host_allowed) {
-    return `Paused: ${connector.host} is no longer on the allowed list, so this cannot connect. Nothing was deleted — allow the address again and everything switched on comes back.`;
+    return `${connector.host} is not an approved host. This connector cannot connect until the host is approved again. Its approved tools are kept.`;
   }
   if (connector.vetted === 0) {
-    return "Nothing is switched on yet, so it cannot do anything. Open it to choose what it can do.";
+    return "No tools approved yet. Open it to discover and approve tools.";
   }
-  const tools = `${connector.vetted} tool${connector.vetted === 1 ? "" : "s"} switched on`;
+  const tools = `${connector.vetted} tool${connector.vetted === 1 ? "" : "s"} approved`;
   if (!connector.oauth) {
-    return `${tools}. Everyone shares one login — there is no way yet for people to connect their own account.`;
+    return `${tools}. No OAuth app, so users cannot connect their own accounts. Calls use the shared credential if one is configured.`;
   }
-  return `${tools}, and people can connect their own accounts.`;
+  return `${tools}. Users can connect their own accounts.`;
 }
 
 /** Whether the MCP door believes a caller's claim about who it acts for — 033c, and a
@@ -1019,5 +1014,5 @@ export function describe(connector: ConnectorSummary): string {
  *  Empty on the resting posture, deliberately — see the tag's comment. */
 export function asserted(connector: ConnectorSummary): string {
   if (!connector.allow_asserted_identity) return "";
-  return "A calling app may say who it is acting for here — an email address, believed without verification. Those calls are logged as asserted, never as verified.";
+  return "Accepts asserted identity: a calling service may name who it acts on behalf of without verification. Such calls are logged as asserted, not verified.";
 }

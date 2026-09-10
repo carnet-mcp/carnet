@@ -84,51 +84,48 @@ export default function AuthorizePage() {
   return (
     <>
       <PageHead
-        title="Connect an assistant"
+        title="Connect a client"
         lede={
           <>
-            An application is asking to reach this workspace&rsquo;s MCP door as you.
-            Approving mints a token it will hold; you can revoke it at any time from{" "}
-            <Link to="/tokens">your tokens</Link>.
+            An application is asking to use this workspace&rsquo;s MCP server as you.
+            Approving gives it a token of its own. You can revoke it at any time from{" "}
+            <Link to="/tokens">Access tokens</Link>.
           </>
         }
       />
 
-      {loading && <Spinner label="Reading the request…" />}
+      {loading && <Spinner label="Loading the request…" />}
       {error && <Failure error={error} />}
 
       {client && !registered && (
         <Notice tone="bad" title="This request cannot be approved">
-          The address it asks to be sent back to is not one <strong>{client.client_name}</strong>{" "}
-          registered, so nothing here will send your browser there. Close this tab and start
-          again from the application.
+          The redirect address is not one <strong>{client.client_name}</strong> registered.
+          Close this tab and start again from the application.
         </Notice>
       )}
 
       {client && registered && (
         <Card title={client.client_name} hint={host ? `sends you back to ${host}` : undefined}>
           <p className="sentence">
-            <strong>{client.client_name}</strong> will act <strong>as you</strong>: it
-            reaches the tools of every agent you hold, under the same scope, and follows
-            your access as it changes. It never sees your sign-in — it receives a token of
-            its own, listed on your tokens page, revocable there, and dead when your account
-            is.
+            <strong>{client.client_name}</strong> will act <strong>as you</strong>. It can
+            use the tools of every agent shared with you, with your access. It never sees
+            your sign-in. It receives a personal token, listed on Access tokens and revoked
+            when your account is disabled.
           </p>
           <p className="muted sentence">
-            To give an application <em>less</em> than you have, mint a service token on the
-            tokens page instead and grant it agents one at a time. Nothing on this page can
-            widen what you already have.
+            To give an application <em>less</em> than you have, generate a service token
+            on Access tokens and grant it agents instead.
           </p>
           {client.client_uri && (
             <p className="muted tiny">
               The application says it is <span className="mono">{client.client_uri}</span>.
-              That is its own claim, not something this workspace verified.
+              This workspace has not verified that.
             </p>
           )}
 
           <Field
             label="Token name"
-            hint="What the tokens page will call it. Leave blank to use the application's name."
+            hint="Shown on Access tokens. Leave blank to use the application's name."
           >
             <input
               value={tokenName}

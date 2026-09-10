@@ -75,11 +75,11 @@ const FILTERS: { key: string; label: (value: string) => string }[] = [
   { key: "since", label: (v) => `From ${v}` },
   { key: "until", label: (v) => `To ${v}` },
   { key: "tool", label: (v) => `Only calls to ${v}` },
-  { key: "agent", label: (v) => `Only calls admitted by ${v}` },
+  { key: "agent", label: (v) => `Only calls through ${v}` },
   { key: "principal_id", label: (v) => `Only calls from ${v}` },
   { key: "principal_kind", label: (v) => `Only ${v} callers` },
-  { key: "acting_for", label: (v) => `Only calls made for ${v}` },
-  { key: "decision", label: (v) => (v === "deny" ? "Only refusals" : "Only admitted calls") },
+  { key: "acting_for", label: (v) => `Only calls on behalf of ${v}` },
+  { key: "decision", label: (v) => (v === "deny" ? "Only denied calls" : "Only allowed calls") },
   { key: "outcome", label: (v) => (v ? `Only calls that ended ${v}` : "Only calls with no recorded outcome") },
   { key: "effect", label: (v) => `Only ${v} calls` },
   { key: "identity_source", label: (v) => `Only calls on a ${v} identity` },
@@ -125,14 +125,8 @@ export default function DoorTrafficPage() {
   return (
     <>
       <PageHead
-        title="Door traffic"
-        lede={
-          <>
-            Every tool call an outside client made through this workspace's MCP endpoint,
-            oldest first. This is a record rather than a control: nothing on this page
-            changes anything.
-          </>
-        }
+        title="Request log"
+        lede="Tool calls made through the MCP server, oldest first."
       />
 
       {/* **Narrowings, not a filter builder.** There is no dropdown for `tool` and no
@@ -155,20 +149,19 @@ export default function DoorTrafficPage() {
           ))}
           {active.length > 1 && (
             <Button kind="quiet" onClick={clear}>
-              Show everything
+              Clear filters
             </Button>
           )}
         </div>
       )}
 
-      {loading && <Spinner label="Reading the log…" />}
+      {loading && <Spinner label="Loading…" />}
       {error && <Failure error={error} />}
 
       {data && data.length === 0 && active.length === 0 && (
-        <Empty title="Nothing has come through the door yet">
+        <Empty title="No requests yet">
           <p className="sentence">
-            This log fills up when a machine token calls a tool through the MCP endpoint
-            — from an editor, a chat client, or any other application holding one.
+            Requests appear here when a client calls a tool through the MCP server.
           </p>
         </Empty>
       )}
@@ -178,10 +171,8 @@ export default function DoorTrafficPage() {
           empty result that reads as "nothing came through the door" would contradict the
           bar they just clicked, and one of the two would be believed. */}
       {data && data.length === 0 && active.length > 0 && (
-        <Empty title="Nothing here matches">
-          <p className="sentence">
-            The log is not empty — this narrowing is. Drop a filter above to widen it.
-          </p>
+        <Empty title="No matching requests">
+          <p className="sentence">Remove a filter above to widen the search.</p>
         </Empty>
       )}
 
@@ -193,8 +184,8 @@ export default function DoorTrafficPage() {
         <Card
           title={
             data.length === 200
-              ? "The 200 most recent matching calls"
-              : `${data.length} ${data.length === 1 ? "call" : "calls"}`
+              ? "The 200 most recent matching requests"
+              : `${data.length} ${data.length === 1 ? "request" : "requests"}`
           }
           hint={
             data.length === 200
@@ -203,7 +194,7 @@ export default function DoorTrafficPage() {
                 // filtered one at its cap may be the recent end of a long *match*, and
                 // the reader has no other way to tell. Silent truncation reads as "that
                 // is everything" hardest when a filter looks like it did the work.
-                "older records stay in the database — a narrower window would reach them"
+                "older records are not shown. Narrow the date range to reach them."
               : undefined
           }
         >
@@ -218,11 +209,11 @@ export default function DoorTrafficPage() {
                   <th>When</th>
                   <th>Tool</th>
                   <th>Agent</th>
-                  <th>Called by</th>
-                  <th>Acting for</th>
+                  <th>Actor</th>
+                  <th>On behalf of</th>
                   <th>Decision</th>
                   <th>Outcome</th>
-                  <th>Took</th>
+                  <th>Duration</th>
                 </tr>
               </thead>
               <tbody>

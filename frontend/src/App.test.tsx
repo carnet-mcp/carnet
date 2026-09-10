@@ -96,7 +96,7 @@ describe("Gate", () => {
 
     // "/" redirects to /agents; the empty list is the proof the page inside rendered.
     expect(
-      await screen.findByText("No agents here yet"),
+      await screen.findByText("No agents"),
     ).toBeInTheDocument();
   });
 });
@@ -142,7 +142,7 @@ describe("Callback", () => {
     render(<App />);
 
     expect(
-      await screen.findByText("No agents here yet"),
+      await screen.findByText("No agents"),
     ).toBeInTheDocument();
     expect(auth.completeSignIn).toHaveBeenCalledOnce();
     // `replace: true` — the callback must not be in history for Back to land on.

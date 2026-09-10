@@ -45,7 +45,7 @@ VIEW = {"width": 1440, "height": 900}
 
 import e2e_browser_overview as _ov  # noqa: E402
 from e2e_browser_overview import (  # noqa: E402
-    dsn_for, ensure_bundle, refuse_if_taken, seed, wait_for,
+    dsn_for, refuse_if_taken, seed, wait_for,
 )
 
 # `seed` writes against the module-level tenant of the harness it came from. Point it at
@@ -151,7 +151,15 @@ def world():
 
 def main() -> int:
     refuse_if_taken(EDGE_PORT, API_PORT)
-    ensure_bundle()
+    # **Always rebuilt, never reused.** `ensure_bundle` returns early when a `dist/`
+    # exists at all, which is right for a harness asserting behaviour and wrong here:
+    # what this script writes is a photograph, and a photograph of a bundle somebody
+    # built last week is a stale screenshot that looks freshly generated. The words
+    # pass (107a) was caught by exactly this — the run produced six PNGs of the
+    # previous vocabulary and reported success.
+    say("building the frontend bundle (always, so what is photographed is this tree)")
+    subprocess.run(["npm", "run", "build"], cwd=FRONTEND, check=True,
+                   stdout=subprocess.DEVNULL)
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
@@ -187,12 +195,12 @@ def main() -> int:
             page.wait_for_selector(".sidebar-group", timeout=30000)
 
             page.click("nav.sidebar-nav a[href='/overview']")
-            page.wait_for_selector("text=Calls per day", timeout=30000)
+            page.wait_for_selector("text=Requests per day", timeout=30000)
             shot(page, "overview")
 
             page.goto(f"{APP}/admin/door-calls")
             page.wait_for_selector("table", timeout=30000)
-            shot(page, "door-traffic")
+            shot(page, "request-log")
 
             page.goto(f"{APP}/connections")
             page.wait_for_selector("main", timeout=30000)
@@ -204,7 +212,7 @@ def main() -> int:
 
             page.goto(f"{APP}/admin/connectors/jira")
             page.wait_for_selector("main", timeout=30000)
-            shot(page, "connector-vetting")
+            shot(page, "connector-tools")
 
             page.goto(f"{APP}/agents/triage")
             page.wait_for_selector("main", timeout=30000)

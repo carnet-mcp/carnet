@@ -106,7 +106,7 @@ describe("personal and service", () => {
     // review is actually looking for.
     show([token({ acts_as_owner: true })]);
 
-    expect(await screen.findByText(/capped at user/)).toBeInTheDocument();
+    expect(await screen.findByText("your access")).toBeInTheDocument();
   });
 });
 
@@ -182,8 +182,8 @@ describe("having none", () => {
     // than at the terminal.
     show([]);
 
-    expect(await screen.findByText("You have no tokens")).toBeInTheDocument();
-    expect(screen.getByText("Mint one below.", { exact: false })).toBeInTheDocument();
+    expect(await screen.findByText("No access tokens")).toBeInTheDocument();
+    expect(screen.getByText("Generate a token to connect a client.")).toBeInTheDocument();
   });
 });
 
@@ -196,10 +196,18 @@ describe("minting", () => {
   it("is closed by default, and opens into a form", async () => {
     show([]);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Mint a token" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate token" }));
 
-    expect(screen.getByText("Personal — acts as you.")).toBeInTheDocument();
-    expect(screen.getByText("Service — holds only its own grants.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("radio", {
+        name: /^Personal — Uses your access\. Can use every agent shared with you\. Revoked when your account is disabled\.$/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("radio", {
+        name: /^Service — Has its own access\. Can use only the agents granted to it\. For CI and shared machines\.$/,
+      }),
+    ).toBeInTheDocument();
     // No owner field: the route mints for its caller, always.
     expect(screen.queryByText(/owner/i)).not.toBeInTheDocument();
   });
@@ -207,28 +215,26 @@ describe("minting", () => {
   it("will not mint without a name", async () => {
     show([]);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Mint a token" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate token" }));
 
-    expect(screen.getByRole("button", { name: "Mint this token" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Generate token" })).toBeDisabled();
   });
 
-  it("mints, shows the secret once, and says it cannot be retrieved", async () => {
+  it("mints, shows the secret once, and says it cannot be viewed again", async () => {
     vi.mocked(api.mintToken).mockResolvedValue({
       ...token({ name: "my-assistant", acts_as_owner: true }),
       token: "art_m_9f2c.SECRET-SHOWN-ONCE",
     });
     show([]);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Mint a token" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate token" }));
     fireEvent.change(screen.getByRole("textbox", { name: /Name/ }), {
       target: { value: "my-assistant" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Mint this token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate token" }));
 
     expect(await screen.findByText("art_m_9f2c.SECRET-SHOWN-ONCE")).toBeInTheDocument();
-    expect(
-      screen.getByText("shown once and cannot be retrieved", { exact: false }),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/You can’t view it again\./)).toBeInTheDocument();
     expect(vi.mocked(api.mintToken)).toHaveBeenCalledWith({
       name: "my-assistant",
       acts_as_owner: true,
@@ -244,14 +250,14 @@ describe("minting", () => {
     });
     show([]);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Mint a token" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate token" }));
     fireEvent.change(screen.getByRole("textbox", { name: /Name/ }), {
       target: { value: "short-lived" },
     });
     fireEvent.change(screen.getByRole("textbox", { name: /Expires/ }), {
       target: { value: "30" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Mint this token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate token" }));
 
     await screen.findByText("art_m_1.x");
     expect(vi.mocked(api.mintToken)).toHaveBeenCalledWith({
@@ -270,35 +276,35 @@ describe("minting", () => {
     );
     show([token()]);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Mint a token" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate token" }));
     fireEvent.change(screen.getByRole("textbox", { name: /Name/ }), {
       target: { value: "nightly-ci" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Mint this token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate token" }));
 
     expect(
       await screen.findByText(/already has a live API token/),
     ).toBeInTheDocument();
     // The form is still there with what was typed — a refusal is not a reset.
-    expect(screen.getByRole("button", { name: "Mint this token" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate token" })).toBeInTheDocument();
   });
 
-  it("says what a service token still needs, because it can run nothing yet", async () => {
+  it("says what a service token still needs, because it can use nothing yet", async () => {
     vi.mocked(api.mintToken).mockResolvedValue({
       ...token({ name: "ci", acts_as_owner: false, id: "m_svc1" }),
       token: "art_m_svc1.y",
     });
     show([]);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Mint a token" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate token" }));
     fireEvent.change(screen.getByRole("textbox", { name: /Name/ }), {
       target: { value: "ci" },
     });
-    fireEvent.click(screen.getByText("Service — holds only its own grants."));
-    fireEvent.click(screen.getByRole("button", { name: "Mint this token" }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Service — / }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate token" }));
 
     await screen.findByText("art_m_svc1.y");
-    expect(screen.getByText("It can run nothing yet.", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("This token has no agents yet.", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("machine:m_svc1")).toBeInTheDocument();
   });
 });
@@ -336,11 +342,11 @@ describe("when the listing cannot be read", () => {
     );
 
     await screen.findByText(/storage unavailable/);
-    expect(screen.queryByText("You have no tokens")).not.toBeInTheDocument();
+    expect(screen.queryByText("No access tokens")).not.toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 });
-describe("the door, on the page that mints its key (062)", () => {
+describe("the MCP endpoint, on the page that generates its key (062)", () => {
   // The endpoint and the client snippet used to live only on an agent's detail page
   // - unreachable for a fresh deployment's first administrator, who has no agent
   // yet - and nothing here named the URL a token is FOR.
@@ -371,8 +377,11 @@ describe("the door, on the page that mints its key (062)", () => {
     ).toBeInTheDocument();
     // Scoped to the visible pane: 075's dialect tabs mount every snippet, hidden.
     expect(within(screen.getByRole("tabpanel")).getByText(/mcpServers/)).toBeInTheDocument();
-    // The token prose points at THIS page rather than linking to itself.
-    expect(screen.getByText(/on this page/)).toBeInTheDocument();
+    // The token prose names the token kinds without linking to this page from itself.
+    expect(
+      screen.getByText(/with an access token\. A personal token can use everything shared with you/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Access tokens" })).not.toBeInTheDocument();
   });
 
   it("degrades to the operator prose when the address is unknown", async () => {

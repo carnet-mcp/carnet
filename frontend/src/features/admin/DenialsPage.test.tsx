@@ -66,12 +66,13 @@ describe("the log", () => {
     expect(screen.getByText("user")).toBeInTheDocument();
   });
 
-  it("says so when nothing has been refused yet", async () => {
+  it("says so when nothing has been denied yet", async () => {
     show([]);
 
-    expect(await screen.findByText(/Nothing has been refused yet/)).toBeInTheDocument();
-    // An empty log is a true answer rather than a missing one, and the page says which.
-    expect(screen.getByText(/An empty log is a true answer/)).toBeInTheDocument();
+    expect(await screen.findByText("No denied requests")).toBeInTheDocument();
+    // An empty log is a true answer rather than a missing one, and the page says what
+    // would fill it.
+    expect(screen.getByText(/Denied requests appear here/)).toBeInTheDocument();
   });
 
   it("asks for the log once and does not poll it", async () => {
@@ -151,7 +152,7 @@ describe("what the refusal was about", () => {
     await screen.findByText("payroll-bot");
 
     await userEvent.click(screen.getByRole("button", { name: "tool" }));
-    await userEvent.click(screen.getByRole("button", { name: "anything" }));
+    await userEvent.click(screen.getByRole("button", { name: "all" }));
 
     expect(api.adminDenials).toHaveBeenLastCalledWith(
       expect.objectContaining({ resourceKind: undefined }),
@@ -232,7 +233,7 @@ describe("the two incident questions", () => {
     await userEvent.click(screen.getByRole("button", { name: "tool" }));
 
     await userEvent.click(
-      screen.getByRole("button", { name: /stop filtering by principal/i }),
+      screen.getByRole("button", { name: /clear actor filter/i }),
     );
 
     expect(api.adminDenials).toHaveBeenLastCalledWith(
@@ -256,8 +257,8 @@ describe("the two incident questions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "tool" }));
 
-    expect(await screen.findByText(/Nothing here matches that/)).toBeInTheDocument();
-    expect(screen.queryByText(/Nothing has been refused yet/)).not.toBeInTheDocument();
+    expect(await screen.findByText("No matching requests")).toBeInTheDocument();
+    expect(screen.queryByText("No denied requests")).not.toBeInTheDocument();
   });
 });
 

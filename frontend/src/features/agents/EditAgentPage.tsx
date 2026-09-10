@@ -209,15 +209,15 @@ export default function EditAgentPage() {
       </Link>
       <PageHead
         title={`Edit ${name}`}
-        lede="Changing what an agent may reach changes it for everybody it is shared with, from the next run onwards. Nothing here affects a run that has already happened."
+        lede="Changes apply to everyone this agent is shared with, from the next call. Past calls are unaffected."
       />
 
       {!agent.data.valid && (
-        <Notice tone="warn" title="This agent cannot run as it is">
+        <Notice tone="warn" title="This agent cannot be used as it is">
           <p className="sentence">{agent.data.error}</p>
           <p className="muted">
-            You can open and edit it — this is where it gets fixed. It will start working
-            again as soon as the configuration below is one the server accepts.
+            Fix the configuration below and save. Calls are allowed again once the server
+            accepts it.
           </p>
         </Notice>
       )}
@@ -245,16 +245,13 @@ export default function EditAgentPage() {
       {conflict ? (
         <Conflict name={name} original={original} failure={conflict} onReload={reload} />
       ) : refused ? (
-        <Notice tone="warn" title="The server would not store that">
+        <Notice tone="warn" title="Changes not saved">
           {/* Verbatim. Every 422 from this route is `InvalidAgentError`, whose message is
               written to be read by whoever typed the thing — the scope sentences, the
               tool cross-check, and step 024's schema paragraphs. Nothing is added to it
               except a true sentence about what to do next. */}
           <p className="sentence">{refused.detail}</p>
-          <p className="muted">
-            Nothing was saved and nothing has changed. The agent is exactly as it was; fix
-            what the sentence names above and save again.
-          </p>
+          <p className="muted">Nothing was changed. Fix the problem above and save again.</p>
         </Notice>
       ) : failure ? (
         <Failure error={failure} />
@@ -273,12 +270,12 @@ export default function EditAgentPage() {
         {blockers.length > 0 ? (
           <span className="muted">{blockers.join(" ")}</span>
         ) : nothingChanged ? (
-          <span className="muted">Nothing has changed yet.</span>
+          <span className="muted">No changes yet.</span>
         ) : (
           <span className="muted">
             {Object.keys(patch).length === 1
-              ? "One thing will change."
-              : `${Object.keys(patch).length} things will change.`}
+              ? "One change."
+              : `${Object.keys(patch).length} changes.`}
           </span>
         )}
       </div>
@@ -339,7 +336,7 @@ function Conflict({
   );
 
   return (
-    <Notice tone="warn" title="Somebody else saved while this was open">
+    <Notice tone="warn" title="Someone else saved this agent">
       {theirs.data ? (
         theirs.data.length > 0 ? (
           <p className="sentence">
@@ -347,26 +344,22 @@ function Conflict({
           </p>
         ) : (
           <p className="sentence">
-            The version moved, and nothing in the configuration is different — somebody
-            saved without changing anything.
+            The version changed. The configuration did not.
           </p>
         )
       ) : (
-        <p className="muted">Finding out what they changed…</p>
+        <p className="muted">Checking what changed…</p>
       )}
 
       {yours.length > 0 ? (
         <p className="sentence">
-          You were about to write <strong>{yours.join(", ")}</strong>. Reload to take their
-          version, then make your change again.
+          You were about to change <strong>{yours.join(", ")}</strong>. Reload to get
+          their version, then make your change again.
         </p>
       ) : (
-        <p className="sentence">
-          Nothing you were about to save differs from what is stored now, so reloading
-          loses nothing.
-        </p>
+        <p className="sentence">Your changes match what is stored. Reloading loses nothing.</p>
       )}
-      <Button onClick={onReload}>Reload this agent</Button>
+      <Button onClick={onReload}>Reload</Button>
     </Notice>
   );
 }

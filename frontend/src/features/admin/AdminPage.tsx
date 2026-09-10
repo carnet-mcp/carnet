@@ -42,23 +42,17 @@ export default function AdminPage() {
   return (
     <>
       <PageHead
-        title="Administration"
-        lede={
-          <>
-            Every change to who may do what in this workspace, oldest first. This is a
-            record rather than a control: nothing on this page changes anything.
-          </>
-        }
+        title="Audit log"
+        lede="Changes to access in this workspace: grants, shares, group membership, tool approvals and roles. Oldest first."
       />
 
-      {loading && <Spinner label="Reading the log…" />}
+      {loading && <Spinner label="Loading…" />}
       {error && <Failure error={error} />}
 
       {data && data.length === 0 && (
-        <Empty title="Nothing has been changed yet">
+        <Empty title="No changes yet">
           <p className="sentence">
-            This log records grants, shares, group changes, connector vetting and role
-            changes. It fills up as people use the product.
+            Grants, shares, group changes, tool approvals and role changes appear here.
           </p>
         </Empty>
       )}
@@ -74,19 +68,15 @@ export default function AdminPage() {
               ? "The 200 most recent changes"
               : `${data.length} ${data.length === 1 ? "change" : "changes"}`
           }
-          hint={
-            data.length === 200
-              ? "older records stay in the database for the retention window"
-              : undefined
-          }
+          hint={data.length === 200 ? "older records are not shown" : undefined}
         >
           <table>
             <thead>
               <tr>
                 <th>When</th>
-                <th>Who</th>
-                <th>What</th>
-                <th>To</th>
+                <th>Actor</th>
+                <th>Action</th>
+                <th>Target</th>
                 <th>Detail</th>
               </tr>
             </thead>

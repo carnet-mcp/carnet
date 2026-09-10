@@ -88,7 +88,7 @@ describe("the log", () => {
   it("says so when nothing has been changed yet", async () => {
     show([]);
 
-    expect(await screen.findByText(/Nothing has been changed yet/)).toBeInTheDocument();
+    expect(await screen.findByText("No changes yet")).toBeInTheDocument();
   });
 
   it("asks for the log once and does not poll it", async () => {

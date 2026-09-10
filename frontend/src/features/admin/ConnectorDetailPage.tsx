@@ -67,10 +67,10 @@ export default function ConnectorDetailPage() {
   return (
     <>
       <PageHead
-        title={connectorId}
+        title={`Connector · ${connectorId}`}
         lede={
           <>
-            <Link to="/admin/connectors">← All connectors</Link>
+            <Link to="/admin/connectors">← Connectors</Link>
           </>
         }
       />
@@ -133,9 +133,8 @@ function Registration({ connector }: { connector: ConnectorDetail }) {
             <span className="mono">{connector.credential_ref}</span>
             <span className="muted">
               {" "}
-              — held in your vault and read at call time. Nothing here holds it, and a
-              vault that is unreachable makes this connector&rsquo;s tools unavailable
-              until it answers.
+              (read from your vault on every call; tools are unavailable while the vault
+              is unreachable)
             </span>
           </dd>
         ) : (
@@ -145,9 +144,8 @@ function Registration({ connector }: { connector: ConnectorDetail }) {
       {!connector.host_allowed && (
         <Notice tone="warn" title={`${connector.host} is not approved`}>
           <p className="sentence">
-            This connector will refuse to connect until that host is on the allowlist
-            again. Nothing was deleted — the registration and everything vetted on it are
-            still here.
+            This connector cannot connect until the host is approved again. Its
+            registration and approved tools are kept.
           </p>
         </Notice>
       )}
@@ -180,19 +178,18 @@ function AssertedIdentity({
   };
 
   return (
-    <Card title="Acting-for through the MCP door">
+    <Card title="On behalf of">
       {connector.allow_asserted_identity ? (
         <p className="sentence">
-          A calling service may <strong>assert</strong> who it acts for — an email,
-          believed without verification. That is exactly as honest as the calling
-          application, and every such call is logged as <code>asserted</code>, kept
-          apart from <code>verified</code>.
+          A calling service may <strong>assert</strong> who it acts on behalf of, without
+          verification. Such calls are logged as <code>asserted</code>, not{" "}
+          <code>verified</code>.
         </p>
       ) : (
         <p className="sentence">
-          Only a <strong>verified</strong> acting-for is accepted — the person&apos;s own
-          IdP token, forwarded per call and checked like a sign-in. Asserted identity
-          (an email the caller merely claims) is refused for this server&apos;s tools.
+          Only a <strong>verified</strong> on-behalf-of claim is accepted: the
+          person&apos;s own IdP token, forwarded per call. Asserted claims are denied for
+          this connector&apos;s tools.
         </p>
       )}
       {failure && (
@@ -202,8 +199,8 @@ function AssertedIdentity({
       )}
       <Button onClick={flip} disabled={busy}>
         {connector.allow_asserted_identity
-          ? "Stop believing asserted identity"
-          : "Believe asserted identity"}
+          ? "Stop accepting asserted identity"
+          : "Accept asserted identity"}
       </Button>
     </Card>
   );
@@ -214,10 +211,10 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
     return (
       <Card title="Approved tools">
         <p className="sentence">
-          Nothing is approved on this connector, so it offers nothing to anybody.{" "}
+          No tools approved.{" "}
           {connector.transport === "rest"
-            ? "A REST API advertises nothing, so each tool is authored below — its schema, its request mapping, and the judgment."
-            : "Look at what the server advertises below, then approve the tools you want."}
+            ? "Author each tool below."
+            : "Discover the server's tools below, then approve the ones you want."}
         </p>
       </Card>
     );
@@ -228,11 +225,11 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
       <table>
         <thead>
           <tr>
-            <th>Name here</th>
-            <th>Upstream</th>
+            <th>Name</th>
+            <th>Server name</th>
             <th>Effect</th>
             <th>Acts as</th>
-            <th>Scoped to</th>
+            <th>Resources</th>
             <th>Approved by</th>
           </tr>
         </thead>
@@ -252,7 +249,7 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
                   {tool.identity === "user" ? "the caller" : "the service"}
                 </td>
                 <td className="mono">
-                  {tool.resources.map((r) => r.type).join(", ") || "nothing"}
+                  {tool.resources.map((r) => r.type).join(", ") || "none"}
                 </td>
                 <td className="row-sub">{provenance(tool)}</td>
               </tr>
@@ -282,9 +279,8 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
                     {tool.note.trim() && <p className="row-sub">{tool.note}</p>}
                     {tool.max_response_bytes !== null && (
                       <p className="row-sub">
-                        Responses over {bytes(tool.max_response_bytes)} are refused, rather
-                        than truncated — a clipped payload is malformed JSON the model has
-                        to guess at.
+                        Responses over {bytes(tool.max_response_bytes)} are denied, not
+                        truncated.
                       </p>
                     )}
                   </td>
@@ -308,7 +304,7 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
 export function provenance(tool: VettedTool): string {
   const who = tool.vetted_by || "nobody recorded";
   if (!tool.server_name && !tool.server_version) {
-    return `${who} — no server version was recorded`;
+    return `${who} (no server version recorded)`;
   }
   return `${who}, against ${tool.server_name} ${tool.server_version}`.trim();
 }
@@ -351,17 +347,13 @@ function Discovery({
   const reports = (seen?.findings ?? []).filter((f) => f.severity === "report");
 
   return (
-    <Card
-      title="What the server offers"
-      hint={seen ? seen.server : "nothing has been asked yet"}
-    >
+    <Card title="Available tools" hint={seen ? seen.server : undefined}>
       <p className="sentence">
-        This opens a connection to the server, using <strong>your own</strong> account for
-        it if you have connected one. Everything above renders without contacting
-        anything; this is the one thing on the page that does.
+        Discovery connects to the server and lists the tools it offers. It uses your
+        connected account if you have one.
       </p>
       <Button kind="primary" busy={busy} onClick={look}>
-        {seen ? "Look again" : "Discover"}
+        {seen ? "Discover again" : "Discover"}
       </Button>
 
       {failure && (
@@ -371,32 +363,26 @@ function Discovery({
       )}
 
       {blocking.length > 0 && (
-        <Notice tone="bad" title="This connector has drifted">
+        <Notice tone="bad" title="Approved tools have changed on the server">
           {blocking.map((finding) => (
             <p className="sentence" key={finding.message}>
               {finding.message}
             </p>
           ))}
           <p className="sentence">
-            Nothing further can be approved on this connector until this is dealt with —
-            approving a tenth tool on a manifest that no longer binds is a change nobody
-            would find out about until an unrelated agent's next run.
+            No further tools can be approved on this connector until this is resolved.
           </p>
         </Notice>
       )}
 
       {reports.length > 0 && (
-        <Notice tone="info" title="Since this connector was vetted">
+        <Notice tone="info" title="New since approval">
           {reports.map((finding) => (
             <p className="sentence" key={finding.message}>
               {finding.message}
             </p>
           ))}
-          <p className="muted">
-            Newly advertised tools are never adopted automatically. A server that could
-            grant itself capabilities by shipping a release is what the allowlist exists to
-            deny.
-          </p>
+          <p className="muted">New tools are not approved automatically.</p>
         </Notice>
       )}
 
@@ -493,9 +479,8 @@ function ToolForm({
     const size = ceiling.trim() === "" ? null : Number(ceiling);
     if (size !== null && Number.isFinite(size) && size <= 0) {
       setFailure(
-        "A ceiling of zero or less refuses every response this tool will ever return — " +
-          "and the agent is told to narrow a request that narrowing cannot fix. Leave it " +
-          "blank for the platform's default, or give a real size.",
+        "A limit of zero or less denies every response. Leave it blank for the default, " +
+          "or enter a size.",
       );
       return;
     }
@@ -507,8 +492,7 @@ function ToolForm({
     // ceiling somebody did not type.
     if (size !== null && (!Number.isSafeInteger(size) || size > Number.MAX_SAFE_INTEGER)) {
       setFailure(
-        "A ceiling has to be a whole number of bytes small enough to be written down " +
-          "exactly. Leave it blank for the platform's default.",
+        "A limit must be a whole number of bytes. Leave it blank for the default.",
       );
       return;
     }
@@ -519,9 +503,7 @@ function ToolForm({
     // names are the half the wire does not return. Refused, with the sentence.
     if (resources.some((r) => r.type.trim() && r.args.length === 0)) {
       setFailure(
-        "Every resource needs the argument that names one. Pick it, or remove the row — " +
-          "a resource with no argument would be silently dropped, and this tool would be " +
-          "approved without the scope you just named.",
+        "Every resource needs the argument that names it. Pick one, or remove the row.",
       );
       return;
     }
@@ -559,7 +541,7 @@ function ToolForm({
       <div className="row-main">
         <div className="spread">
           <strong className="mono">{tool.name}</strong>
-          {tool.vetted && <Tag>vetted</Tag>}
+          {tool.vetted && <Tag>approved</Tag>}
         </div>
         {tool.description && <p className="muted">{tool.description}</p>}
 
@@ -577,7 +559,7 @@ function ToolForm({
           <div className="inline-form">
             <Field
               label="Effect"
-              hint="Does calling this change anything at the other end? The server cannot tell you; this is the judgment."
+              hint="Read: does not change data. Write: creates, updates or deletes data."
             >
               <select
                 value={effect}
@@ -590,7 +572,7 @@ function ToolForm({
 
             <Field
               label="Acts as"
-              hint="Whose account each call uses. The service: the connector's shared credential, always. The caller: their own connected account, always — refused when they have none, never the shared fallback."
+              hint="Service: uses the shared credential. Caller: uses the caller's connected account. Denied if they have none."
             >
               <select
                 value={identity}
@@ -609,24 +591,17 @@ function ToolForm({
 
             {approved && approved.resources.length > 0 && (
               <p className="muted">
-                This tool is already scoped to{" "}
-                {approved.resources.map((r) => r.type).join(", ")}. Which argument names
-                each one is not something this API hands back — a client given the argument
-                names would be invited to build a scope out of them — so pick them again.
+                This tool is restricted to{" "}
+                {approved.resources.map((r) => r.type).join(", ")}. Pick the argument for
+                each again. The API does not return it.
               </p>
             )}
 
             {effect === "write" && resources.length === 0 && (
-              <p className="muted">
-                A write with nothing to scope it to will be refused: policy could not name
-                what it touches, so no grant could ever narrow it.
-              </p>
+              <p className="muted">A write tool with no resource cannot be approved.</p>
             )}
 
-            <Field
-              label="Name here"
-              hint={`Optional. Defaults to ${tool.local_name}, which is what a grant and every audit record will say.`}
-            >
+            <Field label="Name" hint={`Optional. Defaults to ${tool.local_name}.`}>
               <input
                 value={localName}
                 placeholder={tool.local_name}
@@ -634,10 +609,7 @@ function ToolForm({
               />
             </Field>
 
-            <Field
-              label="Note"
-              hint="Optional, and yours rather than the vendor's — what somebody here should know before granting it."
-            >
+            <Field label="Note" hint="Optional. Shown to people choosing this tool.">
               <input value={note} onChange={(e) => setNote(e.target.value)} />
             </Field>
 
@@ -649,8 +621,8 @@ function ToolForm({
                 A number here is for a tool whose output is genuinely large. Zero is the
                 hazard `submit` refuses. */}
             <Field
-              label="Response ceiling"
-              hint="Optional, in bytes. Leave it blank for the platform's default. A response over the ceiling is refused rather than truncated, because a clipped payload is malformed JSON the model has to guess at."
+              label="Response limit"
+              hint="Optional, in bytes. Blank means the deployment default. Larger responses are denied, not truncated."
             >
               <input
                 type="number"
@@ -672,14 +644,14 @@ function ToolForm({
             )}
 
             <Button kind="primary" busy={busy} onClick={submit}>
-              {tool.vetted ? "Approve again" : "Approve this tool"}
+              {tool.vetted ? "Approve again" : "Approve"}
             </Button>
           </div>
         )}
       </div>
       <div className="row-action">
         <Button onClick={() => (open ? setOpen(false) : start())}>
-          {open ? "Cancel" : "Approve…"}
+          {open ? "Cancel" : tool.vetted ? "Edit approval" : "Approve…"}
         </Button>
       </div>
     </div>
@@ -730,8 +702,7 @@ function schemaArguments(text: string): { names: string[]; error: string } {
     return {
       names: [],
       error:
-        "No top-level `properties`, so the arguments cannot be listed. You can still " +
-        "map them by hand; the server checks the mapping either way.",
+        "No top-level properties, so the arguments cannot be listed. Map them by hand.",
     };
   }
   return { names: Object.keys(properties as Record<string, unknown>), error: "" };
@@ -808,10 +779,9 @@ function AuthorTool({
     const unmapped = names.filter((n) => !inPath.includes(n) && !mapping[n]);
     if (unmapped.length > 0) {
       setFailure(
-        `Every argument has to travel somewhere: ${unmapped.join(", ")} ${
+        `Every argument must be mapped: ${unmapped.join(", ")} ${
           unmapped.length === 1 ? "is" : "are"
-        } in the schema but not in the path, the query or the body. An unmapped ` +
-          "argument is one the model can send and the request would silently drop.",
+        } in the schema but not in the path, query or body.`,
       );
       return;
     }
@@ -819,15 +789,14 @@ function AuthorTool({
     const missing = inPath.filter((n) => names.length > 0 && !names.includes(n));
     if (missing.length > 0) {
       setFailure(
-        `The path names ${missing.join(", ")}, which the schema does not define — so ` +
-          "nothing would ever fill that segment in.",
+        `The path names ${missing.join(", ")}, which the schema does not define.`,
       );
       return;
     }
 
     if (resources.some((r) => r.type.trim() && r.args.length === 0)) {
       setFailure(
-        "Every resource needs the argument that names one. Pick it, or remove the row.",
+        "Every resource needs the argument that names it. Pick one, or remove the row.",
       );
       return;
     }
@@ -845,8 +814,7 @@ function AuthorTool({
     const size = ceiling.trim() === "" ? null : Number(ceiling);
     if (size !== null && (!Number.isSafeInteger(size) || size <= 0)) {
       setFailure(
-        "A ceiling has to be a whole number of bytes above zero. Leave it blank for " +
-          "the platform's default.",
+        "A limit must be a whole number of bytes above zero. Leave it blank for the default.",
       );
       return;
     }
@@ -887,18 +855,13 @@ function AuthorTool({
   return (
     <Card title="Author a tool">
       <p className="sentence">
-        A REST API describes nothing, so there is nothing to discover and nothing to
-        compare against later: the schema, the description and the request mapping below
-        are <strong>your words</strong>, and a vendor that changes its API will be found
-        at call time rather than at review. Everything else — the scope, the effect, whose
-        account it acts as — means exactly what it means on an MCP server.
+        A REST API does not describe its tools. Enter the schema, description and request
+        mapping for each tool. Resources, effect and identity mean the same as for an MCP
+        server.
       </p>
 
       <div className="inline-form">
-        <Field
-          label="Tool name"
-          hint="What this tool is called here. Prefixed with the connector id to make the name a model sees."
-        >
+        <Field label="Tool name" hint="Prefixed with the connector ID in the name a model sees.">
           <input
             value={name}
             placeholder="chat"
@@ -909,16 +872,15 @@ function AuthorTool({
         {already && (
           <Notice tone="warn" title={`${already.remote_name} is already approved`}>
             <p className="sentence">
-              Submitting replaces its whole row, and the request mapping is not readable
-              back — so the method, path and schema below have to be typed again in full.
-              Everything you leave blank is left blank, not carried over.
+              Submitting replaces the whole tool. The request mapping cannot be read
+              back, so enter the method, path and schema again.
             </p>
           </Notice>
         )}
 
         <Field
           label="Description"
-          hint="What this tool is for, in your words. It is what the model reads when choosing between tools."
+          hint="What the tool does. The model reads this when choosing tools."
         >
           <input
             value={description}
@@ -942,7 +904,7 @@ function AuthorTool({
 
         <Field
           label="Path"
-          hint="Joined to the connector's base URL. A {name} segment is filled from the argument of that name — those arguments need no other mapping."
+          hint="Joined to the connector's base URL. A {name} segment is filled from the argument of that name."
         >
           <input
             value={path}
@@ -951,10 +913,7 @@ function AuthorTool({
           />
         </Field>
 
-        <Field
-          label="Input schema"
-          hint="JSON Schema for what the model may send. There is no server to get one from, so this is authored — and it is what the resource pickers below validate against."
-        >
+        <Field label="Input schema" hint="JSON Schema for the tool's arguments.">
           <textarea
             className="mono"
             rows={8}
@@ -975,8 +934,8 @@ function AuthorTool({
 
         {names.length > 0 && (
           <FieldGroup
-            label="Where each argument travels"
-            hint="Every argument has to go somewhere, or the request would silently drop it. A {name} already in the path is filled from there."
+            label="Argument mapping"
+            hint="Every argument must be mapped. Arguments named in the path are filled from there."
           >
             {names.map((argument) => {
               const consumed = inPath.includes(argument);
@@ -995,7 +954,7 @@ function AuthorTool({
                         })
                       }
                     >
-                      <option value="">— where? —</option>
+                      <option value="">Select…</option>
                       <option value="query">query parameter</option>
                       <option value="body">JSON body</option>
                     </select>
@@ -1008,7 +967,7 @@ function AuthorTool({
 
         <Field
           label="Effect"
-          hint="Does calling this change anything at the other end? Nothing can tell you; this is the judgment."
+          hint="Read: does not change data. Write: creates, updates or deletes data."
         >
           <select
             value={effect}
@@ -1021,7 +980,7 @@ function AuthorTool({
 
         <Field
           label="Acts as"
-          hint="Whose account each call uses. The service: the connector's shared credential, always. The caller: their own connected account, always — refused when they have none, never the shared fallback."
+          hint="Service: uses the shared credential. Caller: uses the caller's connected account. Denied if they have none."
         >
           <select
             value={identity}
@@ -1036,8 +995,8 @@ function AuthorTool({
 
         {names.length > 0 && (
           <FieldGroup
-            label="Kept as a hash, not stored"
-            hint="Arguments whose value the audit log must not keep. For a model tool this is where the prompt goes: `audit` is append-only, so a value written there cannot be taken back."
+            label="Redacted arguments"
+            hint="Arguments whose value is not kept in the audit log, for example a prompt."
           >
             {names.map((argument) => (
               <label className="choice" key={argument}>
@@ -1059,8 +1018,8 @@ function AuthorTool({
         )}
 
         <Field
-          label="Where token usage lives"
-          hint="Optional, and only a model API has one. Dotted paths into the response body, so calls through this tool are priced and metered rather than merely counted."
+          label="Token usage paths"
+          hint="Optional, for a model API. Dotted paths into the response body, so calls can be priced and metered."
         >
           <textarea
             className="mono"
@@ -1075,8 +1034,8 @@ function AuthorTool({
         </Field>
 
         <Field
-          label="Response ceiling (bytes)"
-          hint="Blank means this deployment's default. What a single response may return before it is refused."
+          label="Response limit (bytes)"
+          hint="Blank means the deployment default. Larger responses are denied."
         >
           <input
             value={ceiling}
@@ -1089,8 +1048,8 @@ function AuthorTool({
         </Field>
 
         <Field
-          label="Called here"
-          hint="Optional. Needed only when the connector id and this tool's name together run past 64 characters."
+          label="Name"
+          hint="Optional. Needed only when the connector ID and tool name together exceed 64 characters."
         >
           <input
             value={localName}
@@ -1098,7 +1057,7 @@ function AuthorTool({
           />
         </Field>
 
-        <Field label="Note" hint="Optional. Why this was approved, for whoever reads the record.">
+        <Field label="Note" hint="Optional. Shown to people choosing this tool.">
           <input value={note} onChange={(e) => setNote(e.target.value)} />
         </Field>
 
@@ -1119,7 +1078,7 @@ function AuthorTool({
           disabled={!name.trim() || !path.trim() || !schemaText.trim()}
           onClick={submit}
         >
-          {already ? "Approve again" : "Approve this tool"}
+          {already ? "Approve again" : "Approve"}
         </Button>
       </div>
     </Card>
@@ -1140,8 +1099,8 @@ function ResourceRows({
 
   return (
     <FieldGroup
-      label="What it touches"
-      hint="A resource type, and the argument that names one. This is what a grant is written against, so a tool with nothing here can only be granted wholesale."
+      label="Resources"
+      hint="The argument that names the resource this tool acts on, for example repo. Agents restrict access per resource. Without one, the tool is unrestricted."
     >
       {resources.map((resource, index) => (
         <div className="spread" key={index}>
@@ -1154,7 +1113,7 @@ function ResourceRows({
             value={resource.args[0] ?? ""}
             onChange={(e) => update(index, { args: [e.target.value] })}
           >
-            <option value="">— argument —</option>
+            <option value="">Select argument…</option>
             {args.map((name) => (
               <option key={name} value={name}>
                 {name}
@@ -1178,7 +1137,7 @@ function ResourceRows({
       </Button>
       {args.length === 0 && (
         <p className="muted">
-          This tool takes no arguments, so there is nothing for a resource to be named by.
+          This tool takes no arguments, so it cannot be restricted by resource.
         </p>
       )}
     </FieldGroup>
@@ -1235,8 +1194,8 @@ function AuthorizeParams({
 
   return (
     <FieldGroup
-      label="Also send"
-      hint="Optional, and only for the providers that mandate one — Atlassian needs audience=api.atlassian.com and prompt=consent. The parameters the consent flow builds itself are refused, and two of them are what stop somebody else completing your connection."
+      label="Extra parameters"
+      hint="Optional. Parameters some providers require on the authorize URL, for example audience=api.atlassian.com and prompt=consent for Atlassian. Parameters the OAuth flow sets itself are rejected."
     >
       {params.map((param, index) => (
         <div className="spread" key={index}>
@@ -1276,11 +1235,11 @@ function AuthorizeParams({
  *  asking what an adversarial value does to the rendering, which is the same family as
  *  035f's comma-in-a-scope.
  *
- *  Empty renders as the sentence it is: *nothing extra* is a complete answer and a true one,
- *  and it is a different fact from a connector with no consent flow at all. */
+ *  Empty renders as the word it is: *none* is a complete answer and a true one, and it is
+ *  a different fact from a connector with no OAuth app at all. */
 export function sends(params: Record<string, string>): string[] {
   const pairs = Object.entries(params).map(([name, value]) => `${name}=${value}`);
-  return pairs.length > 0 ? pairs : ["nothing extra"];
+  return pairs.length > 0 ? pairs : ["none"];
 }
 
 /** The consent flow: `--set-oauth`'s fields, and the two things it answers with.
@@ -1404,10 +1363,7 @@ function ConsentFlow({
   };
 
   return (
-    <Card
-      title="Consent flow"
-      hint={connector.oauth ? "configured" : "people cannot connect their own accounts"}
-    >
+    <Card title="OAuth app" hint={connector.oauth ? "configured" : "not configured"}>
       {/* **stdio, not "anything but http"** — step 047, and the bug it fixes was
           invisible until a REST connector could be made in a browser. `Connector
           .carries_per_user_credentials` has been true for REST since 045a (its finding
@@ -1419,22 +1375,19 @@ function ConsentFlow({
           that silently removes a capability. */}
       {connector.transport === "stdio" && (
         <p className="sentence">
-          This connector speaks stdio, and a consent flow produces a per-user credential.
-          A stdio server holds one credential for the life of its process, so it cannot
-          act as two people — configuring one here would let somebody grant real access
-          at a third party for a credential this platform could never use.
+          This connector uses stdio, which holds one credential per process. An OAuth app
+          is not available for it.
         </p>
       )}
 
       {connector.transport !== "stdio" && !connector.oauth && !open && (
         <>
           <p className="sentence">
-            Nobody can connect their own account to this connector. Calls to it go out
-            under the shared credential if one is configured, which means every person's
-            calls act as the same account.
+            Lets users connect their own accounts. Without it, every call uses the shared
+            credential.
           </p>
           <Button kind="primary" onClick={openForm}>
-            Configure a consent flow
+            Set up OAuth app
           </Button>
         </>
       )}
@@ -1442,7 +1395,7 @@ function ConsentFlow({
       {connector.oauth && (
         <>
           <dl className="pairs">
-            <dt>Client id</dt>
+            <dt>Client ID</dt>
             <dd className="mono">{connector.oauth.client_id}</dd>
             <dt>Client secret</dt>
             {/* Not `••••••`, which would imply it can be read back. It cannot, by
@@ -1463,7 +1416,7 @@ function ConsentFlow({
                 screen showed nothing, so an administrator could not see that their Atlassian
                 connector sends an audience — let alone which one. Same word as the CLI, so
                 the two surfaces read alike. */}
-            <dt>Also sends</dt>
+            <dt>Extra parameters</dt>
             <dd className="mono">
               {sends(connector.oauth.authorize_params).map((line) => (
                 <div key={line}>{line}</div>
@@ -1474,17 +1427,15 @@ function ConsentFlow({
           </dl>
           <div className="spread">
             <Button onClick={() => (open ? setOpen(false) : openForm())}>
-              {open ? "Cancel" : "Replace it"}
+              {open ? "Cancel" : "Replace"}
             </Button>
             <Button kind="quiet" onClick={remove}>
-              Remove it
+              Remove
             </Button>
           </div>
           <p className="muted">
-            Removing it leaves every credential people already connected untouched and
-            working. What they lose is the ability to renew — each will ask to be
-            reconnected when its access token expires, and there will be nothing to
-            reconnect through.
+            Removing it keeps existing connections working until their access tokens
+            expire. After that they cannot be renewed or reconnected.
           </p>
         </>
       )}
@@ -1493,10 +1444,8 @@ function ConsentFlow({
         <div className="inline-form">
           {connector.oauth && (
             <p className="sentence">
-              This replaces the whole consent flow rather than editing part of it, so
-              whatever is in these boxes is what the connector will have. The client secret
-              has to be typed again — nothing here can read the stored one back, which is
-              what <em>stored</em> means.
+              This replaces the whole OAuth app. Enter the client secret again. The stored
+              one cannot be read back.
             </p>
           )}
           <Field label="Authorize endpoint">
@@ -1506,26 +1455,23 @@ function ConsentFlow({
               onChange={(e) => setAuthorize(e.target.value)}
             />
           </Field>
-          <Field label="Token endpoint" hint="Its host must be on the allowlist: this deployment's client secret is posted to it.">
+          <Field label="Token endpoint" hint="Its host must be an approved host. The client secret is posted to it.">
             <input
               value={token}
               placeholder="https://auth.acme.com/token"
               onChange={(e) => setToken(e.target.value)}
             />
           </Field>
-          <Field label="Revoke endpoint" hint="Optional. Without one, disconnecting deletes the credential here and leaves the token live at the provider.">
+          <Field label="Revoke endpoint" hint="Optional. Without it, disconnecting deletes the credential here but not at the provider.">
             <input
               value={revoke}
               onChange={(e) => setRevoke(e.target.value)}
             />
           </Field>
-          <Field label="Client id" hint="Public — it appears in the authorize URL in somebody's address bar.">
+          <Field label="Client ID" hint="Public. Appears in the authorize URL.">
             <input value={clientId} onChange={(e) => setClientId(e.target.value)} />
           </Field>
-          <Field
-            label="Client secret"
-            hint="Sent once and never shown again. It is sealed, and nothing here can read it back."
-          >
+          <Field label="Client secret" hint="Stored once. You can't view it again.">
             <input
               type="password"
               value={secret}
@@ -1534,7 +1480,7 @@ function ConsentFlow({
           </Field>
           <Field
             label="Scopes"
-            hint="Space separated. Include the provider's offline-access scope if you want connections to survive an hour."
+            hint="Space separated. Include the provider's offline-access scope so connections can be renewed."
           >
             <input
               value={scopes}
@@ -1547,9 +1493,8 @@ function ConsentFlow({
               {Object.keys(notes).length === 1
                 ? "One scope carries"
                 : `${Object.keys(notes).length} scopes carry`}{" "}
-              a description shown at consent. It stays with the scopes you keep; remove a
-              scope and its description goes with it. To change the wording, use{" "}
-              <code>--set-oauth --scope-notes</code>.
+              a description shown at consent. Descriptions stay with the scopes you keep.
+              To change the wording, use <code>--set-oauth --scope-notes</code>.
             </p>
           )}
 
@@ -1567,7 +1512,7 @@ function ConsentFlow({
             disabled={!authorize.trim() || !token.trim() || !clientId.trim() || !secret}
             onClick={save}
           >
-            Save consent flow
+            Save OAuth app
           </Button>
         </div>
       )}
@@ -1576,8 +1521,8 @@ function ConsentFlow({
         <Notice tone="info" title="Register this redirect URI at the provider">
           <p className="sentence mono">{saved.redirect_uri}</p>
           <p className="muted">
-            Exactly this, and the same value for every connector on this deployment.
-            People can now connect this themselves from the Connections page.
+            Use exactly this value. It is the same for every connector on this deployment.
+            Users can now connect their accounts from Connections.
           </p>
           {saved.warnings.map((warning) => (
             <p className="sentence" key={warning}>

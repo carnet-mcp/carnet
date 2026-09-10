@@ -29,6 +29,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import Failure from "../../../components/Failure";
 import { Card, Notice, Spinner } from "../../../components/ui";
@@ -66,7 +67,7 @@ export default function StepReview({ draft, catalogue, catalogueFailed }: StepPr
         <table>
           <tbody>
             <tr>
-              <td>Its address</td>
+              <td>URL</td>
               <td className="mono">/agents/{draft.name}</td>
             </tr>
             <tr>
@@ -74,7 +75,7 @@ export default function StepReview({ draft, catalogue, catalogueFailed }: StepPr
               {/* Stated because it is a consequence rather than a field: nobody chose
                   this, and it is the difference between an agent that works and an agent
                   nobody can run. */}
-              <td>You, from the moment it exists. Nobody else can see it.</td>
+              <td>You. Only you can see it until you share it.</td>
             </tr>
           </tbody>
         </table>
@@ -86,8 +87,8 @@ export default function StepReview({ draft, catalogue, catalogueFailed }: StepPr
         agent={reachable(draft, catalogue)}
         catalogue={catalogue}
         failed={catalogueFailed}
-        title="What it will be able to reach"
-        hint="exactly what its own page will show once it exists"
+        title="Resource access"
+        hint="as it will be stored"
       />
 
       {/* **What actually bounds this agent, named where somebody is deciding — step 081.**
@@ -103,32 +104,28 @@ export default function StepReview({ draft, catalogue, catalogueFailed }: StepPr
           There is a real ceiling and it is a different shape: per token, per UTC day, set
           by the operator. Saying so here rather than nowhere is the difference between a
           removed control and a removed answer. */}
-      <Card title="What bounds it" hint="not set here, and not per agent">
+      <Card title="Limits">
         <p className="sentence">
-          What limits this agent is the <strong>token</strong> it is called with: how many
-          calls it may make in a day, and how much it may spend. That ceiling belongs to
-          the token rather than to the agent, because one token is one caller and one
-          agent may be reached by several.
-        </p>
-        <p className="muted">
-          The operator sets it for the whole deployment, and each token&apos;s own page
-          shows what it has spent against it today.
+          Rate and spend limits are set per token, not per agent. See{" "}
+          <Link to="/tokens">
+            <strong>Access tokens</strong>
+          </Link>
+          .
         </p>
       </Card>
 
-      {verdict === "checking" && <Spinner label="Checking this with the server" />}
+      {verdict === "checking" && <Spinner label="Checking with the server" />}
 
       {verdict === "ok" && (
-        <Notice tone="info" title="The server accepts this">
+        <Notice tone="info" title="Ready to create">
           <p className="sentence">
-            Checked against the same rules the create will use, without writing anything.
-            The one thing left that could refuse it is the name already being taken.
+            The server accepted this configuration. Nothing has been created yet.
           </p>
         </Notice>
       )}
 
       {verdict instanceof Error && (
-        <Notice tone="bad" title="The server will not accept this">
+        <Notice tone="bad" title="Configuration not accepted">
           {/* The server's own sentence, rendered rather than paraphrased. These messages
               were written to be read by a person at 3am, and that person is now the one
               filling in the form — which is the whole reason they read the way they do. */}

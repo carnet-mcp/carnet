@@ -24,6 +24,7 @@
  */
 
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import {
   Badge,
@@ -37,6 +38,7 @@ import {
   brandOf,
 } from "../../../components/ui";
 import type { Draft } from "../../../lib/draft";
+import { useAdmin } from "../../../lib/me";
 import type { ToolGroup, ToolSummary } from "../../../lib/types";
 import type { StepProps } from "./CreateAgentPage";
 
@@ -45,7 +47,7 @@ export function toolsBlocker(_draft: Draft, catalogue: ToolGroup[] | null): stri
   // answer a question and cannot touch anything — and it is the safest agent this
   // product can make. Refusing to create one would be the form having an opinion the
   // permission model does not.
-  if (catalogue === null) return "Waiting for the list of tools you can grant.";
+  if (catalogue === null) return "Waiting for the list of tools.";
   return "";
 }
 
@@ -55,13 +57,11 @@ export default function StepTools({ draft, set, catalogue, catalogueFailed }: St
   // vetting catalogue is a route, and 092 adds none.
   const [filter, setFilter] = useState("");
 
+  const { admin } = useAdmin();
   if (catalogueFailed) {
     return (
-      <Notice tone="bad" title="The list of tools could not be loaded">
-        <p className="sentence">
-          Nothing can be granted without it — every tool here was vetted by somebody in
-          your organisation, and this screen refuses to guess at what they approved.
-        </p>
+      <Notice tone="bad" title="Tools could not be loaded">
+        <p className="sentence">Reload the page to try again.</p>
       </Notice>
     );
   }
@@ -100,16 +100,17 @@ export default function StepTools({ draft, set, catalogue, catalogueFailed }: St
 
   if (all.length === 0) {
     return (
-      <Empty title="Your organisation has not vetted any tools yet">
+      <Empty title="No tools available">
         <p>
-          Tools arrive through a connector, and a connector is reviewed one tool at a time
-          by whoever administers it — deliberately a different person from whoever creates
-          agents. Until that has happened there is nothing to grant.
+          An administrator adds tools by approving them on a connector.
+          {admin ? (
+            <>
+              {" "}
+              <Link to="/admin/connectors">Connectors</Link>
+            </>
+          ) : null}
         </p>
-        <p className="muted">
-          You can still create an agent. It will be able to answer questions and reach
-          nothing.
-        </p>
+        <p className="muted">You can still create an agent with no tools.</p>
       </Empty>
     );
   }
@@ -130,12 +131,12 @@ export default function StepTools({ draft, set, catalogue, catalogueFailed }: St
   return (
     <>
       <Card
-        title="What may it do?"
-        hint={`${chosen.length + withdrawn.length} of ${all.length} chosen`}
+        title="Tools"
+        hint={`${chosen.length + withdrawn.length} of ${all.length} selected`}
       >
         <p className="sentence">
-          Tick what it needs and nothing more. It cannot do anything that is not ticked,
-          and everything here was reviewed by somebody in your organisation first.
+          Select the tools this agent may use. Tools marked <strong>write</strong> can
+          change data in the connected system.
         </p>
 
         {/* Only when there is enough to lose something in. A search box over nine tools
@@ -152,28 +153,24 @@ export default function StepTools({ draft, set, catalogue, catalogueFailed }: St
         )}
 
         {writes.length > 0 ? (
-          <Notice tone="warn" title="This agent will be able to change things">
+          <Notice tone="warn" title="This agent can change data">
             <p className="sentence">
               {writes.length === 1
-                ? `${writes[0].name} alters a system outside this one. Nothing here undoes what it does.`
-                : `${writes.length} of the tools you have ticked alter systems outside this one. Nothing here undoes what they do.`}
+                ? `${writes[0].name} can change data in the connected system.`
+                : `${writes.length} of the selected tools can change data in connected systems.`}
             </p>
           </Notice>
         ) : chosen.length > 0 ? (
-          <p className="muted">
-            Nothing ticked so far changes anything — this agent would look and report.
-          </p>
+          <p className="muted">The selected tools only read data.</p>
         ) : null}
       </Card>
 
       {withdrawn.length > 0 && (
-        <Notice tone="warn" title="Ticked, and no longer available">
+        <Notice tone="warn" title="Selected tools no longer available">
           <p className="sentence">
             {withdrawn.join(", ")}{" "}
-            {withdrawn.length === 1 ? "is" : "are"} in this draft and not in the
-            catalogue, which means a connector was re-vetted or withdrawn since you ticked{" "}
-            {withdrawn.length === 1 ? "it" : "them"}. The server will refuse to create an
-            agent granting {withdrawn.length === 1 ? "it" : "them"}.
+            {withdrawn.length === 1 ? "is" : "are"} no longer available. Remove{" "}
+            {withdrawn.length === 1 ? "it" : "them"} to continue.
           </p>
           <Button
             onClick={() =>
@@ -195,7 +192,7 @@ export default function StepTools({ draft, set, catalogue, catalogueFailed }: St
           <Card
             key={group.origin + group.id}
             title={group.id || "Built in"}
-            hint={group.origin === "builtin" ? "ships with the platform" : "vetted here"}
+            hint={group.origin === "builtin" ? "built in" : "connector"}
           >
             {/* The connector's mark **on the line with its description**, so *which app
                 is this from* looks the same here as it does on the connectors tab. On a
@@ -268,7 +265,7 @@ function ToolChoice({
         ) : (
           // Every row vetted before migration 018 has none, and a gap where a sentence
           // belongs reads as a rendering bug rather than a fact about the row.
-          <p className="muted">No description was recorded when this tool was vetted.</p>
+          <p className="muted">No description.</p>
         )}
 
         {tool.note ? <p className="muted note">{tool.note}</p> : null}

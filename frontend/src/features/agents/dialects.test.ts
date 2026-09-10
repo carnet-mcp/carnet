@@ -7,7 +7,7 @@ import { DEFAULT_DIALECT, DIALECTS, dialect, unreachable } from "./dialects";
 const URL = "https://ship.acme.com/api/mcp";
 
 describe("every dialect", () => {
-  it("says <your token> and carries the door's URL, or is a reason", () => {
+  it("says <your token> and carries the MCP server's URL, or is a reason", () => {
     for (const entry of DIALECTS) {
       if (entry.auth === "oauth") {
         // Step 083: an OAuth client connects with the URL alone — no header, no token.
@@ -41,12 +41,12 @@ describe("every dialect", () => {
 });
 
 describe("the reason", () => {
-  it("is https, and only https, since the door speaks OAuth", () => {
+  it("is https, and only https, since the MCP server speaks OAuth", () => {
     const oauth = dialect("claude-ai");
-    expect(unreachable(oauth, "http://localhost:8000/mcp")).toMatch(/plain http:\/\//);
+    expect(unreachable(oauth, "http://localhost:8000/mcp")).toMatch(/requires an https:\/\/ address/);
     expect(unreachable(oauth, URL)).toBeNull();
     const strict = { ...dialect("cursor"), needsHttps: true };
-    expect(unreachable(strict, "http://localhost:8000/mcp")).toMatch(/plain http:\/\//);
+    expect(unreachable(strict, "http://localhost:8000/mcp")).toMatch(/requires an https:\/\/ address/);
     expect(unreachable(strict, URL)).toBeNull();
     expect(unreachable(dialect("cursor"), "http://localhost:8000/mcp")).toBeNull();
   });

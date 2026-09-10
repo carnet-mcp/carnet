@@ -114,7 +114,7 @@ describe("when it appears", () => {
     show([connection({ state: "connectable" })]);
 
     expect(
-      await screen.findByText("This agent reaches systems you have not connected"),
+      await screen.findByText("This agent uses accounts you have not connected"),
     ).toBeTruthy();
     expect(screen.getByText("jira")).toBeTruthy();
   });
@@ -125,14 +125,14 @@ describe("when it appears", () => {
     show([connection({ state: "connectable" })]);
 
     expect(
-      await screen.findByText(/reaches it using a shared account your organisation configured/),
+      await screen.findByText(/denied or use a shared account set up by your administrator/),
     ).toBeTruthy();
   });
 
   it("leads somewhere", async () => {
     show([connection({ state: "connectable" })]);
 
-    const link = await screen.findByRole("link", { name: "Go to Connections" });
+    const link = await screen.findByRole("link", { name: "Connections" });
     expect(link.getAttribute("href")).toBe("/connections");
   });
 
@@ -144,7 +144,7 @@ describe("when it appears", () => {
     ]);
 
     expect(
-      await screen.findByText("One of your connections has stopped working"),
+      await screen.findByText("A connection needs attention"),
     ).toBeTruthy();
     expect(screen.getByText(/Consent was withdrawn/)).toBeTruthy();
   });

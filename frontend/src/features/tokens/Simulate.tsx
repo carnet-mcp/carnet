@@ -45,13 +45,12 @@ import type { Rule, Simulation } from "../../lib/types";
  *  and an unknown one renders as itself rather than vanishing — a new thing this stops
  *  short of must be visible before it is explained, never after. */
 const NOT_CHECKED: Record<string, string> = {
-  authentication:
-    "whether the token still works — revoked, expired, or owned by somebody disabled. The card above answers that.",
-  binding: "whether the tool's connector answers. Nothing was dialled.",
+  authentication: "whether the token is active. See the token card above.",
+  binding: "whether the tool's connector answers. Nothing was called.",
   "acting-for":
-    "whether a call made on somebody else's behalf could name them. That gate runs before this one and can refuse on its own.",
+    "whether an on-behalf-of claim could be verified. That check comes first and can deny on its own.",
   credential: "whether an account is connected for it. No credential was read.",
-  budget: "the daily call ceiling. What it has spent is above.",
+  budget: "the daily rate limit. See usage above.",
 };
 
 /** What each `rule` name means, in a few words.
@@ -132,19 +131,17 @@ export default function Simulate({ tokenId }: { tokenId: string }) {
   }
 
   return (
-    <Card title="Ask about a call" hint="answers, changes nothing">
+    <Card title="Check a call">
       <p className="sentence">
-        Whether a named call on a named resource would be admitted, with the rule that
-        decided it — the same verdict the door would give, without making the call.
+        See whether a call would be allowed and which rule decides it. Nothing is called.
       </p>
       <p className="muted sentence">
-        Only the arguments this tool declares as resources decide anything; the rest are
-        ignored here exactly as they are on a real call. Nothing is executed, nothing is
-        dialled, and no record is written.
+        Only the arguments the tool declares as resources are checked. Nothing is
+        executed and no record is written.
       </p>
 
       <form onSubmit={ask}>
-        <Field label="Tool" hint="the name a grant uses">
+        <Field label="Tool" hint="the tool name as granted">
           <input
             className="input mono"
             value={tool}
@@ -154,7 +151,7 @@ export default function Simulate({ tokenId }: { tokenId: string }) {
           />
         </Field>
 
-        <FieldGroup label="Arguments" hint="the resource this call would touch">
+        <FieldGroup label="Arguments" hint="the resource this call would use">
           {pairs.map((pair, index) => (
             <div key={index} className="pair">
               <input
@@ -177,7 +174,7 @@ export default function Simulate({ tokenId }: { tokenId: string }) {
 
         <div className="spread">
           <Button kind="primary" type="submit" disabled={busy || !tool.trim()}>
-            {busy ? "Asking…" : "Would this be allowed?"}
+            {busy ? "Checking…" : "Check"}
           </Button>
         </div>
       </form>
@@ -195,7 +192,7 @@ function Verdict({ answer }: { answer: Simulation }) {
     <div className="verdict">
       <div className="row-top">
         <Badge tone={allowed ? "good" : "bad"}>
-          {allowed ? "Would be allowed" : "Would be refused"}
+          {allowed ? "Would be allowed" : "Would be denied"}
         </Badge>
         {/* The rule, as a label beside the badge rather than inside the sentence. It is
             the one thing on this page a reader can grep the server for, so the raw name
@@ -214,8 +211,8 @@ function Verdict({ answer }: { answer: Simulation }) {
               one that let it through*. What it names on a refusal is the agent the denial
               would be **recorded** under, which is a different and less reassuring fact. */}
           {allowed
-            ? `Attributed to ${answer.attributed_to} — the first granted agent whose scope admits these arguments, and the agent the audit record would name.`
-            : `Recorded under ${answer.attributed_to}. No granted agent admits this call; the denial is written against the first of them.`}
+            ? `Attributed to ${answer.attributed_to}, the first granted agent whose scope allows these arguments. The audit log would name it.`
+            : `Recorded under ${answer.attributed_to}. No granted agent allows this call. The denial is logged against the first of them.`}
         </p>
       )}
 
@@ -239,7 +236,7 @@ function Verdict({ answer }: { answer: Simulation }) {
                   </span>
                 )}
                 <Badge tone={candidate.allowed ? "good" : "bad"}>
-                  {candidate.allowed ? "allows" : "refuses"}
+                  {candidate.allowed ? "allows" : "denies"}
                 </Badge>
               </div>
               {candidate.reason && <p className="row-sub">{candidate.reason}</p>}
@@ -256,8 +253,7 @@ function Verdict({ answer }: { answer: Simulation }) {
               the second one's cause is the sentence above, not this one. Asserting a
               cause that fits only one of two cases is how a true sentence becomes a
               misleading one. The disclaimer is the part that matters and it fits both. */}
-          No agent was considered, so nothing was checked against a scope. This says
-          nothing about whether such a tool exists.
+          No agent was checked. This does not say whether the tool exists.
         </p>
       )}
 
@@ -265,7 +261,7 @@ function Verdict({ answer }: { answer: Simulation }) {
           is worse than no verdict, and the three things below are exactly what somebody
           would otherwise assume it covered. */}
       <div className="stack-sm">
-        <p className="muted tiny">This did not check:</p>
+        <p className="muted tiny">Not checked:</p>
         <ul className="muted tiny">
           {answer.not_checked.map((key) => (
             <li key={key}>{NOT_CHECKED[key] ?? key}</li>

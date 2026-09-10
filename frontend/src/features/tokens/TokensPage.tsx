@@ -76,17 +76,11 @@ export default function TokensPage() {
   return (
     <>
       <PageHead
-        title="Your tokens"
-        lede={
-          <>
-            The API tokens you own — the machines that can act in this workspace on your
-            behalf. Revoked and expired ones are listed too, because this is a record of
-            what exists and what happened to it.
-          </>
-        }
+        title="Access tokens"
+        lede="Access tokens let a client connect to the MCP server as you. Revoked and expired tokens stay listed."
       />
 
-      {loading && <Spinner label="Reading your tokens…" />}
+      {loading && <Spinner label="Loading tokens…" />}
       {/* Before the empty state and never beside it. **A failed listing is not an empty
           listing**, and that is not a hypothetical distinction: a card once shipped the
           other way round, so a 503 made its form say "you have no machine" and point
@@ -95,17 +89,8 @@ export default function TokensPage() {
       {error && <Failure error={error} />}
 
       {data && data.length === 0 && (
-        <Empty title="You have no tokens">
-          <p className="sentence">
-            A token is how something that is not you acts in this workspace — an
-            assistant talking to the MCP door, or a service acting for its users.
-            Your own sign-in is not one, and does not need to be.
-          </p>
-          <p className="muted sentence">
-            Mint one below. The secret is shown once, at the moment it is made, and never
-            again — it is stored as a hash, so nothing here or in the database can show
-            it twice.
-          </p>
+        <Empty title="No access tokens">
+          <p className="sentence">Generate a token to connect a client.</p>
         </Empty>
       )}
 
@@ -115,7 +100,7 @@ export default function TokensPage() {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Acts as</th>
+                <th>Kind</th>
                 <th>Created</th>
                 <th>Expires</th>
                 <th>Last used</th>
@@ -199,36 +184,33 @@ function MintBox({ onMinted }: { onMinted: () => void }) {
 
   if (minted) {
     return (
-      <Notice tone="warn" title={`Token "${minted.name}" exists now`}>
+      <Notice tone="warn" title="Token created">
         <p>
-          <strong>Copy the token now — it is shown once and cannot be retrieved.</strong>{" "}
-          It is stored as a hash, so nothing here or in the database can show it again.
-          If it is lost, revoke this token on its page and mint another.
+          <strong>Copy the token and store it somewhere safe.</strong> You can&rsquo;t
+          view it again.
         </p>
         {/* `tabIndex` for a keyboard finding:
             `<code>` is not focusable, and the only other tab stop here destroys the
             value. */}
         <div className="reveal">
-          <span className="label">Token — what the machine presents</span>
-          <code tabIndex={0} aria-label="Token, what the machine presents">
+          <span className="label">Token</span>
+          <code tabIndex={0} aria-label="Token">
             {minted.token}
           </code>
         </div>
         {minted.acts_as_owner ? (
           <p className="muted">
-            It can run whatever you can run, from this moment and as your access changes.
-            Grant nothing to the token itself — share agents with yourself, and every
-            personal token you hold follows. When your account is disabled, it stops.
+            This token uses your access. It can use every agent shared with you. It is
+            revoked when your account is disabled.
           </p>
         ) : (
           <p className="muted">
-            It can run nothing yet. Share an agent with{" "}
-            <code>machine:{minted.id}</code> to grant it one — a service token holds only
-            what is granted to it directly.
+            This token has no agents yet. Grant it one from an agent&rsquo;s{" "}
+            <strong>Share</strong> dialog, as <code>machine:{minted.id}</code>.
           </p>
         )}
         <div className="spread">
-          <Button onClick={() => setMinted(null)}>I have copied it</Button>
+          <Button onClick={() => setMinted(null)}>Done</Button>
         </div>
       </Notice>
     );
@@ -237,7 +219,7 @@ function MintBox({ onMinted }: { onMinted: () => void }) {
   if (!open) {
     return (
       <div className="spread">
-        <Button onClick={() => setOpen(true)}>Mint a token</Button>
+        <Button onClick={() => setOpen(true)}>Generate token</Button>
       </div>
     );
   }
@@ -268,13 +250,10 @@ function MintBox({ onMinted }: { onMinted: () => void }) {
 
   return (
     <div className="inline-form">
-      <Field
-        label="Name"
-        hint="What the listing shows somebody deciding what to revoke. One live token per name."
-      >
+      <Field label="Name" hint="Shown in the list. One active token per name.">
         <input
           value={name}
-          placeholder="my-assistant"
+          placeholder="my-client"
           onChange={(event) => setName(event.target.value)}
         />
       </Field>
@@ -288,11 +267,11 @@ function MintBox({ onMinted }: { onMinted: () => void }) {
             onChange={() => setPersonal(true)}
           />
           <span>
-            <strong>Personal — acts as you.</strong>
+            <strong>Personal</strong>
             <span className="muted">
               {" "}
-              It can run whatever you can run, live, as your access changes — the shape
-              for connecting your own assistant. It dies with your account.
+              — Uses your access. Can use every agent shared with you. Revoked when your
+              account is disabled.
             </span>
           </span>
         </label>
@@ -304,22 +283,17 @@ function MintBox({ onMinted }: { onMinted: () => void }) {
             onChange={() => setPersonal(false)}
           />
           <span>
-            <strong>Service — holds only its own grants.</strong>
+            <strong>Service</strong>
             <span className="muted">
               {" "}
-              It can run nothing until an agent is shared with it, and its access does
-              not widen when yours does — the shape for CI and shared machinery. Tools
-              vetted to act as the person calling them are beyond it: no person stands
-              behind it, so there is no account for such a call to act as.
+              — Has its own access. Can use only the agents granted to it. For CI and
+              shared machines.
             </span>
           </span>
         </label>
       </div>
 
-      <Field
-        label="Expires after (days)"
-        hint="Blank means never — revoke it to end it."
-      >
+      <Field label="Expires after (days)" hint="Blank means never.">
         <input
           value={expiresDays}
           inputMode="numeric"
@@ -345,7 +319,7 @@ function MintBox({ onMinted }: { onMinted: () => void }) {
           disabled={name.trim() === ""}
           onClick={mint}
         >
-          {busy ? "Minting" : "Mint this token"}
+          {busy ? "Generating" : "Generate token"}
         </Button>
       </div>
     </div>

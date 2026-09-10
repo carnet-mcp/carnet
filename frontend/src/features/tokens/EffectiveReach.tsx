@@ -52,20 +52,18 @@ export default function EffectiveReach({ rows }: { rows: ToolReach[] }) {
   const shared = rows.filter((row) => row.granted_by.length > 1);
 
   return (
-    <Card title="Tool by tool" hint="the same grants, composed">
+    <Card title="Access by tool" hint="the same grants, by tool">
       <p className="sentence">
-        Every tool this token can name, and the agents that grant it. Where one tool comes
-        from more than one agent it keeps <em>each</em> agent&rsquo;s scope, and the call
-        is attributed to the first of them whose scope admits the arguments — the order
-        below.
+        Every tool this token can use, and the agents that grant it. A tool granted by
+        more than one agent keeps <em>each</em> agent&rsquo;s scope. A call is attributed
+        to the first agent, in the order below, whose scope allows the arguments.
       </p>
       {shared.length > 0 && (
         <p className="muted sentence">
           {shared.length === 1
             ? "One tool here is granted by more than one agent."
             : `${shared.length} tools here are granted by more than one agent.`}{" "}
-          Which grant applies is decided per call, so this page cannot say in advance.
-          Ask about a specific call below.
+          Which grant applies is decided per call. Check a specific call below.
         </p>
       )}
 
@@ -97,9 +95,8 @@ function ToolRow({ row }: { row: ToolReach }) {
 
       {row.effect === null && (
         <p className="row-sub">
-          Nothing in this workspace&rsquo;s catalogue describes this tool, so no scope
-          applies to it and every call to it is refused. It is granted by an agent that
-          still names it.
+          No tool in this workspace has this name, so every call to it is denied. It is
+          granted by an agent that still names it.
         </p>
       )}
 
@@ -108,7 +105,7 @@ function ToolRow({ row }: { row: ToolReach }) {
           <div key={grant.agent} className="row-sub">
             <span className="mono">{grant.agent}</span>
             {Object.keys(grant.applies).length === 0 ? (
-              <span className="muted"> — nothing this tool touches is scoped</span>
+              <span className="muted"> — no resource restriction</span>
             ) : (
               Object.entries(grant.applies).map(([type, patterns]) => (
                 <span key={type}>

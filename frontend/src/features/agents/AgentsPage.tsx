@@ -42,12 +42,12 @@ export default function AgentsPage() {
           whose list failed to load, can still make one, and they are the person most
           likely to want to. */}
       <PageHead
-        title="Create MCP"
-        lede="Each one is a named set of tools your assistant may call, and how far each may reach. Calls go out as you, with your access."
+        title="Agents"
+        lede="An agent is a named set of tools and the resources they may use. A client that connects with your token can use the tools of every agent shared with you, with your access."
         actions={
           <Button kind="primary" to="/agents/new">
             <Icon name="plus" />
-            New MCP
+            New agent
           </Button>
         }
       />
@@ -60,11 +60,10 @@ export default function AgentsPage() {
         // exactly what somebody sees on their first day, and every word that suggests
         // breakage — "error", "failed to load", a retry button — turns a system working
         // as designed into a support ticket.
-        <Empty title="No agents here yet">
+        <Empty title="No agents">
           <p>
-            You are signed in and this is what your account can reach: nothing, so far.
-            Agents are shared deliberately, one at a time, by the person who owns them —
-            or with a team you belong to.
+            No agents have been shared with you. An agent's owner can share it with you or
+            with a group you belong to. You can also create your own.
           </p>
           {/* Two exits, both true (062). The sharing road is the ordinary case in an
               established workspace; the create road is the ONLY road for the first
@@ -72,15 +71,10 @@ export default function AgentsPage() {
               who does not exist — on the first screen of the product. The button is in
               the empty state itself because an empty page gives nobody a reason to
               look at its header. */}
-          <p className="muted">
-            Ask whoever owns the agent you need to share it with you — or make your
-            own: an agent is a named set of tools with limits, and creating one is how
-            a fresh workspace starts.
-          </p>
           <p>
             <Button kind="primary" to="/agents/new">
               <Icon name="plus" />
-              Create your first MCP
+              Create your first agent
             </Button>
           </p>
         </Empty>
@@ -186,7 +180,7 @@ export function status(agent: AgentSummary): { tone: Tone; word: string } {
 export function describe(agent: AgentSummary): string {
   if (!agent.valid) return agent.error ?? "Its configuration no longer validates.";
   if (agent.tools.length === 0) {
-    return "No tools yet, so it can answer a question and touch nothing.";
+    return "No tools yet. A client can call nothing through it until one is added.";
   }
   const apps = appsOf(agent.tools).map((app) => app.label);
   if (apps.length === 0) return `${count(agent.tools.length)}, all built in.`;

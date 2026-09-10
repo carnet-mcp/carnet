@@ -130,11 +130,22 @@ function marks(label: string): string[] {
   return [...(svg?.querySelectorAll("title") ?? [])].map((t) => t.textContent ?? "");
 }
 
+/** The title of the figure called `name`. A figure's title is a `<span>` rather than a
+ *  heading, and several now share their one word with a tile or a tab — "Callers",
+ *  "Tools", "Agents" — so a bare text query would be ambiguous. */
+const figureTitle = (name: string) =>
+  screen.findByText(name, { selector: ".figure-title" });
+
+/** The tile labelled `label`, for the same reason: "Spend" and "Requests" are also the
+ *  cost card's heading and a figure's first word. */
+const tile = async (label: string) =>
+  (await screen.findByText(label, { selector: ".stat .k" })).closest(".stat") as HTMLElement;
+
 beforeEach(() => {
   vi.mocked(api.overview).mockReset();
 });
 
-describe("the door stack", () => {
+describe("the requests stack", () => {
   it("subtracts the bands that live inside `allowed`, so the column is the traffic", async () => {
     // 10 admitted, of which 2 errored and 1 was too large, plus 3 refused. The day's
     // traffic is 13 — and a naive stack of the four wire fields would draw 16.
@@ -150,10 +161,10 @@ describe("the door stack", () => {
     draw();
     expect(await screen.findByText("13")).toBeInTheDocument();
 
-    const drawn = marks("Door calls per day");
+    const drawn = marks("Requests per day");
     expect(drawn).toEqual([
-      `${DAY} · Admitted: 10`,
-      `${DAY} · Refused: 3`,
+      `${DAY} · Allowed: 10`,
+      `${DAY} · Denied: 3`,
     ]);
 
     // The two segments sum to the traffic and no more. The trap: `errored` and
@@ -172,15 +183,15 @@ describe("the door stack", () => {
     );
 
     draw();
-    await screen.findByText("Calls per day");
+    await figureTitle("Requests per day");
 
     // Not a segment...
-    expect(marks("Door calls per day").some((t) => t.includes("Errored"))).toBe(false);
+    expect(marks("Requests per day").some((t) => t.includes("Errored"))).toBe(false);
     // ...but not lost either: the rate is on the figure, and the count is in the table.
     expect(screen.getByText(/15% errored/)).toBeInTheDocument();
   });
 
-  it("draws no refused segment on a day nothing was refused", async () => {
+  it("draws no denied segment on a day nothing was denied", async () => {
     // A zero drawn as a hairline reads as a small amount of something, on a day that
     // had none of it — and on this figure that something is "the broker turned people
     // away", which is not a thing to imply by accident.
@@ -195,12 +206,12 @@ describe("the door stack", () => {
     );
 
     draw();
-    await screen.findByText("Calls per day");
+    await figureTitle("Requests per day");
 
-    expect(marks("Door calls per day")).toEqual([
-      "2026-08-26 · Admitted: 4",
-      "2026-08-26 · Refused: 2",
-      `${DAY} · Admitted: 3`,
+    expect(marks("Requests per day")).toEqual([
+      "2026-08-26 · Allowed: 4",
+      "2026-08-26 · Denied: 2",
+      `${DAY} · Allowed: 3`,
     ]);
   });
 });
@@ -234,14 +245,14 @@ describe("the identity split", () => {
 
     draw();
 
-    const tile = (await screen.findByText("On a verified identity")).closest(".stat");
-    expect(tile).toHaveClass("alert");
-    expect(within(tile as HTMLElement).getByText("20%")).toBeInTheDocument();
+    const verified = await tile("Verified identity");
+    expect(verified).toHaveClass("alert");
+    expect(within(verified).getByText("20%")).toBeInTheDocument();
   });
 });
 
 describe("headroom", () => {
-  it("draws no gauge when the ceiling is not enforced, and says so", async () => {
+  it("draws no gauge when no rate limit is set, and says so", async () => {
     vi.mocked(api.overview).mockResolvedValue(
       overview({
         totals: { ...overview().totals, door_calls: 400 },
@@ -255,13 +266,13 @@ describe("headroom", () => {
     );
 
     draw();
-    await screen.findByText("Busiest day against the ceiling");
+    await screen.findByText("Busiest day against the rate limit");
 
     expect(document.querySelector(".meter-track")).toBeNull();
-    expect(screen.getByText(/not enforced/)).toBeInTheDocument();
+    expect(screen.getByText(/No rate limit is set/)).toBeInTheDocument();
   });
 
-  it("reports the days something ran out of allowance", async () => {
+  it("reports the days the rate limit was reached", async () => {
     vi.mocked(api.overview).mockResolvedValue(
       overview({
         headroom: {
@@ -276,13 +287,13 @@ describe("headroom", () => {
     draw();
 
     expect(
-      await screen.findByText(/ran out of allowance on 3 days/),
+      await screen.findByText(/The rate limit was reached on 3 days/),
     ).toBeInTheDocument();
     expect(document.querySelector(".meter-fill")).toHaveClass("bad");
   });
 });
 
-describe("what the door cost, step 045b", () => {
+describe("what the requests cost, step 045b", () => {
   const spending = () =>
     overview({
       totals: {
@@ -300,8 +311,8 @@ describe("what the door cost, step 045b", () => {
 
     draw();
 
-    const tile = (await screen.findByText("Door spend")).closest(".stat");
-    expect(within(tile as HTMLElement).getByText("$30.00")).toBeInTheDocument();
+    const spend = await tile("Spend");
+    expect(within(spend).getByText("$30.00")).toBeInTheDocument();
   });
 
   it("reads a dash rather than $0.00 when nothing reported what it spent", async () => {
@@ -313,8 +324,8 @@ describe("what the door cost, step 045b", () => {
 
     draw();
 
-    const tile = (await screen.findByText("Door spend")).closest(".stat");
-    expect(within(tile as HTMLElement).getByText("—")).toBeInTheDocument();
+    const spend = await tile("Spend");
+    expect(within(spend).getByText("—")).toBeInTheDocument();
   });
 
   it("draws no money pane at all when nothing reported", async () => {
@@ -325,9 +336,13 @@ describe("what the door cost, step 045b", () => {
     );
 
     draw();
-    await screen.findByText("Calls per day");
+    await figureTitle("Requests per day");
 
-    expect(screen.queryByText("What the door cost")).not.toBeInTheDocument();
+    // `hidden: true`, because the panes are hidden rather than unmounted — the assertion
+    // is that the card was never drawn, not merely that it is behind another tab.
+    expect(
+      screen.queryByRole("heading", { name: "Spend", hidden: true }),
+    ).not.toBeInTheDocument();
   });
 
   it("says the two figures are measured differently, because they are", async () => {
@@ -335,9 +350,11 @@ describe("what the door cost, step 045b", () => {
 
     draw();
 
-    expect(await screen.findByText("What the door cost")).toBeInTheDocument();
     expect(
-      screen.getByText(/Calls that touched no model are counted above/),
+      await screen.findByRole("heading", { name: "Spend", hidden: true }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Calls that used no model cost nothing here/),
     ).toBeInTheDocument();
   });
 
@@ -360,7 +377,7 @@ describe("what the door cost, step 045b", () => {
     draw();
 
     expect(await screen.findByText(/llama-3-70b/)).toBeInTheDocument();
-    expect(screen.getByText(/reported as unpriced/)).toBeInTheDocument();
+    expect(screen.getByText(/no rate in the price list/)).toBeInTheDocument();
     // Step 045c decision 4: the operator reading this screen is the person who can
     // close the gap, so the sentence names the file rather than only the shortfall.
     expect(screen.getByText(/CARNET_MODEL_RATES/)).toBeInTheDocument();
@@ -377,7 +394,7 @@ describe("what the door cost, step 045b", () => {
   });
 });
 
-describe("the refusal bands", () => {
+describe("the denial bands", () => {
   const refused = (patch = {}) => ({
     day: DAY,
     policy: 0,
@@ -388,7 +405,7 @@ describe("the refusal bands", () => {
     ...patch,
   });
 
-  it("stacks the door's two ceilings as one band and keeps them apart in the numbers", async () => {
+  it("stacks the two rate limits as one band and keeps them apart in the numbers", async () => {
     // The token layer's own rule: a fifth categorical series is a fold, never a generated
     // fifth hue. What is lost is telling them apart by eye; what is kept is a stack that
     // still sums to the day's refusals.
@@ -400,25 +417,25 @@ describe("the refusal bands", () => {
     );
 
     draw();
-    await screen.findByText("What was refused, and by which control");
+    await figureTitle("Denials by control");
 
     // Drawn as one segment of five, so the stack still reaches the day's total.
     expect(
-      document.querySelector('[aria-label="Refusals per day"] title'),
-    ).toHaveTextContent("Door ceiling: 5");
+      document.querySelector('[aria-label="Denials per day"] title'),
+    ).toHaveTextContent("Rate limit: 5");
 
     // And told apart under *Show the numbers*, where the difference is actionable. The
     // table is in the document whether or not the `<details>` is open — the disclosure is
     // presentation, not a fetch — so this asserts the column exists rather than driving
     // a click that would test `<details>` instead of the page.
     const numbers = within(
-      screen.getByText("What was refused, and by which control").closest("figure")!,
+      screen.getByText("Denials by control", { selector: ".figure-title" }).closest("figure")!,
     );
-    expect(numbers.getByText("door spend")).toBeInTheDocument();
-    expect(numbers.getByText("ceiling")).toBeInTheDocument();
+    expect(numbers.getByText("spend limit")).toBeInTheDocument();
+    expect(numbers.getByText("rate limit")).toBeInTheDocument();
   });
 
-  it("explains why the two door allowances are not one fact", async () => {
+  it("says the two rate limits are one band on the chart and separate in the numbers", async () => {
     vi.mocked(api.overview).mockResolvedValue(
       overview({ refusals: [refused({ door_spend: 1 })] }),
     );
@@ -426,12 +443,12 @@ describe("the refusal bands", () => {
     draw();
 
     expect(
-      await screen.findByText(/a spend ceiling met is a bill arriving/),
+      await screen.findByText(/the two are one band here and separate under/),
     ).toBeInTheDocument();
   });
 });
 
-describe("a workspace that only uses the door", () => {
+describe("a workspace that only uses the MCP server", () => {
   it("shows its traffic", async () => {
     vi.mocked(api.overview).mockResolvedValue(
       overview({
@@ -462,7 +479,7 @@ describe("a workspace that only uses the door", () => {
     draw();
 
     expect(
-      await screen.findByText("No calls came through the door in this window"),
+      await screen.findByText("No requests in this window"),
     ).toBeInTheDocument();
   });
 });
@@ -486,7 +503,7 @@ function linkFor(label: string, text: string): string | null {
 }
 
 describe("every number points at its calls", () => {
-  it("sends a day's column to that day, and its refused band to that day's refusals", async () => {
+  it("sends a day's column to that day, and its denied band to that day's denials", async () => {
     vi.mocked(api.overview).mockResolvedValue(
       overview({
         totals: { ...overview().totals, door_calls: 13, door_denied: 3 },
@@ -497,15 +514,15 @@ describe("every number points at its calls", () => {
     );
 
     draw();
-    await screen.findByText("Calls per day");
+    await figureTitle("Requests per day");
 
     // The column: that day, everything.
-    expect(linkFor("Door calls per day", "Admitted")).toBe(
+    expect(linkFor("Requests per day", "Allowed")).toBe(
       `/admin/door-calls?since=${DAY}&until=${DAY}`,
     );
     // The band: that day, refusals. A different question, so a different query — a link
     // that sent both to the same place would answer one of them wrongly.
-    expect(linkFor("Door calls per day", "Refused")).toBe(
+    expect(linkFor("Requests per day", "Denied")).toBe(
       `/admin/door-calls?since=${DAY}&until=${DAY}&decision=deny`,
     );
   });
@@ -544,7 +561,7 @@ describe("every number points at its calls", () => {
     );
 
     draw("/overview?view=callers");
-    await screen.findByText("Who is calling");
+    await figureTitle("Callers");
 
     // Every internal link is relative — a `Link` renders its `to` verbatim for an
     // in-app path, and nothing on this page should be pointing at an absolute URL or
@@ -557,7 +574,7 @@ describe("every number points at its calls", () => {
     }
   });
 
-  it("sends an access refusal to the other log, because it is a different table", async () => {
+  it("sends an access denial to the other log, because it is a different table", async () => {
     vi.mocked(api.overview).mockResolvedValue(
       overview({
         refusals: [
@@ -574,13 +591,13 @@ describe("every number points at its calls", () => {
     );
 
     draw("/overview?view=governance");
-    await screen.findByText("What was refused, and by which control");
+    await figureTitle("Denials by control");
 
     // An access denial never reached a broker and has **no audit row at all**. A link
     // that sent it to the door's log would return nothing and read as "there were none",
     // which is the one wrong answer available here.
-    expect(linkFor("Refusals per day", "Access")).toBe("/admin/denials");
-    expect(linkFor("Refusals per day", "Policy")).toBe(
+    expect(linkFor("Denials per day", "Access")).toBe("/admin/denials");
+    expect(linkFor("Denials per day", "Policy")).toBe(
       `/admin/door-calls?since=${DAY}&until=${DAY}&decision=deny`,
     );
   });
@@ -688,14 +705,14 @@ describe("a truncated leaderboard admits it", () => {
     );
 
     draw("/overview?view=callers");
-    await screen.findByText("What is being called");
+    await figureTitle("Tools");
 
     expect(screen.getByText("top 1 of 18 tools")).toBeInTheDocument();
     expect(screen.getByText(/3 more tools/)).toBeInTheDocument();
     expect(screen.getByText(/412 calls between them/)).toBeInTheDocument();
-    // And what the remainder was refused, because "412 more calls" while hiding that
-    // seven were refused would be worse than saying nothing.
-    expect(screen.getByText(/7 refused/)).toBeInTheDocument();
+    // And what the remainder was denied, because "412 more calls" while hiding that
+    // seven were denied would be worse than saying nothing.
+    expect(screen.getByText(/7 denied/)).toBeInTheDocument();
   });
 
   it("says nothing about truncation when nothing was truncated", async () => {
@@ -708,7 +725,7 @@ describe("a truncated leaderboard admits it", () => {
     );
 
     draw("/overview?view=callers");
-    await screen.findByText("What is being called");
+    await figureTitle("Tools");
 
     expect(screen.getByText("1 tool")).toBeInTheDocument();
     expect(screen.queryByText(/not shown/)).not.toBeInTheDocument();
@@ -753,9 +770,9 @@ describe("the three dimensions every row carried", () => {
     );
 
     draw("/overview?view=callers");
-    await screen.findByText("Under which permission list");
+    await figureTitle("Agents");
 
-    expect(screen.getByText("3 tools reached")).toBeInTheDocument();
+    expect(screen.getByText("3 tools used")).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: "issue-reporter" }).getAttribute("href"),
     ).toContain("agent=issue-reporter");
@@ -775,14 +792,14 @@ describe("the three dimensions every row carried", () => {
     );
 
     draw("/overview?view=identity");
-    await screen.findByText("Whose names went out");
+    await figureTitle("Names");
 
     expect(screen.getAllByRole("link", { name: "sam@x.com" })).toHaveLength(2);
     expect(screen.getByText(/their own token, checked/)).toBeInTheDocument();
     expect(screen.getByText(/the calling app's word, unchecked/)).toBeInTheDocument();
   });
 
-  it("ranks what the refusals said, and does not put a sentence in a URL", async () => {
+  it("ranks what the denials said, and does not put a sentence in a URL", async () => {
     vi.mocked(api.overview).mockResolvedValue(
       overview({
         refusal_reasons: [{ reason: "tool not granted to this token", count: 12 }],
@@ -791,7 +808,7 @@ describe("the three dimensions every row carried", () => {
     );
 
     draw("/overview?view=governance");
-    await screen.findByText("What the refusals actually said");
+    await figureTitle("Denial reasons");
 
     const link = screen.getByRole("link", { name: "tool not granted to this token" });
     // The reason is a whole sentence and a URL carrying one would break the moment
@@ -807,7 +824,7 @@ describe("the three dimensions every row carried", () => {
     );
 
     draw();
-    await screen.findByText("When the door is busy");
+    await figureTitle("Busy hours");
 
     const grid = screen.getByRole("img", { name: "Calls by weekday and hour" });
     // 7 days x 24 hours, drawn whole — a sparse response is not a sparse grid.
@@ -875,7 +892,7 @@ describe("the edge pass", () => {
     );
 
     draw();
-    const figure = await screen.findByText("How big a response was");
+    const figure = await figureTitle("Response size");
     const details = figure.closest(".figure")!.querySelector("details")!;
     details.setAttribute("open", "");
 
@@ -896,7 +913,7 @@ describe("the edge pass", () => {
     );
 
     draw();
-    await screen.findByText("When the door is busy");
+    await figureTitle("Busy hours");
 
     const lit = [...document.querySelectorAll<HTMLElement>(".heat-cell")].find((cell) =>
       cell.style.background.includes("chart-heat"),
@@ -933,7 +950,7 @@ describe("the edge pass", () => {
     );
 
     draw("/overview?view=callers");
-    await screen.findByText("What is being called");
+    await figureTitle("Tools");
 
     expect(screen.getByText("2 tools")).toBeInTheDocument();
     expect(screen.queryByText("0 tools")).not.toBeInTheDocument();
@@ -956,16 +973,16 @@ describe("the window", () => {
 
     draw();
 
-    expect(await screen.findByText(/answered with the nearest/)).toBeInTheDocument();
+    expect(await screen.findByText(/so the nearest was used/)).toBeInTheDocument();
   });
 
   it("stays quiet when it answered exactly what was asked", async () => {
     vi.mocked(api.overview).mockResolvedValue(overview());
 
     draw();
-    await screen.findByText("Calls per day");
+    await figureTitle("Requests per day");
 
-    expect(screen.queryByText(/answered with the nearest/)).toBeNull();
+    expect(screen.queryByText(/the nearest was used/)).toBeNull();
   });
 });
 
@@ -1002,10 +1019,10 @@ describe("the tabs are a URL, step 048", () => {
     // which is what makes this an assertion about what a reader can *see* rather than
     // about what React mounted.
     expect(
-      await screen.findByRole("heading", { name: "What the door cost" }),
+      await screen.findByRole("heading", { name: "Spend" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("img", { name: "Door calls per day" }),
+      screen.queryByRole("img", { name: "Requests per day" }),
     ).not.toBeInTheDocument();
   });
 
@@ -1017,7 +1034,7 @@ describe("the tabs are a URL, step 048", () => {
     draw("/overview?view=nonsense");
 
     expect(
-      await screen.findByRole("img", { name: "Door calls per day" }),
+      await screen.findByRole("img", { name: "Requests per day" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Traffic" })).toHaveAttribute(
       "aria-selected",
@@ -1033,7 +1050,7 @@ describe("the tabs are a URL, step 048", () => {
 
     expect(screen.getByTestId("search").textContent).toBe("?view=governance");
     expect(
-      screen.getByRole("img", { name: "Refusals per day" }),
+      screen.getByRole("img", { name: "Denials per day" }),
     ).toBeInTheDocument();
   });
 
@@ -1044,8 +1061,8 @@ describe("the tabs are a URL, step 048", () => {
 
     draw("/overview?view=identity");
 
-    expect(await screen.findByText("Calls through the door")).toBeInTheDocument();
-    expect(screen.getByText("On a verified identity")).toBeInTheDocument();
+    expect(await tile("Requests")).toBeInTheDocument();
+    expect(await tile("Verified identity")).toBeInTheDocument();
   });
 
   it("offers no cost pane where nothing reported what it spent", async () => {

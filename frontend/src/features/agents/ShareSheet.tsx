@@ -85,12 +85,12 @@ const WHO = [
   // **The verb that makes a minted token do anything** (065). The route has taken
   // `machine` since the door existed and the CLI has always called it; the form had no
   // option, so a token minted in the browser could only be granted at a terminal.
-  { id: "machine", label: "A token", hint: "an assistant connecting to the door" },
+  { id: "machine", label: "A token", hint: "a client connecting to the MCP server" },
 ];
 
 const ROLES = [
-  { id: "user", label: "Can run it", hint: "run it, and see what it may reach" },
-  { id: "editor", label: "Can change it", hint: "…and edit it, and share it on" },
+  { id: "user", label: "Can use", hint: "Use its tools and see its settings." },
+  { id: "editor", label: "Can edit", hint: "Also edit and share it." },
 ];
 
 export default function ShareSheet({ agent }: { agent: AgentDetail }) {
@@ -107,7 +107,7 @@ export default function ShareSheet({ agent }: { agent: AgentDetail }) {
   }
 
   return (
-    <Card title="Who can reach it" hint="and how">
+    <Card title="Sharing" hint="who has access">
       {sheet.loading && <p className="muted">Loading…</p>}
       {sheet.error ? <Failure error={sheet.error} /> : null}
 
@@ -117,7 +117,7 @@ export default function ShareSheet({ agent }: { agent: AgentDetail }) {
             <thead>
               <tr>
                 <th>Who</th>
-                <th>May</th>
+                <th>Role</th>
                 <th>How</th>
                 <th />
               </tr>
@@ -152,20 +152,18 @@ export default function ShareSheet({ agent }: { agent: AgentDetail }) {
                 {/* Agreeing with `--agent-access`, which pluralises the same sentence:
                     one fact should not read two ways depending on which door you are
                     standing at. */}
-                {followed.length === 1 ? "follows" : "follow"} your directory. People it
-                has placed there who have not signed in since are not listed above; they
-                appear when they next sign in.
+                {followed.length === 1 ? "follows" : "follow"} your directory. Members who
+                have not signed in since being added are listed after their next sign-in.
               </p>
             );
           })()}
 
           {sheet.data.waiting.length > 0 && (
             <>
-              <h3>Waiting for a first sign-in</h3>
+              <h3>Pending first sign-in</h3>
               <p className="sentence">
-                Nobody has this access yet. It attaches the moment somebody signs in with
-                that address — and if nobody ever does, it waits indefinitely and nothing
-                here will say so.
+                These people have not signed in yet. Access is granted when they first sign
+                in with this address.
               </p>
               <table>
                 <tbody>
@@ -202,18 +200,14 @@ export default function ShareSheet({ agent }: { agent: AgentDetail }) {
         // `unshare` refuses rather than deleting nothing and reporting success, because
         // whoever pressed it would otherwise believe the access is gone and stop looking.
         <p className="muted">
-          Nothing was changed. Take them out of the group, or remove the group's own
-          access below.
+          Nothing was changed. Remove them from the group, or remove the group's access.
         </p>
       ) : null}
 
       {mayShare ? (
         <ShareBox agent={agent} onShared={() => sheet.reload()} />
       ) : (
-        <p className="muted">
-          You can see who has access because you can run this agent. Changing it needs the
-          level above yours.
-        </p>
+        <p className="muted">Only editors and the owner can change sharing.</p>
       )}
     </Card>
   );
@@ -268,7 +262,7 @@ function Row({
               : "everybody in this group"}
           </span>
         ) : row.kind === "machine" ? (
-          <span className="muted">an API token, acting unattended</span>
+          <span className="muted">an access token</span>
         ) : (
           <span className="muted">shared with them</span>
         )}
@@ -287,14 +281,14 @@ function Row({
           <span className="spread">
             <span className="muted tiny">
               {row.kind === "group"
-                ? "Everybody reaching it through this group loses it now."
-                : "Their direct access ends now; anything through a group survives."}
+                ? "Everyone in this group loses access now."
+                : "Their direct access ends now. Access through a group is kept."}
             </span>
             <Button kind="quiet" onClick={() => setConfirming(false)}>
               Keep
             </Button>
             <Button kind="primary" onClick={onRevoke}>
-              Remove it
+              Remove
             </Button>
           </span>
         )}
@@ -375,11 +369,10 @@ function ShareBox({ agent, onShared }: { agent: AgentDetail; onShared: () => voi
 
   return (
     <>
-      <h3>Share it</h3>
+      <h3>Share</h3>
       <p className="sentence">
-        Whoever you share this with calls through it as <strong>themselves</strong>, using
-        their own access to the systems it reaches — not yours. Every call is recorded
-        against their name.
+        People you share with use the agent with their own access. Every call is logged
+        under their name.
       </p>
 
       {/* The kind in the URL, as a control. `shareAgent` takes `email | user | group`
@@ -434,8 +427,8 @@ function ShareBox({ agent, onShared }: { agent: AgentDetail; onShared: () => voi
 
       {kind === "machine" ? (
         <p className="sentence muted">
-          A token is granted at <strong>can run it</strong>. It calls tools; it does not
-          edit the list that bounds it.
+          A token is granted <strong>Can use</strong>. It can use the agent's tools and
+          cannot edit the agent.
         </p>
       ) : (
         <div className="choices">
@@ -468,18 +461,16 @@ function ShareBox({ agent, onShared }: { agent: AgentDetail; onShared: () => voi
         (outcome.pending ? (
           // **The distinction 006 hid from the sharer.** These two look identical on a
           // screen and only one of them means anybody actually has access.
-          <Notice tone="warn" title="Nobody has this access yet">
+          <Notice tone="warn" title="Pending first sign-in">
             <p className="sentence">
-              Nobody has signed in as <span className="mono">{outcome.email}</span>, so
-              this is waiting for them. It attaches the first time they do — and if that
-              address is not the one their account carries, it waits forever and nothing
-              will tell either of you.
+              Nobody has signed in as <span className="mono">{outcome.email}</span> yet.
+              Access is granted when they first sign in with this address.
             </p>
           </Notice>
         ) : (
           <Notice tone="info" title="Shared">
             <p className="sentence">
-              <span className="mono">{outcome.email}</span> can reach this agent now.
+              <span className="mono">{outcome.email}</span> can use this agent now.
             </p>
           </Notice>
         ))}
@@ -494,10 +485,8 @@ function ShareBox({ agent, onShared }: { agent: AgentDetail; onShared: () => voi
       {sharedToken && (
         <Notice tone="info" title="Shared">
           <p className="sentence">
-            An assistant presenting <strong>{sharedToken.name}</strong> can call this
-            agent&rsquo;s tools now — they appear in its next{" "}
-            <span className="mono">tools/list</span>. Nothing was sent to anybody: the
-            token&rsquo;s secret was shown once, when it was minted.
+            A client using <strong>{sharedToken.name}</strong> can use this agent&rsquo;s
+            tools now. They appear in its next <span className="mono">tools/list</span>.
           </p>
         </Notice>
       )}
@@ -505,10 +494,10 @@ function ShareBox({ agent, onShared }: { agent: AgentDetail; onShared: () => voi
       {shared && (
         <Notice tone="info" title="Shared">
           <p className="sentence">
-            Everybody in <strong>{shared.name}</strong> can reach this agent now
+            Everyone in <strong>{shared.name}</strong> can use this agent now
             {shared.directory
-              ? ", and so does anybody your directory adds to it later, from their next sign-in. Nothing tells them."
-              : ", and so does anybody an administrator adds to it later. Nothing tells them."}
+              ? ", including anyone your directory adds later, from their next sign-in."
+              : ", including anyone an administrator adds later."}
           </p>
         </Notice>
       )}
@@ -552,18 +541,15 @@ function TokenPicker({
     return (
       <p className="sentence muted">
         {personal
-          ? "Your live tokens are all personal ones. A personal token already carries whatever you can reach, so there is nothing to grant it — mint a service token to give an assistant its own, narrower access."
-          : "You have no service tokens. Mint one on the tokens page, then grant it this agent."}
+          ? "Your active tokens are all personal. A personal token can already use every agent shared with you. Generate a service token to grant narrower access."
+          : "You have no service tokens. Generate one on Access tokens, then grant it this agent."}
       </p>
     );
   }
 
   return (
     <>
-      <Field
-        label="Token"
-        hint="The credential an assistant presents at the door."
-      >
+      <Field label="Token" hint="The service token a client connects with.">
         <select
           value={value}
           disabled={busy}
@@ -579,8 +565,8 @@ function TokenPicker({
       </Field>
       {picked && (
         <p className="muted">
-          Whatever holds <strong>{picked.name}</strong> gets this agent&rsquo;s tools, and
-          only those — one credential can be granted several agents, and it sees the union.
+          A client using <strong>{picked.name}</strong> can use this agent&rsquo;s tools.
+          A token granted several agents can use all of them.
         </p>
       )}
     </>
@@ -621,19 +607,13 @@ function GroupPicker({
   // this screen deliberately cannot.
   if (!groups.data || groups.data.length === 0) {
     return (
-      <p className="sentence muted">
-        There are no groups in this workspace yet. An administrator makes them, and then
-        an agent can be shared with a team rather than with a list of people.
-      </p>
+      <p className="sentence muted">No groups yet. An administrator creates groups.</p>
     );
   }
 
   return (
     <>
-      <Field
-        label="Group"
-        hint="Sharing with a group reaches everybody in it, now and later."
-      >
+      <Field label="Group" hint="Everyone in the group, now and later.">
         <select
           value={value}
           disabled={busy}
@@ -657,14 +637,13 @@ function GroupPicker({
         <p className="muted">
           {picked.directory ? (
             <>
-              <strong>{picked.name}</strong> follows your directory. Everybody it names
-              reaches this agent — including people who have never signed in here, from
-              the moment they do — and nobody on this screen can list them.
+              <strong>{picked.name}</strong> follows your directory. Everyone in it can use
+              this agent from their next sign-in. Its members are not listed here.
             </>
           ) : (
             <>
-              <strong>{picked.name}</strong> is managed by an administrator. Everybody in
-              it reaches this agent, and so does anybody added to it later.
+              <strong>{picked.name}</strong> is managed by an administrator. Everyone in it
+              can use this agent, including anyone added later.
             </>
           )}
         </p>

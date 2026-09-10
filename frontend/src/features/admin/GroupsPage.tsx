@@ -49,8 +49,8 @@ export default function GroupsPage() {
   return (
     <>
       <PageHead
-        title="Administration"
-        lede="Groups are names for sets of people, so an agent can be shared with a team rather than with a list. Nothing here grants access on its own — putting somebody in a group gives them whatever that group has already been shared onto."
+        title="Groups"
+        lede="A group is a set of users. Share an agent with a group to share it with everyone in the group."
       />
 
       <NewGroup onCreated={reload} />
@@ -60,9 +60,7 @@ export default function GroupsPage() {
 
       {data && data.length === 0 && (
         <Empty title="No groups yet">
-          <p className="sentence">
-            Make one above, then share an agent with it from that agent's share sheet.
-          </p>
+          <p className="sentence">Create one above, then share an agent with it.</p>
         </Empty>
       )}
 
@@ -114,7 +112,7 @@ function NewGroup({ onCreated }: { onCreated: () => void }) {
 
   return (
     <Card title="New group">
-      <Field label="Name" hint="What people will call it when sharing.">
+      <Field label="Name" hint="Shown when sharing.">
         <input value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
       <Field label="Description" hint="Optional.">
@@ -128,7 +126,7 @@ function NewGroup({ onCreated }: { onCreated: () => void }) {
           its grants with it. */}
       <Field
         label="Directory group"
-        hint="Optional. Its id in your directory — Entra emits object ids, Okta names."
+        hint="Optional. The group's id in your directory: an object id in Entra, a name in Okta."
       >
         <input
           value={externalId}
@@ -138,8 +136,8 @@ function NewGroup({ onCreated }: { onCreated: () => void }) {
       </Field>
       {externalId.trim() && (
         <p className="muted">
-          Its members will be whoever your directory names, applied at each person&rsquo;s
-          next sign-in. You will not be able to add or remove people here.
+          Members come from your directory at each person&rsquo;s next sign-in. You cannot
+          add or remove people here.
         </p>
       )}
       {failure && (
@@ -152,7 +150,7 @@ function NewGroup({ onCreated }: { onCreated: () => void }) {
       </Button>
       {/* Disabled with the reason beside it rather than silently: a button that does
           nothing when pressed reads as broken, and one that says why reads as a rule. */}
-      {!name.trim() && <p className="muted">A group needs a name.</p>}
+      {!name.trim() && <p className="muted">Enter a name.</p>}
     </Card>
   );
 }
@@ -196,8 +194,8 @@ function GroupRow({
         </div>
         <p className="muted">
           {group.directory
-            ? "Membership comes from Entra or Okta and is set at each person's next sign-in. Nobody edits it here."
-            : "An administrator adds and removes people here."}
+            ? "Membership comes from your directory at each person's next sign-in."
+            : "An administrator adds and removes members here."}
         </p>
         {group.description && <p className="muted">{group.description}</p>}
         {open && <GroupMembers groupId={group.group_id} onDeleted={onChange} />}
@@ -290,7 +288,7 @@ function DirectoryLink({
     return (
       <div className="inline-form">
         <p className="sentence">
-          Membership follows your directory, as{" "}
+          Membership follows the directory group{" "}
           <span className="mono">{group.external_id}</span>. It is set at each
           person&rsquo;s next sign-in.
         </p>
@@ -302,9 +300,7 @@ function DirectoryLink({
         <Button kind="quiet" busy={busy} onClick={() => save(null)}>
           Stop following the directory
         </Button>
-        <p className="muted">
-          Nobody is removed — the membership it has now becomes yours to edit again.
-        </p>
+        <p className="muted">Nobody is removed. You can edit the membership here again.</p>
       </div>
     );
   }
@@ -313,7 +309,7 @@ function DirectoryLink({
     <div className="inline-form">
       <FieldGroup
         label="Follow a directory group"
-        hint="Its id in your directory. Entra emits object ids; Okta emits names."
+        hint="The group's id in your directory: an object id in Entra, a name in Okta."
       >
         <div className="spread">
           <input
@@ -333,13 +329,11 @@ function DirectoryLink({
       )}
       {value.trim() && (
         <p className="muted">
-          Membership becomes whoever your directory names, applied at each
-          person&rsquo;s next sign-in.{" "}
+          Membership comes from your directory at each person&rsquo;s next sign-in.{" "}
           {people > 0 && (
             <>
-              {people} {people === 1 ? "person is" : "people are"} in it now; any your
-              directory does not name will be removed as they sign in, losing whatever
-              access this group carries.
+              {people} {people === 1 ? "person is" : "people are"} in it now. Anyone the
+              directory does not name is removed at their next sign-in.
             </>
           )}
         </p>
@@ -379,9 +373,9 @@ function MemberList({
   if (group.members.length === 0) {
     return (
       <p className="sentence muted">
-        Nobody is in this group yet, so sharing an agent with it reaches nobody.
+        No members yet.
         {group.external_id
-          ? " People appear here as they sign in and your directory names them."
+          ? " People appear here after their next sign-in if your directory names them."
           : ""}
       </p>
     );
@@ -430,14 +424,14 @@ function MemberList({
         </Notice>
       )}
       <p className="muted">
-        Removing somebody takes away every access they had through this group, on every
-        agent, immediately — and nothing tells them.
+        Removing a member ends their access through this group on every agent,
+        immediately.
       </p>
       {group.external_id &&
         group.members.some((member) => member.kind === "user") && (
           <p className="muted">
-            These are the people who have signed in since your directory placed them
-            here. Anybody it has added since is not listed until they next sign in.
+            Members who have not signed in since being added to the directory group are
+            listed after their next sign-in.
           </p>
         )}
     </>
@@ -488,7 +482,7 @@ function AddMember({
 
   return (
     <div className="inline-form">
-      <FieldGroup label="Add a member" hint="The principal id, as it appears in the log.">
+      <FieldGroup label="Add a member" hint="The user ID, as shown in the audit log.">
         <div className="spread">
           <select value={kind} onChange={(e) => setKind(e.target.value)}>
             {/* A person cannot be hand-added to a directory-backed group: the next
@@ -509,15 +503,10 @@ function AddMember({
           </Button>
         </div>
       </FieldGroup>
-      <p className="muted">
-        By id rather than by email: there is no route that turns an address into a person,
-        because one would let anybody here enumerate the company. The id is the one in the
-        log and in an agent's share sheet.
-      </p>
       {group.external_id && (
         <p className="muted">
-          People come from your directory for this group. To add somebody, add them to{" "}
-          <span className="mono">{group.external_id}</span> there — or unlink the group
+          Members of this group come from your directory. Add people to{" "}
+          <span className="mono">{group.external_id}</span> there, or unlink the group
           above to manage it here.
         </p>
       )}
@@ -544,7 +533,7 @@ function DeleteGroup({
   if (!asked) {
     return (
       <Button kind="quiet" onClick={() => setAsked(true)}>
-        Delete this group
+        Delete group
       </Button>
     );
   }
@@ -555,10 +544,9 @@ function DeleteGroup({
           and can answer this one — which is `--delete-group`'s reasoning, where the
           counts are printed for the same reason. */}
       <p className="sentence">
-        Every agent shared with this group stops being reachable through it, for all{" "}
-        {group.members.length}{" "}
-        {group.members.length === 1 ? "member" : "members"}, immediately. Nobody is told.
-        Grants people hold in their own right are unaffected, and this cannot be undone.
+        All {group.members.length} {group.members.length === 1 ? "member" : "members"}{" "}
+        lose access to every agent shared with this group, immediately. Access they hold
+        directly is unaffected. This cannot be undone.
       </p>
       {failure && <p className="sentence">{failure}</p>}
       <div className="spread">
@@ -577,10 +565,10 @@ function DeleteGroup({
               });
           }}
         >
-          Delete it
+          Delete
         </Button>
         <Button kind="quiet" onClick={() => setAsked(false)}>
-          Keep it
+          Cancel
         </Button>
       </div>
     </Notice>

@@ -97,7 +97,7 @@ beforeEach(() => {
 });
 
 describe("the three states", () => {
-  it("offers Connect for a connector with a consent flow", async () => {
+  it("offers Connect for a connector with an OAuth app", async () => {
     show([row({ state: "connectable" })]);
 
     expect(await screen.findByRole("button", { name: "Connect" })).toBeTruthy();
@@ -119,17 +119,17 @@ describe("the three states", () => {
     show([row({ connector_id: "linear", state: "unavailable" })]);
 
     expect(
-      await screen.findByText(/switched on personal sign-in/),
+      await screen.findByText("Sign-in for linear has not been set up."),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
   });
 
-  it("says to ask an administrator rather than leaving it blank", async () => {
+  it("says sign-in has not been set up rather than leaving it blank", async () => {
     show([row({ state: "unavailable" })]);
 
     expect(
-      await screen.findByText(/Ask an administrator to set it up/),
+      await screen.findByText("Sign-in for jira has not been set up."),
     ).toBeTruthy();
   });
 });
@@ -277,7 +277,7 @@ describe("starting a flow", () => {
     ).toBeTruthy();
   });
 
-  it("reports a refusal rather than silently doing nothing", async () => {
+  it("reports a failure rather than silently doing nothing", async () => {
     capturePopup();
     vi.mocked(api.startConnect).mockRejectedValue(
       new Error("connector 'jira' has no consent flow configured"),
@@ -291,11 +291,13 @@ describe("starting a flow", () => {
 });
 
 describe("coming back from the provider", () => {
-  it("says the connection worked and that nobody here saw the credential", async () => {
+  it("says the connection worked and that the credential stays on the server", async () => {
     show([row({ state: "connected", account_label: "priya@acme.com" })], "/connections?connected=jira");
 
     expect(await screen.findByText("jira is connected")).toBeTruthy();
-    expect(screen.getByText(/Nobody here saw the credential/)).toBeTruthy();
+    expect(
+      screen.getByText(/The credential is stored on the server and sent only to jira/),
+    ).toBeTruthy();
   });
 
   it("renders the server's own sentence when it did not finish", async () => {
@@ -355,7 +357,7 @@ describe("disconnecting", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
 
-    expect(await screen.findByText(/may still be live there/)).toBeTruthy();
+    expect(await screen.findByText(/may still be active there/)).toBeTruthy();
   });
 
   it("stays quiet when there was nobody to tell", async () => {
@@ -370,7 +372,7 @@ describe("disconnecting", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
 
     await waitFor(() => expect(api.listConnections).toHaveBeenCalledTimes(2));
-    expect(screen.queryByText(/may still be live/)).toBeNull();
+    expect(screen.queryByText(/may still be active/)).toBeNull();
   });
 });
 
@@ -382,7 +384,7 @@ describe("is there anything behind this when it lapses", () => {
   const FUTURE = "2099-03-04T10:00:00Z";
   const PAST = "2020-03-04T10:00:00Z";
 
-  it("says a pasted credential expires and that nothing will renew it", async () => {
+  it("says a pasted credential expires and that an administrator has to replace it", async () => {
     // The case the schema comment says `expires_at` exists for: a credential with no
     // refresh behind it. Before 035f the page did not read the field at all.
     show([
@@ -395,7 +397,7 @@ describe("is there anything behind this when it lapses", () => {
     ]);
 
     expect(await screen.findByText(/This credential expires on/)).toBeTruthy();
-    expect(screen.getByText(/Nothing here can renew it/)).toBeTruthy();
+    expect(screen.getByText(/An administrator has to replace it/)).toBeTruthy();
   });
 
   it("says a pasted credential has already expired, correcting the row above it", async () => {
@@ -448,7 +450,7 @@ describe("is there anything behind this when it lapses", () => {
     ]);
 
     expect(await screen.findByText(/This connection lapses on/)).toBeTruthy();
-    expect(screen.getByText(/you will need to connect it again/)).toBeTruthy();
+    expect(screen.getByText(/After that, connect it again/)).toBeTruthy();
   });
 
   it("says nothing when the provider never said, rather than promising it will not lapse", async () => {
@@ -528,7 +530,7 @@ describe("a lapse that has already happened, and a year that has to be shown", (
     ]);
 
     expect(await screen.findByText(/This connection lapsed on/)).toBeTruthy();
-    expect(screen.getByText(/the next agent that needs it will fail/)).toBeTruthy();
+    expect(screen.getByText(/Connect the account again/)).toBeTruthy();
     expect(screen.queryByText(/renews itself until then/)).toBeNull();
   });
 
@@ -669,7 +671,7 @@ describe("what the connector asks for, and what that is not", () => {
 
     expect(await screen.findByText(/jira asks for: read:jira-work, write:jira-work/)).toBeTruthy();
     expect(
-      screen.getByText(/not a record of what this connection was granted/),
+      screen.getByText(/not what this connection was granted/),
     ).toBeTruthy();
   });
 
@@ -691,10 +693,10 @@ describe("what the connector asks for, and what that is not", () => {
     expect(screen.queryByText(/will be asked for/)).toBeNull();
   });
 
-  it("says nothing when there is no consent flow to ask anything", async () => {
+  it("says nothing when there is no OAuth app to ask anything", async () => {
     show([row({ connector_id: "linear", state: "unavailable", scopes: [] })]);
 
-    await screen.findByText(/switched on personal sign-in/);
+    await screen.findByText("Sign-in for linear has not been set up.");
     expect(screen.queryByText(/asked for/)).toBeNull();
   });
 });
@@ -711,7 +713,7 @@ describe("what the page never renders", () => {
   it("shows an empty list as an answer rather than a fault", async () => {
     show([]);
 
-    expect(await screen.findByText("Nothing to connect yet")).toBeTruthy();
+    expect(await screen.findByText("No connectors")).toBeTruthy();
     expect(screen.queryByText(/error/i)).toBeNull();
   });
 

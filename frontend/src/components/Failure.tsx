@@ -67,8 +67,8 @@ export default function Failure({ error }: { error: unknown }) {
             <p className="sentence">{error.detail}</p>
             <p className="muted">
               Nothing has changed. If you arrived here from a link, check the part after
-              the <code>?</code> — a value the server does not recognise is refused
-              rather than ignored.
+              the <code>?</code>. A value the server does not recognise is rejected, not
+              ignored.
             </p>
           </Notice>
         );
@@ -81,7 +81,7 @@ export default function Failure({ error }: { error: unknown }) {
         );
       default:
         return (
-          <Notice tone="bad" title={`The server refused (${error.status})`}>
+          <Notice tone="bad" title={`Request failed (${error.status})`}>
             <p className="sentence">{error.detail}</p>
           </Notice>
         );

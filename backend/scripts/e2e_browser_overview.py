@@ -171,7 +171,7 @@ def seed(store):
                     "identity_source": source,
                     # Step 045b put money on this page and 045c put a remedy sentence
                     # beside it, and **neither had ever been rendered in a browser**:
-                    # this seed predates the counters, so "What the door cost" drew
+                    # this seed predates the counters, so the "Spend" card drew
                     # nothing and the unpriced sentence had no way to appear. Every
                     # sixth allowed call reports usage, and every eighteenth reports it
                     # under a model no rate table can value — which is what makes the
@@ -326,7 +326,7 @@ def drive():
         )
 
         page.click("nav.sidebar-nav a[href='/overview']")
-        page.wait_for_selector("text=Calls per day", timeout=30000)
+        page.wait_for_selector("text=Requests per day", timeout=30000)
         page.wait_for_timeout(600)
 
         say("the figures actually draw")
@@ -351,7 +351,7 @@ def drive():
         # Naming the element that holds the value is what the assertion always meant, and
         # it survives the next thing somebody adds to a tile. The same lesson `calls_figure`
         # below already learned when 013c inserted two figures above this one.
-        calls_tile = tiles.filter(has_text="Calls through the door")
+        calls_tile = tiles.filter(has_text="Requests")
         traffic = int(calls_tile.locator(".v").inner_text().replace(",", ""))
         check("the tile carries a real figure", traffic > 100)
         # **Selected by its title, not by being first.** 013c inserted the spend
@@ -361,7 +361,7 @@ def drive():
         # assertion's actual intent — the tile, the figure and the table are three
         # renderings of one fact — and survives the next reordering.
         calls_figure = page.locator(".figure").filter(
-            has=page.locator(".figure-title", has_text="Calls per day")
+            has=page.locator(".figure-title", has_text="Requests per day")
         )
         figure_total = calls_figure.locator(".figure-total").first.inner_text()
         check(
@@ -369,11 +369,15 @@ def drive():
             f"{traffic:,}" in figure_total,
         )
 
-        say("what the door cost, and the sentence that says what the figure is short by")
+        say("what the MCP server cost, and the sentence that says what the figure is short by")
 
         # 045b's card and 045c's remedy, rendered rather than unit-tested. The card only
-        # exists once door rows carry counters, which is why it needed the seed above.
-        cost = page.locator(".card").filter(has_text="What the door cost")
+        # exists once door rows carry counters, which is why it needed the seed above —
+        # and it lives on its own pane now, offered only when there is spend to show, so
+        # the tab is opened first rather than read through a hidden panel.
+        page.click("button:text-is('Cost')")
+        page.wait_for_timeout(400)
+        cost = page.locator(".card").filter(has=page.locator("h2:text-is('Spend')"))
         check("the money card is on the page", cost.count() == 1)
         check("with a dollar figure drawn from the counters",
               "$" in cost.first.inner_text())
@@ -382,7 +386,9 @@ def drive():
         check("and the file that completes the figure — 045c decision 4",
               "CARNET_MODEL_RATES" in short)
         check("the remedy reads as a remedy rather than a bare variable name",
-              "prices" in short and "repriced" in short)
+              "price list" in short and "repriced" in short)
+        page.click("button:text-is('Traffic')")
+        page.wait_for_timeout(400)
 
         say("the numbers are reachable without leaving the page")
         page.locator("details.figure-numbers summary").first.click()
@@ -413,7 +419,7 @@ def drive():
         # against the surface it is drawn on, and that a 24-column axis fits.
 
         say("a mark is a link, and following one lands on the calls behind it")
-        column = page.locator("svg[aria-label='Door calls per day'] a").first
+        column = page.locator("svg[aria-label='Requests per day'] a").first
         href = column.get_attribute("href")
         check("the day's column carries a link", bool(href) and "since=" in (href or ""))
         # **Marked before the click, checked after.** A full document navigation replaces
@@ -451,8 +457,9 @@ def drive():
         say("a capped leaderboard says what it cut")
         page.click("button:text-is('Callers & tools')")
         page.wait_for_timeout(500)
+        # Exact, not a substring: "Tools" is also the tail of "Slowest tools".
         tools = page.locator(".figure").filter(
-            has=page.locator(".figure-title", has_text="What is being called")
+            has=page.locator(".figure-title:text-is('Tools')")
         )
         total = tools.locator(".figure-total").first.inner_text()
         check(
@@ -461,12 +468,11 @@ def drive():
         )
         check(
             "and the permission list that admitted the traffic has its own figure",
-            page.locator(".figure-title", has_text="Under which permission list").count()
-            == 1,
+            page.locator(".figure-title:text-is('Agents')").count() == 1,
         )
         check(
             "and which tool is slow, which only existed per day before",
-            page.locator(".figure-title", has_text="Which tools are slow").count() == 1,
+            page.locator(".figure-title:text-is('Slowest tools')").count() == 1,
         )
 
         say("the identity pane names people, not just kinds of claim")
@@ -474,7 +480,7 @@ def drive():
         page.wait_for_timeout(500)
         check(
             "whose names went out is drawn",
-            page.locator(".figure-title", has_text="Whose names went out").count() == 1,
+            page.locator(".figure-title:text-is('Names')").count() == 1,
         )
         # 033c's rule, rendered: the note beside each name says what the claim was worth,
         # so a verified name and an asserted one can never be read as the same fact.
@@ -489,9 +495,7 @@ def drive():
         page.wait_for_timeout(500)
         check(
             "the sentences the controls wrote are ranked",
-            page.locator(
-                ".figure-title", has_text="What the refusals actually said"
-            ).count() == 1,
+            page.locator(".figure-title:text-is('Denial reasons')").count() == 1,
         )
         page.click("button:text-is('Traffic')")
         page.wait_for_timeout(400)
@@ -521,7 +525,7 @@ def drive():
         # already reaches into the DOM for the same reason; this now matches it.
         hours = page.evaluate(
             """() => [...document.querySelectorAll(
-                 "svg[aria-label='Door calls per day'] text.chart-tick")]
+                 "svg[aria-label='Requests per day'] text.chart-tick")]
                  .map(t => t.textContent || "")
                  .filter(t => t.includes(":"))"""
         )
@@ -548,7 +552,7 @@ def drive():
             page.wait_for_timeout(700)
             xs = page.evaluate(
                 """() => {
-                  const svg = document.querySelector("svg[aria-label='Door calls per day']");
+                  const svg = document.querySelector("svg[aria-label='Requests per day']");
                   const ticks = [...svg.querySelectorAll('text.chart-tick')]
                     .filter(t => !t.hasAttribute('dy'));
                   return ticks.map(t => t.getBoundingClientRect())
@@ -605,7 +609,10 @@ def drive():
         page.goto(f"{APP}/overview?days=30", wait_until="domcontentloaded")
         page.wait_for_selector(".stats .stat", timeout=20000)
 
-        panes = ["Traffic", "Identity", "Callers & tools", "Governance"]
+        # "Cost" is offered only when the window carries spend, which the seed above
+        # guarantees; it holds no links today, and walking it keeps that a finding
+        # rather than an assumption.
+        panes = ["Traffic", "Identity", "Callers & tools", "Cost", "Governance"]
         walked = 0
         reloaded = []
         dead = []

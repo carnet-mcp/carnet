@@ -86,7 +86,7 @@ const STEPS: {
 }[] = [
   { title: "Name", blocker: nameBlocker },
   { title: "Tools", blocker: toolsBlocker },
-  { title: "Access", blocker: reachBlocker },
+  { title: "Resources", blocker: reachBlocker },
   // **Four since 081, and the fourth used to be *Ceilings*.** It asked for a `limits`
   // block, a `max_tokens` and a `private_runs` flag, none of which anything in this tree
   // reads — so every one of its controls stored a number under a sentence promising an
@@ -148,11 +148,11 @@ export default function CreateAgentPage() {
   return (
     <>
       <Link className="back" to="/agents">
-        ← Create MCP
+        ← Agents
       </Link>
       <PageHead
-        title="New MCP"
-        lede="Pick the tools it may use and how far each one reaches. You own it from the moment it exists, and nobody else can see it until you share it."
+        title="New agent"
+        lede="Choose the tools this agent may use and the resources it may use them on. You own the agent. Only you can see it until you share it."
       />
 
       <ol className="steps">
@@ -179,7 +179,7 @@ export default function CreateAgentPage() {
         ))}
       </ol>
 
-      {catalogue.loading && <Spinner label="Loading what you can grant" />}
+      {catalogue.loading && <Spinner label="Loading tools" />}
 
       {step === 0 && <StepName {...props} />}
       {step === 1 && <StepTools {...props} />}
@@ -194,7 +194,7 @@ export default function CreateAgentPage() {
         </Button>
         {last ? (
           <Button kind="primary" busy={creating} onClick={create}>
-            {creating ? "Creating" : "Create this agent"}
+            {creating ? "Creating" : "Create agent"}
           </Button>
         ) : (
           <Button

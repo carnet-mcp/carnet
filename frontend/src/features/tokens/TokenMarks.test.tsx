@@ -35,14 +35,14 @@ describe("Kind", () => {
     render(<Kind token={token({ acts_as_owner: true })} />);
 
     expect(screen.getByText("personal")).toBeInTheDocument();
-    expect(screen.getByText("you, capped at user")).toBeInTheDocument();
+    expect(screen.getByText("your access")).toBeInTheDocument();
   });
 
   it("marks a service token as bounded by its own grants", () => {
     render(<Kind token={token()} />);
 
     expect(screen.getByText("service")).toBeInTheDocument();
-    expect(screen.getByText("only its own grants")).toBeInTheDocument();
+    expect(screen.getByText("its own grants")).toBeInTheDocument();
   });
 });
 

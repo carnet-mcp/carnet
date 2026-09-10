@@ -69,35 +69,27 @@ describe("the sentences", () => {
   it("states no tools at all as a capability, in one sentence", () => {
     show({ tools: [], scope: {} });
 
-    expect(
-      screen.getByText(/It is granted no tools at all/),
-    ).toBeInTheDocument();
+    expect(screen.getByText("This agent has no tools.")).toBeInTheDocument();
   });
 
   it("puts the write first and conjugates the singular", () => {
-    // The canonical bug, pinned: "One tool that alterS a system".
+    // The canonical bug, pinned: "One tool that can change" — singular, not plural.
     show({ tools: ["post_message", "list_issues"], scope: {} });
 
-    expect(screen.getByText("It can change things")).toBeInTheDocument();
+    expect(screen.getByText("Write tools")).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "One tool that alters a system outside this one. Nothing here undoes what it does.",
-      ),
+      screen.getByText("One tool that can change data in the connected system."),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "One tool that looks and changes nothing. What it returns goes to the model.",
-      ),
+      screen.getByText("One tool that reads data and changes nothing."),
     ).toBeInTheDocument();
   });
 
-  it("says where a tool came from, and that an undescribed one was vetted without words", () => {
+  it("says where a tool came from, and that an undescribed one has no description", () => {
     show({ tools: ["post_message"], scope: {} });
 
     expect(screen.getByText("from acme")).toBeInTheDocument();
-    expect(
-      screen.getByText("No description was recorded when this tool was vetted."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("No description.")).toBeInTheDocument();
   });
 
   it("warns about a granted tool the catalogue no longer describes", () => {
@@ -113,7 +105,7 @@ describe("without a catalogue", () => {
     show({ tools: ["list_issues"], scope: {} }, null);
 
     expect(screen.getByText("list_issues")).toBeInTheDocument();
-    expect(screen.getByText(/Loading what each of these does/)).toBeInTheDocument();
+    expect(screen.getByText(/Loading tool details/)).toBeInTheDocument();
   });
 
   it("renders the catalogue's failure beside the names when it could not load", () => {
@@ -124,19 +116,39 @@ describe("without a catalogue", () => {
     );
 
     expect(
-      screen.getByText(/this cannot say which of these change anything/),
+      screen.getByText(/could not be loaded. Tool effects are not shown/),
     ).toBeInTheDocument();
     expect(screen.getByText("the database is not reachable")).toBeInTheDocument();
   });
 });
 
 describe("the scope table", () => {
-  it("says an absent scope means everything is in reach", () => {
+  it("says no selected resources means any resource the caller can reach", () => {
+    // `list_issues` declares `github.repo`, so the open-access sentence is the true one.
     show({ tools: ["list_issues"], scope: {} });
 
     expect(
-      screen.getByText(/No scope is set, so every resource these tools accept is in reach/),
+      screen.getByText(/No resources are selected.*any resource the caller's account can reach/),
     ).toBeInTheDocument();
+  });
+
+  it("says the tools take no resource when none of the granted ones declares one", () => {
+    show(
+      { tools: ["list_issues"], scope: {} },
+      [{ ...CATALOGUE[0], tools: [tool({ resources: [] })] }],
+    );
+
+    expect(
+      screen.getByText(/do not take a resource, so they are not restricted/),
+    ).toBeInTheDocument();
+  });
+
+  it("assumes open access when the catalogue is unknown", () => {
+    // Without the catalogue the tools' resources cannot be read, so the sentence that
+    // says access is open is the safe one.
+    show({ tools: ["list_issues"], scope: {} }, null);
+
+    expect(screen.getByText(/No resources are selected/)).toBeInTheDocument();
   });
 
   it("pairs each entry with the granted tools that touch it", () => {
@@ -159,7 +171,7 @@ describe("the scope table", () => {
       scope: { "chat.channel": { write: ["#ops"] } },
     });
 
-    expect(screen.getByText("nothing granted uses this")).toBeInTheDocument();
+    expect(screen.getByText("no granted tool uses this")).toBeInTheDocument();
   });
 });
 

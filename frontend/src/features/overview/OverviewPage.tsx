@@ -139,14 +139,8 @@ export default function OverviewPage() {
   return (
     <>
       <PageHead
-        title="Overview"
-        lede={
-          <>
-            What came through the MCP door: how much, from whom, on whose behalf, what
-            it spent and what was refused. A record rather than a control: nothing on
-            this page changes anything.
-          </>
-        }
+        title="Usage"
+        lede="Requests through the MCP server: volume, callers, identity, cost and denials."
       />
 
       <div className="log-filters">
@@ -183,12 +177,12 @@ export default function OverviewPage() {
           nothing failed, and there is nothing here to retry. */}
       {settled && !admin ? (
         <Card>
-          <Empty title="Nothing on this page is yours to read yet">
-            This deployment is the MCP door: it brokers calls for assistants that connect
-            to it. What came through the door — the traffic,
-            what it spent, and what was refused — is tenant-wide, and reading it needs the
-            administrator role. Your own credentials and what each has spent are on{" "}
-            <strong>Tokens</strong>.
+          <Empty title="Workspace usage is visible to administrators">
+            Your own tokens&rsquo; usage is on{" "}
+            <Link to="/tokens">
+              <strong>Access tokens</strong>
+            </Link>
+            .
           </Empty>
         </Card>
       ) : null}
@@ -212,8 +206,8 @@ export default function OverviewPage() {
 // much of it the broker turned away. Every outcome band survives in full under *Show the
 // numbers*, and the error rate is in this figure's own total.
 const DOOR_SERIES: Series[] = [
-  { key: "admitted", label: "Admitted", color: "var(--chart-1)" },
-  { key: "denied", label: "Refused", color: "var(--chart-2)" },
+  { key: "admitted", label: "Allowed", color: "var(--chart-1)" },
+  { key: "denied", label: "Denied", color: "var(--chart-2)" },
 ];
 
 // Ordinal, not categorical — one hue, dark to light, because verified → asserted → none
@@ -236,10 +230,11 @@ const IDENTITY_SERIES: Series[] = [
 // the table. What is lost is telling the two ceilings apart *by eye*; what is kept
 // is a stack that still sums to the day's refusals, which is the property a stacked chart
 // is worthless without.
+// **Three bands since 091.** The *run budget* band went with D13: a door call has no run
+// and no `Budget`, so the series could never receive a value on this tree.
 const REFUSAL_SERIES: Series[] = [
   { key: "policy", label: "Policy", color: "var(--chart-1)" },
-  { key: "ceiling", label: "Door ceiling", color: "var(--chart-2)" },
-  { key: "run_budget", label: "Run budget", color: "var(--chart-3)" },
+  { key: "ceiling", label: "Rate limit", color: "var(--chart-2)" },
   { key: "access", label: "Access", color: "var(--chart-4)" },
 ];
 
@@ -362,7 +357,7 @@ function tailLine(
       </Link>{" "}
       not shown, with {tail.calls.toLocaleString()}{" "}
       {tail.calls === 1 ? "call" : "calls"} between them
-      {tail.denied ? ` — ${tail.denied.toLocaleString()} refused` : ""}.
+      {tail.denied ? `, ${tail.denied.toLocaleString()} denied` : ""}.
     </>
   );
 }
@@ -409,7 +404,6 @@ function refusalBands(rows: RefusalDay[]) {
     day: row.day,
     policy: row.policy,
     ceiling: row.ceiling + row.door_spend,
-    run_budget: row.run_budget,
     access: row.access,
   }));
 }
@@ -471,16 +465,15 @@ function Body({ data }: { data: Overview }) {
   const trafficPane = (
     <>
       <Figure
-        title="Calls per day"
+        title="Requests per day"
         lede={
           <>
-            Everything that arrived, and how much of it the broker turned away. What
-            happened to an admitted call afterwards — the vendor failing, or a response
-            past the size cap — is counted in the error rate beside this and broken out
-            in full under <em>Show the numbers</em>.
+            Every request, and how many were denied. Errors and oversize responses among
+            allowed calls are counted in the error rate and listed under{" "}
+            <em>Show the numbers</em>.
           </>
         }
-        total={`${traffic.toLocaleString()} calls · ${pct(errored, traffic)} errored`}
+        total={`${traffic.toLocaleString()} requests · ${pct(errored, traffic)} errored`}
         series={DOOR_SERIES}
         table={
           <DayTable
@@ -498,7 +491,7 @@ function Body({ data }: { data: Overview }) {
         <BarStack
           rows={doorRows}
           series={DOOR_SERIES}
-          label="Door calls per day"
+          label="Requests per day"
           // Step 066. A column opens that day's calls; its *Refused* band opens that
           // day's refusals, which is a different question and so a different query.
           href={(row, s) =>
@@ -511,12 +504,11 @@ function Body({ data }: { data: Overview }) {
       </Figure>
 
       <Figure
-        title="How long a call took"
+        title="Latency"
         lede={
           <>
-            Admitted calls only — a refusal has no duration to report, and a day with
-            none is a gap here rather than a zero. Which <em>tool</em> is slow is under{" "}
-            <strong>Callers &amp; tools</strong>; this is the door as a whole.
+            Allowed calls only. A denied call has no duration, and a day with none is a
+            gap. Per-tool latency is under <strong>Callers &amp; tools</strong>.
           </>
         }
         series={LATENCY_SERIES}
@@ -525,7 +517,7 @@ function Body({ data }: { data: Overview }) {
         <TrendLine
           rows={data.door_latency}
           series={LATENCY_SERIES}
-          label="Door latency per day"
+          label="Latency per day"
           unit="ms"
         />
       </Figure>
@@ -543,15 +535,12 @@ function Body({ data }: { data: Overview }) {
           somebody to wonder what went wrong. */}
       {data.door_bytes.some((day) => day.bytes > 0) ? (
         <Figure
-          title="How big a response was"
+          title="Response size"
           lede={
             <>
-              The 95th percentile of a single response, day by day — the number the
-              response cap is set against, and the one the <em>too large</em> band in the
-              numbers above is the tail of. The day&rsquo;s total is under{" "}
-              <em>Show the numbers</em>: it is mostly a restatement of the traffic chart,
-              because a busy day carries more bytes for the same reason it carries more
-              calls.
+              The 95th percentile of a single response, per day. The response limit is
+              set against this number. The day&rsquo;s total is under{" "}
+              <em>Show the numbers</em>.
             </>
           }
           series={BYTES_SERIES}
@@ -582,13 +571,11 @@ function Body({ data }: { data: Overview }) {
           *when is the door busy* is a question about the shape of a week. */}
       {data.hourly.length ? (
         <Figure
-          title="When the door is busy"
+          title="Busy hours"
           lede={
             <>
-              Every call in this window, by hour of the day and day of the week, in UTC —
-              the same clock the ceiling charges on, which is not anybody&rsquo;s local
-              working day. A lit cell is traffic; an empty one is none, rather than the
-              least of some.
+              Every call in this window, by hour of the day and day of the week, in UTC.
+              An empty cell is no traffic.
             </>
           }
           total={`busiest hour: ${Math.max(
@@ -599,7 +586,7 @@ function Body({ data }: { data: Overview }) {
         </Figure>
       ) : null}
 
-        <Card title="Busiest day against the ceiling">
+        <Card title="Busiest day against the rate limit">
           <Meter
             value={headroom.busiest_day_calls}
             of={headroom.metered ? headroom.ceiling : null}
@@ -607,17 +594,16 @@ function Body({ data }: { data: Overview }) {
               headroom.metered ? (
                 headroom.days_at_ceiling > 0 ? (
                   <>
-                    Something ran out of allowance on {headroom.days_at_ceiling}{" "}
+                    The rate limit was reached on {headroom.days_at_ceiling}{" "}
                     {headroom.days_at_ceiling === 1 ? "day" : "days"} in this window.
                   </>
                 ) : (
-                  <>Nothing hit the daily ceiling in this window.</>
+                  <>The rate limit was not reached in this window.</>
                 )
               ) : (
                 <>
-                  The daily ceiling is <strong>not enforced</strong> on this deployment,
-                  so there is no limit to draw against — this is the observed volume
-                  alone.
+                  No rate limit is set on this deployment. This is the observed volume
+                  only.
                 </>
               )
             }
@@ -632,10 +618,8 @@ function Body({ data }: { data: Overview }) {
         title="On whose behalf"
         lede={
           <>
-            Of everything that went out under this workspace's credentials, how much was
-            for a named person whose token we checked, how much on an application's word,
-            and how much for nobody in particular. The three are never added together: an
-            asserted name is worth what the calling app's honesty is worth.
+            How many calls were made for a verified person, on an application&rsquo;s
+            assertion, or for nobody. The three are never added together.
           </>
         }
         total={`${pct(totals.door_verified, traffic)} verified`}
@@ -667,13 +651,12 @@ function Body({ data }: { data: Overview }) {
           claim in the one record kept to tell them apart. So a person reached both ways
           appears twice, deliberately, with the claim in the note. */}
       <Figure
-        title="Whose names went out"
+        title="Names"
         lede={
           <>
-            Who calls were made on behalf of, with what the claim was worth beside each.
-            A person reached two ways is <strong>two rows</strong> — an asserted name and
-            a verified one are not the same fact and are never added together. Calls
-            naming nobody are the <em>nobody named</em> band above rather than a row here.
+            Who calls were made on behalf of, and how the claim was made. A person reached
+            both ways is <strong>two rows</strong>. Calls naming nobody are the{" "}
+            <em>nobody named</em> band above.
           </>
         }
         total={ofTotal(data.acting_for.length, data.acting_for_count, "name")}
@@ -684,10 +667,10 @@ function Body({ data }: { data: Overview }) {
               name: row.acting_for,
               value: row.calls,
               inset: row.denied || undefined,
-              insetLabel: "refused",
+              insetLabel: "denied",
               note: row.identity_source === "verified"
-                ? "verified — their own token, checked"
-                : "asserted — the calling app's word, unchecked",
+                ? "verified: their own token, checked"
+                : "asserted: the calling app's word, unchecked",
               href: toDoorLog(win, {
                 acting_for: row.acting_for,
                 identity_source: row.identity_source,
@@ -705,7 +688,7 @@ function Body({ data }: { data: Overview }) {
             )}
           />
         ) : (
-          <Empty title="No call in this window named anybody" />
+          <Empty title="No calls on behalf of anyone in this window" />
         )}
       </Figure>
     </>
@@ -714,13 +697,11 @@ function Body({ data }: { data: Overview }) {
   const callersPane = (
     <>
       <Figure
-        title="Who is calling"
+        title="Callers"
         lede={
           <>
-            The busiest callers this window, with the darker inset showing what each was
-            refused. A person's several personal tokens are one caller here — the log
-            records the principal, not the credential — and the tile above counts every
-            caller, not just the ones named here.
+            The busiest callers this window. The darker inset is what each was denied. A
+            person&rsquo;s personal tokens count as one caller.
           </>
         }
         // `ofTotal` rather than the tile's number alone. The list and the tile
@@ -735,7 +716,7 @@ function Body({ data }: { data: Overview }) {
               name: caller.principal_id,
               value: caller.calls,
               inset: caller.denied,
-              insetLabel: "refused",
+              insetLabel: "denied",
               // `principal_kind` has been on every one of these rows since 041 and the
               // page threw it away. A person and a machine are different readings of the
               // same bar — one is somebody's laptop, the other is a pipeline.
@@ -749,7 +730,7 @@ function Body({ data }: { data: Overview }) {
             tail={tailLine(data.caller_tail, "caller", toDoorLog(win))}
           />
         ) : (
-          <Empty title="Nobody called through the door in this window" />
+          <Empty title="No callers in this window" />
         )}
       </Figure>
 
@@ -762,15 +743,11 @@ function Body({ data }: { data: Overview }) {
           *who is using this, and for what* is answered by who, under which grant, calling
           what. The grant is the middle term and it was missing. */}
       <Figure
-        title="Under which permission list"
+        title="Agents"
         lede={
           <>
-            Which agent&rsquo;s grant admitted the traffic. An agent is a named set of
-            tools with a scope — it is what a token is granted and how the door decides
-            what an assistant may touch — so this is the same traffic as above, sorted by
-            the permission that let it through. The count is tools actually{" "}
-            <em>reached</em>, not tools granted: an agent carrying forty and calling two is
-            worth knowing about.
+            The agent whose grant allowed each call. The count is tools <em>used</em>, not
+            tools granted.
           </>
         }
         total={ofTotal(data.door_agents.length, data.agent_count, "agent")}
@@ -781,21 +758,21 @@ function Body({ data }: { data: Overview }) {
               name: row.agent,
               value: row.calls,
               inset: row.denied || undefined,
-              insetLabel: "refused",
-              note: `${row.tools} ${row.tools === 1 ? "tool" : "tools"} reached`,
+              insetLabel: "denied",
+              note: `${row.tools} ${row.tools === 1 ? "tool" : "tools"} used`,
               href: toDoorLog(win, { agent: row.agent }),
               insetHref: toDoorLog(win, { agent: row.agent, decision: "deny" }),
             }))}
             tail={tailLine(data.agent_tail, "agent", toDoorLog(win))}
           />
         ) : (
-          <Empty title="No agent's grant carried a call in this window" />
+          <Empty title="No agent allowed a call in this window" />
         )}
       </Figure>
 
       <Figure
-        title="What is being called"
-        lede={<>The busiest tools this window. The darker inset is what was refused.</>}
+        title="Tools"
+        lede={<>The busiest tools this window. The darker inset is what was denied.</>}
         total={ofTotal(data.door_tools.length, data.tool_count, "tool")}
       >
         {data.door_tools.length ? (
@@ -804,7 +781,7 @@ function Body({ data }: { data: Overview }) {
               name: tool.tool,
               value: tool.calls,
               inset: tool.denied,
-              insetLabel: "refused",
+              insetLabel: "denied",
               note: tool.effect === "write" ? "writes" : undefined,
               href: toDoorLog(win, { tool: tool.tool }),
               insetHref: toDoorLog(win, { tool: tool.tool, decision: "deny" }),
@@ -814,7 +791,7 @@ function Body({ data }: { data: Overview }) {
             tail={tailLine(data.tool_tail, "tool", toDoorLog(win))}
           />
         ) : (
-          <Empty title="No tool was called through the door in this window" />
+          <Empty title="No tools called in this window" />
         )}
       </Figure>
 
@@ -829,14 +806,11 @@ function Body({ data }: { data: Overview }) {
           not a median. Said in the lede rather than left to be discovered. */}
       {data.tool_latency.length ? (
         <Figure
-          title="Which tools are slow"
+          title="Slowest tools"
           lede={
             <>
-              Median time per tool, slowest first — a different order from the figure
-              above, which is busiest first. A tool that was only ever refused is absent
-              rather than shown as instant: a refusal has no duration to report. Capped at
-              fifteen with no remainder, because a percentile of everything below a cap is
-              not a number.
+              Median time per tool, slowest first. A tool that was only denied is absent.
+              Capped at fifteen, with no remainder.
             </>
           }
           total={`${data.tool_latency.length} timed`}
@@ -869,32 +843,25 @@ function Body({ data }: { data: Overview }) {
           there is no such thing as. */}
   const costPane = (
     <>
-        <Card title="What the door cost" hint="estimated, priced at read time">
+        <Card title="Spend" hint="estimated, priced at read time">
           <p className="sentence">
             <strong>{money(totals.door_usd)}</strong> over {tokens(totals.door_tokens)},
-            from the calls whose tool reported what it spent. Calls that touched no model
-            are counted above and cost nothing here — the two figures are measured
-            differently on purpose.
+            from calls whose tool reported spend. Calls that used no model cost nothing
+            here.
           </p>
           {totals.door_unpriced_models.length > 0 && (
             <p className="muted sentence">
               The figure <strong>excludes</strong>{" "}
-              {totals.door_unpriced_models.join(", ")}, which the price list cannot value.
-              Those tokens are in the total beside it and in nobody&rsquo;s dollars — a
-              model with no rate is reported as unpriced rather than billed at some other
-              model&rsquo;s. Adding{" "}
-              {totals.door_unpriced_models.length === 1 ? "that id" : "those ids"} to the
-              rate table at <code>CARNET_MODEL_RATES</code> prices{" "}
-              {totals.door_unpriced_models.length === 1 ? "it" : "them"} here and
-              everywhere else, including the day rows below — the history is repriced,
-              never rewritten.
+              {totals.door_unpriced_models.join(", ")}, which{" "}
+              {totals.door_unpriced_models.length === 1 ? "has" : "have"} no rate in the
+              price list. Those tokens are in the total. An operator can add rates with{" "}
+              <code>CARNET_MODEL_RATES</code>. The history is repriced, never rewritten.
             </p>
           )}
           <DayTable rows={data.door_spend} columns={["usd", "tokens"]} />
           <p className="muted sentence">
-            An estimate, not an invoice. Money is never stored — these are token counts
-            priced at read time against the rate list in force, so correcting the list
-            reprices the history.
+            An estimate, not an invoice. Token counts are priced at read time against the
+            current rate list.
           </p>
         </Card>
     </>
@@ -908,17 +875,13 @@ function Body({ data }: { data: Overview }) {
   const governancePane = (
     <>
       <Figure
-        title="What was refused, and by which control"
+        title="Denials by control"
         lede={
           <>
-            Five different facts, never added together. <em>Policy</em> is the broker
-            saying no — the control working. <em>Door ceiling</em> is a credential past a
-            daily allowance and <em>run budget</em> an agent past its own, which are sizing
-            questions rather than security ones. <em>Access</em> is somebody refused a
-            resource before any broker was reached. The door has two allowances — calls
-            and money — and they stack as one band here and stand apart under{" "}
-            <em>Show the numbers</em>, because they are answered differently: a call
-            ceiling met is usually a loop, a spend ceiling met is a bill arriving.
+            Three facts, never added together. <em>Policy</em> is the broker denying a
+            call. <em>Rate limit</em> is a token past its daily call or spend limit; the
+            two are one band here and separate under <em>Show the numbers</em>.{" "}
+            <em>Access</em> is a request denied before any broker was reached.
           </>
         }
         total={`${totals.refusals.toLocaleString()} in this window`}
@@ -926,27 +889,23 @@ function Body({ data }: { data: Overview }) {
         table={
           <DayTable
             rows={data.refusals}
-            columns={["policy", "ceiling", "door_spend", "run_budget", "access"]}
+            columns={["policy", "ceiling", "door_spend", "access"]}
+            labels={{ ceiling: "rate limit", door_spend: "spend limit" }}
           />
         }
       >
         <BarStack
           rows={refusalBands(data.refusals)}
           series={REFUSAL_SERIES}
-          label="Refusals per day"
+          label="Denials per day"
           // **`access` goes to a different log, and that is the point of the branch.**
           // An access denial never reached a broker and has no `audit` row at all — it
           // is `access_denials`, a genuinely different table with its own reader. A link
-          // that sent all four bands to the door's log would answer three of them and
-          // quietly return nothing for the fourth.
-          //
-          // `run_budget` is unreachable from the door by construction — a door call has
-          // no run and no `Budget` — so it goes nowhere rather than to a filter that can
-          // only ever be empty.
+          // that sent all three bands to the door's log would answer two of them and
+          // quietly return nothing for the third.
           href={(row, s) => {
             const day = bucketDay(row.day);
             if (s.key === "access") return "/admin/denials";
-            if (s.key === "run_budget") return undefined;
             return toDoorLog({ since: day, until: day }, { decision: "deny" });
           }}
         />
@@ -960,12 +919,11 @@ function Body({ data }: { data: Overview }) {
           a budget denial is not a distinct kind of row. The sentences are right here. */}
       {data.refusal_reasons.length ? (
         <Figure
-          title="What the refusals actually said"
+          title="Denial reasons"
           lede={
             <>
-              The sentences the controls wrote, ranked. The chart above says which control
-              said no; this is what it told the caller. These are written by Carnet, not
-              by whoever called — a refusal quotes no caller text back onto this page.
+              The reasons the controls gave, ranked. These are written by Carnet, not by
+              the caller.
             </>
           }
           total={ofTotal(
@@ -998,7 +956,7 @@ function Body({ data }: { data: Overview }) {
           {changes.length ? (
             <HBar rows={changes} />
           ) : (
-            <Empty title="Nobody changed who may do what in this window" />
+            <Empty title="No access changes in this window" />
           )}
         </Card>
     </>
@@ -1021,8 +979,7 @@ function Body({ data }: { data: Overview }) {
     <>
       {win.clamped ? (
         <p className="muted sentence">
-          That window is not one this page keeps, so it answered with the nearest —{" "}
-          {win.days} days.
+          That window is not offered, so the nearest was used: {win.days} days.
         </p>
       ) : null}
 
@@ -1036,13 +993,13 @@ function Body({ data }: { data: Overview }) {
       <Stats
         items={[
           {
-            k: "Calls through the door",
+            k: "Requests",
             v: traffic.toLocaleString(),
             delta: delta(traffic, before?.door_calls),
             href: toDoorLog(win),
           },
           {
-            k: "Refused",
+            k: "Denied",
             v: `${totals.door_denied.toLocaleString()} · ${pct(totals.door_denied, traffic)}`,
             delta: delta(totals.door_denied, before?.door_denied),
             href: toDoorLog(win, { decision: "deny" }),
@@ -1054,7 +1011,7 @@ function Body({ data }: { data: Overview }) {
             href: toDoorLog(win, { effect: "write" }),
           },
           {
-            k: "On a verified identity",
+            k: "Verified identity",
             v: pct(totals.door_verified, traffic),
             alert: traffic > 0 && totals.door_verified / traffic < 0.5,
             // **In points, because the tile is a share.** `delta` would report the
@@ -1079,7 +1036,7 @@ function Body({ data }: { data: Overview }) {
           // cost is a vendor's problem is the ordinary case, and a confident zero would
           // say *this door is free* about a deployment nobody has metered.
           {
-            k: "Door spend",
+            k: "Spend",
             v: totals.door_tokens > 0 ? money(totals.door_usd) : "—",
             delta:
               totals.door_tokens > 0
@@ -1091,9 +1048,8 @@ function Body({ data }: { data: Overview }) {
 
       {traffic === 0 ? (
         <Card>
-          <Empty title="No calls came through the door in this window">
-            If people are connecting their assistants and you expected traffic, the door
-            is where to look.
+          <Empty title="No requests in this window">
+            Requests appear here when a client calls a tool through the MCP server.
           </Empty>
         </Card>
       ) : null}
@@ -1105,7 +1061,7 @@ function Body({ data }: { data: Overview }) {
         tabs={tabs}
         active={params.get("view") ?? tabs[0].id}
         onSelect={select}
-        label="Overview sections"
+        label="Usage sections"
       />
 
       <p className="muted sentence footnote">
@@ -1114,18 +1070,17 @@ function Body({ data }: { data: Overview }) {
             2026-08-31T23, in UTC days". The route sends dates for exactly this. */}
         {win.bucket === "hour" ? (
           <>
-            {win.since}, by the hour, in UTC — the same day the door charges its ceiling
-            against, which begins and ends at midnight UTC rather than at yours. All
+            {win.since}, by the hour, in UTC. The rate limit resets at midnight UTC. All
             twenty-four hours are drawn, including the ones still ahead.
           </>
         ) : (
           <>
-            {win.since} to {win.until}, in UTC days — the same day boundary the door
-            charges its ceiling against.
+            {win.since} to {win.until}, in UTC days. The rate limit resets at midnight
+            UTC.
           </>
         )}{" "}
-        Figures cover this workspace only. Every bar, tile and row here opens the calls
-        behind it in the door&rsquo;s log.
+        Figures cover this workspace only. Every bar, tile and row opens the requests
+        behind it in the request log.
       </p>
     </>
   );
@@ -1138,9 +1093,15 @@ function Body({ data }: { data: Overview }) {
 function DayTable<T extends { day: string }>({
   rows,
   columns,
+  labels = {},
 }: {
   rows: T[];
   columns: (keyof T & string)[];
+  /** A header for a column whose field name is not its on-screen word — `ceiling` is
+   *  the *rate limit* and `door_spend` the *spend limit* everywhere else on the page
+   *  (plan 107, D2). Unlisted columns print their field name with the underscores
+   *  spaced, which is right for `median_ms` and `p95_bytes`. */
+  labels?: Partial<Record<keyof T & string, string>>;
 }) {
   const shown = rows.filter((row) =>
     columns.some((column) => Number(row[column]) > 0),
@@ -1154,7 +1115,7 @@ function DayTable<T extends { day: string }>({
           <th>Day</th>
           {columns.map((column) => (
             <th key={column} className="num">
-              {column.replace(/_/g, " ")}
+              {labels[column] ?? column.replace(/_/g, " ")}
             </th>
           ))}
         </tr>

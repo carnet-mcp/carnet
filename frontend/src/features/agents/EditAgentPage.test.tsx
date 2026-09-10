@@ -150,8 +150,8 @@ describe("what it loads", () => {
 
     // Editing is not a wizard: somebody arrives to change one thing, so there is nothing
     // to step through and no Continue.
-    await screen.findByRole("heading", { name: "What may it do?" });
-    screen.getByRole("heading", { name: "What may it reach?" });
+    await screen.findByRole("heading", { name: "Tools" });
+    screen.getByRole("heading", { name: "Resources" });
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
     // **And no ceilings and no schema editor since 081.** Both authored config keys
     // nothing in this tree reads, under sentences promising an enforcement that does not
@@ -164,7 +164,7 @@ describe("what it loads", () => {
   it("does not let the name be changed", async () => {
     show();
 
-    const field = await screen.findByLabelText(/Identifier/);
+    const field = await screen.findByLabelText(/^ID/);
     expect(field).toBeDisabled();
     expect(field).toHaveValue("issue-reporter");
   });
@@ -172,7 +172,7 @@ describe("what it loads", () => {
   it("prefills the identifiers somebody typed when it was created", async () => {
     show();
 
-    await screen.findByRole("heading", { name: "What may it reach?" });
+    await screen.findByRole("heading", { name: "Resources" });
     expect(screen.getByLabelText("github.repo 1")).toHaveValue(
       "anthropics/anthropic-sdk-python",
     );
@@ -188,7 +188,7 @@ describe("what it loads", () => {
     // loaded, and `findByRole` resolves on whichever exists first — which for a moment is
     // the loading state's, not this one.
     const notice = (await screen.findByText(/gone_away/)).closest(".notice")!;
-    expect(notice).toHaveTextContent("this is where it gets fixed");
+    expect(notice).toHaveTextContent("Fix the configuration below and save");
   });
 });
 
@@ -222,9 +222,9 @@ describe("what it saves", () => {
   it("cannot be saved until something has changed", async () => {
     show();
 
-    await screen.findByRole("heading", { name: "What may it reach?" });
+    await screen.findByRole("heading", { name: "Resources" });
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
-    screen.getByText("Nothing has changed yet.");
+    screen.getByText("No changes yet.");
   });
 });
 
@@ -271,7 +271,7 @@ describe("when somebody else got there first", () => {
 
     await saveAnEdit();
 
-    const yours = await screen.findByText(/You were about to write/);
+    const yours = await screen.findByText(/You were about to change/);
     expect(within(yours).getByText("permissions")).toBeTruthy();
   });
 
@@ -283,14 +283,14 @@ describe("when somebody else got there first", () => {
     show();
 
     await saveAnEdit();
-    await screen.findByText("Somebody else saved while this was open");
+    await screen.findByText("Someone else saved this agent");
 
     // By the generic panel's own title rather than by counting alerts — `StepTools`
     // legitimately renders one of its own ("this agent will be able to change things"),
     // so a count is a fact about two unrelated things.
-    expect(screen.queryByText(/The server refused/)).toBeNull();
+    expect(screen.queryByText(/Request failed \(409\)/)).toBeNull();
     expect(
-      screen.getAllByText(/somebody else changed this agent|Somebody else saved/i),
+      screen.getAllByText(/somebody else changed this agent|Someone else saved/i),
     ).toHaveLength(1);
   });
 
@@ -299,7 +299,7 @@ describe("when somebody else got there first", () => {
     show();
 
     const user = await saveAnEdit();
-    await screen.findByRole("button", { name: "Reload this agent" });
+    await screen.findByRole("button", { name: "Reload" });
 
     // The whole reason the server refused is that saving anyway is how a scope narrowing
     // gets reverted by somebody who never saw it. There is no override and there must not
@@ -309,8 +309,8 @@ describe("when somebody else got there first", () => {
     // Asserted through the screen rather than by counting calls: the Conflict panel
     // re-reads the agent itself to work out what they changed, so a call count is now a
     // fact about two things.
-    await user.click(screen.getByRole("button", { name: "Reload this agent" }));
-    await screen.findByText("Nothing has changed yet.");
+    await user.click(screen.getByRole("button", { name: "Reload" }));
+    await screen.findByText("No changes yet.");
   });
 
   it("says plainly when the refused save would have changed nothing", async () => {
@@ -324,7 +324,7 @@ describe("when somebody else got there first", () => {
 
     await saveAnEdit();
 
-    await screen.findByText(/reloading\s*\n?\s*loses nothing/);
+    await screen.findByText(/Reloading loses nothing/);
   });
 });
 
@@ -351,7 +351,7 @@ describe("the answer schema, after the editor went", () => {
   it("offers no way to author one", async () => {
     show({ config: WITH_SCHEMA });
 
-    await screen.findByRole("heading", { name: "What may it reach?" });
+    await screen.findByRole("heading", { name: "Resources" });
     expect(screen.queryByRole("heading", { name: "The answer it must give" })).toBeNull();
     expect(screen.queryByRole("textbox", { name: /schema/i })).toBeNull();
   });
@@ -394,8 +394,8 @@ describe("the answer schema, after the editor went", () => {
     expect(
       screen.queryByText("The server would not accept that request"),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("The server would not store that")).toBeInTheDocument();
-    expect(screen.getByText(/Nothing was saved and nothing has changed/)).toBeInTheDocument();
+    expect(screen.getByText("Changes not saved")).toBeInTheDocument();
+    expect(screen.getByText(/Nothing was changed. Fix the problem above and save again/)).toBeInTheDocument();
   });
 });
 
@@ -406,11 +406,11 @@ describe("what it says about renaming", () => {
     // Grants are keyed by `agent_id` since migration 035 and come with the agent; the
     // logs keep the name that was current when they were written. This paragraph said
     // both of those changed, and `--rename-agent` prints the opposite of the first.
-    const said = await screen.findByText(/Renaming an agent changes its URL/);
-    expect(said).toHaveTextContent(/grants and history come with it/);
-    expect(said).toHaveTextContent(/keeps the name it had at the time/);
+    const said = await screen.findByText(/The owner can rename the agent from its page/);
+    expect(said).toHaveTextContent(/Renaming changes the URL/);
+    expect(said).toHaveTextContent(/Grants and history are kept/);
     // And it points at the verb rather than denying it exists.
-    expect(said).toHaveTextContent(/on the agent's own page/);
+    expect(said).toHaveTextContent(/from its page/);
     expect(screen.queryByText(/It cannot be changed/)).not.toBeInTheDocument();
   });
 });

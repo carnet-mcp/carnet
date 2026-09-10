@@ -370,7 +370,7 @@ def drive():
         check("she is signed in", BOOTSTRAP_EMAIL in page.content(), True)
         # The whole of decision 1, seen the way a person sees it: she did nothing but log
         # in, and the nav item is there.
-        check("and Administration is offered", "Administration" in nav(page), True)
+        check("and the audit log is offered", "Audit log" in nav(page), True)
 
         # **The redesign moved these**, and the scene says what the product now does
         # rather than what it did. The three sections used to sit in a sub-navigation
@@ -379,11 +379,11 @@ def drive():
         # true is decision 1's actual claim — an administrator is offered all three,
         # and the non-admin scene below is offered none of them.
         say("the three sections, offered in the sidebar to an administrator")
-        page.click("nav.sidebar-nav a:has-text('Administration')")
+        page.click("nav.sidebar-nav a:has-text('Audit log')")
         check(
-            "Administration, Groups, Connectors",
-            [i for i in nav(page) if i in ("Administration", "Groups", "Connectors")],
-            ["Administration", "Groups", "Connectors"],
+            "Audit log, Groups, Connectors",
+            [i for i in nav(page) if i in ("Audit log", "Groups", "Connectors")],
+            ["Audit log", "Groups", "Connectors"],
         )
         # **Waited for, not read immediately.** The log is fetched after the shell paints,
         # so reading `page.content()` straight after the nav renders is a race — it passed
@@ -396,14 +396,15 @@ def drive():
         say("Connectors: nothing can be registered, and the page says why")
         page.click("nav.sidebar-nav a:has-text('Connectors')")
         # **Waited on the sentence, not on the card.** The heading paints before the
-        # allowlist request answers, and 091 put the words "Allowed addresses" in a
+        # allowlist request answers, and 091 put the words "Approved hosts" in a
         # second place — the gate paragraph that points at this card — so the heading is
-        # not even unambiguous any more. Wait for the thing being asserted.
-        page.wait_for_selector("text=safe default", timeout=15000)
+        # not even unambiguous any more. Wait for the thing being asserted: the empty
+        # state's own first sentence, which nothing else on the page says.
+        page.wait_for_selector("text=No approved hosts", timeout=15000)
         says(
             "an empty allowlist denies",
             page.content(),
-            "safe default, not a fault",
+            "Connectors can only connect to approved hosts",
         )
         check(
             "and there is no Register button to press",
@@ -429,7 +430,9 @@ def drive():
         page.click("button:has-text('Approve')")
         page.wait_for_timeout(1200)
         says("she is told it will not be dialled", page.content(), "will NOT be dialled")
-        check("the row is marked in the list", page.locator("text=never dialled").count() >= 1, True)
+        # The tag in the table, not the notice above the form that says the same words.
+        check("the row is marked in the list",
+              page.locator("td span.tag:has-text('not reachable')").count() >= 1, True)
         # **A warning is not an approval.** A host that can never be dialled must not
         # unlock the stage that depends on one, or the refusal arrives at the first run
         # instead of here.
@@ -466,7 +469,9 @@ def drive():
             ),
             (1, 0),
         )
-        page.click("text=In your own vault")
+        # The radio's own label, because `text=` is a case-insensitive substring and
+        # "vault reference" is also the name of the field that appears once it is chosen.
+        page.click("label.choice:has-text('Vault reference')")
         page.wait_for_timeout(400)
         check(
             "choosing the vault swaps them, so both can never be typed",
@@ -481,31 +486,28 @@ def drive():
         # three requests to somebody else's service on every call, and a connector that
         # stops working while their vault is down.
         says("with what it costs said on the option itself", page.content(), "on every call")
-        says("...including the failure it adds", page.content(), "while your vault is down")
+        says("...including the failure it adds", page.content(), "while the vault is unavailable")
 
         say("she goes back to a credential this deployment holds, and registers")
-        page.click("text=In this deployment")
+        # Same anchor: "environment variable" is also in the credential field's hint.
+        page.click("label.choice:has-text('Environment variable')")
         page.wait_for_timeout(400)
 
         page.fill("input[placeholder='jira']", "acme")
         page.fill("input[placeholder='https://mcp.acme.com/mcp']", MCP_URL)
         page.click("button:has-text('Register')")
         page.wait_for_timeout(1500)
-        says(
-            "and is told it vets nothing",
-            page.content(),
-            "does not switch anything on",
-        )
-        says(
-            "with the next thing to do",
-            page.content(),
-            "Nothing is switched on yet",
-        )
+        # Registering answers with a card rather than a notice now, so the sentence
+        # that says nothing is approved yet is the card's own — scoped to it, because
+        # the form below the cards ends with "approve the tools" in its own words.
+        acme_card = page.locator("div.conn-card:has-text('acme')").first.inner_text()
+        says("and is told nothing is approved yet", acme_card, "No tools approved yet")
+        says("with the next thing to do", acme_card, "Open it to discover and approve tools")
 
         say("she opens it")
         page.click("div.conn-card:has-text('acme') a.btn:has-text('Open')")
         page.wait_for_selector("text=Registration", timeout=15000)
-        says("nothing is approved yet", page.content(), "Nothing is approved on this connector")
+        says("nothing is approved yet", page.content(), "No tools approved")
         check(
             "and nothing has been dialled to say so",
             page.locator("text=acme-mcp-server").count(),
@@ -548,12 +550,15 @@ def drive():
         say("she types a zero into the response ceiling")
         tool_row = page.locator("div.row:has-text('list_issues')")
         tool_row.locator("input[type='number']").fill("0")
-        page.click("button:has-text('Approve this tool')")
+        # **Exact, and scoped to the row.** The submit is the one word "Approve"; the
+        # other rows' toggles say "Approve…" and a re-approval says "Approve again", all
+        # of which a `has-text` substring would also match.
+        tool_row.locator("button:text-is('Approve')").click()
         page.wait_for_timeout(800)
         says(
             "the form says what a zero would do",
             tool_row.inner_text(),
-            "refuses every response this tool will ever return",
+            "denies every response",
         )
         # The card is titled "Approved tools" whether or not anything is, so the assertion
         # is the sentence that says nothing is — the state a wizard has to be able to
@@ -561,13 +566,13 @@ def drive():
         says(
             "and nothing was approved",
             page.locator("section.card:has-text('Approved tools')").inner_text(),
-            "Nothing is approved on this connector",
+            "No tools approved",
         )
 
         say("she gives a real one, with a sentence about who owns the project")
         tool_row.locator("input[type='number']").fill("200000")
         page.get_by_label(re.compile(r"^Note")).fill("Finance owns this repository.")
-        page.click("button:has-text('Approve this tool')")
+        tool_row.locator("button:text-is('Approve')").click()
         page.wait_for_timeout(2000)
         says("it is approved, against a named server version", page.content(), "against acme-mcp-server v4.1.0")
         says("under the name a grant will use", page.content(), "acme_list_issues")
@@ -584,8 +589,9 @@ def drive():
         )
         page.wait_for_timeout(300)
         # The screen says it before the button is pressed, and the server says it after.
-        says("the form warns first", page.content(), "policy could not name what it touches")
-        page.click("button:has-text('Approve this tool')")
+        says("the form warns first", page.content(),
+             "A write tool with no resource cannot be approved")
+        page.click("div.row:has-text('delete_repository') button:text-is('Approve')")
         page.wait_for_timeout(2000)
         # Until 12c this was a 500 — "Internal Server Error", to somebody whose remedy was
         # one more field.
@@ -613,7 +619,7 @@ def drive():
         says(
             "with the ceiling, as a size, and refused rather than truncated",
             approved.inner_text(),
-            "195.3 kB are refused",
+            "195.3 kB are denied",
         )
 
         # 035g's edge pass found this one: `vet_tool` upserts the **whole row**, and this
@@ -644,7 +650,8 @@ def drive():
         # The one half the wire deliberately does not return — `ResourceType` is `{type}`
         # alone, because a client handed the argument names would be invited to build a
         # scope out of them. So the picker is empty and the screen says so.
-        says("with the half the API will not hand back", again.inner_text(), "pick them again")
+        says("with the half the API will not hand back", again.inner_text(),
+             "Pick the argument for each again")
 
         say("and pressing approve without picking it again is refused, not dropped")
         page.click("button:has-text('Approve again')")
@@ -652,7 +659,7 @@ def drive():
         says(
             "because a dropped resource is a scope somebody named and did not get",
             again.inner_text(),
-            "would be silently dropped",
+            "Pick one, or remove the row",
         )
         page.reload()
         page.wait_for_selector("text=Approved tools", timeout=15000)
@@ -664,15 +671,15 @@ def drive():
 
         # --- the consent flow -----------------------------------------------------------
 
-        say("she configures a consent flow")
-        page.click("button:has-text('Configure a consent flow')")
+        say("she configures an OAuth app")
+        page.click("button:has-text('Set up OAuth app')")
         page.wait_for_selector("text=Authorize endpoint", timeout=15000)
         secret = page.locator("input[type='password']")
         check("the secret field is a password field", secret.count(), 1)
 
         page.fill("input[placeholder='https://auth.acme.com/authorize']", f"https://{HOST}/authorize")
         page.fill("input[placeholder='https://auth.acme.com/token']", f"https://{HOST}/token")
-        page.get_by_label("Client id").fill("client-abc")
+        page.get_by_label("Client ID").fill("client-abc")
         secret.fill("MARKER-CLIENT-SECRET-b71a")
         page.fill("input[placeholder='read:jira-work offline_access']", "read:issues offline_access")
 
@@ -684,7 +691,7 @@ def drive():
         page.click("button:has-text('Add a parameter')")
         page.fill("input[placeholder='audience']", "state")
         page.fill("input[placeholder='api.atlassian.com']", "guessable")
-        page.click("button:has-text('Save consent flow')")
+        page.click("button:has-text('Save OAuth app')")
         page.wait_for_timeout(1500)
         says(
             "and is told why the platform builds that one itself",
@@ -696,7 +703,7 @@ def drive():
         say("she sets the one her provider actually mandates")
         page.fill("input[placeholder='audience']", "audience")
         page.fill("input[placeholder='api.atlassian.com']", "api.acme.com")
-        page.click("button:has-text('Save consent flow')")
+        page.click("button:has-text('Save OAuth app')")
         page.wait_for_timeout(2000)
 
         content = page.content()
@@ -706,15 +713,15 @@ def drive():
         # Not `••••••`, which would imply the value can be read back. It cannot, by anybody.
         check("with no masked echo", "•" in content, False)
         # The read half plan 035 never named: a connector a CLI had configured with an
-        # audience showed an administrator nothing about it. Scoped to the consent-flow
+        # audience showed an administrator nothing about it. Scoped to the OAuth app
         # card, because the form above it holds the same string in a box she typed it into.
-        flow = page.locator("section.card:has-text('Consent flow')").inner_text()
+        flow = page.locator("section.card:has-text('OAuth app')").inner_text()
         says("and what it also sends is on the screen at last", flow, "audience=api.acme.com")
 
         # 035g. The `PUT` replaces wholesale — that is how a rotated secret is installed —
         # so a blank Replace form is a data-loss control. It opens with what is stored.
         say("she presses Replace, and finds her own configuration in it")
-        page.click("button:has-text('Replace it')")
+        page.click("button:text-is('Replace')")
         page.wait_for_timeout(800)
         check(
             "the scopes she set are still in the box",
@@ -734,7 +741,7 @@ def drive():
         says(
             "which the screen says rather than leaving her to find at the button",
             page.content(),
-            "replaces the whole consent flow",
+            "replaces the whole OAuth app",
         )
         page.click("button:has-text('Cancel')")
         page.wait_for_timeout(500)
@@ -765,7 +772,7 @@ def drive():
         # control differently — and a page-wide check would pass on the form's own copy.
         trusted_row = page.locator("div.conn-card:has-text('trusted')").inner_text()
         says("the row says so at a glance", trusted_row, "asserted identity")
-        says("and says what it is worth", trusted_row, "believed without verification")
+        says("and says what it is worth", trusted_row, "without verification")
         check(
             "and the first connector is still unmarked",
             "asserted identity"
@@ -775,15 +782,17 @@ def drive():
 
         say("and the flag really landed at registration rather than only in the form")
         page.click("div.conn-card:has-text('trusted') a.btn:has-text('Open')")
-        page.wait_for_selector("text=Acting-for through the MCP door", timeout=15000)
+        # On the heading, exactly: "on behalf of" is also inside the card's own sentence
+        # and in the registration copy, so a `text=` substring would wait for nothing.
+        page.wait_for_selector("h2:text-is('On behalf of')", timeout=15000)
         says(
             "the connector's own page states the posture it was born with",
-            page.locator("section.card:has-text('Acting-for')").inner_text(),
-            "exactly as honest as the calling application",
+            page.locator("section.card:has(h2:text-is('On behalf of'))").inner_text(),
+            "without verification",
         )
         check(
             "and offers the one deliberate action that would change it back",
-            page.locator("button:has-text('Stop believing asserted identity')").count(),
+            page.locator("button:has-text('Stop accepting asserted identity')").count(),
             1,
         )
 
@@ -794,10 +803,10 @@ def drive():
         page.wait_for_selector("text=New group", timeout=15000)
         # Anchored, because `get_by_label` matches the accessible name as a
         # **case-insensitive substring** and `Field` folds its hint into that name. 033e
-        # added a "Directory group" field whose hint ends *"Entra emits object ids, Okta
-        # names."* — so a bare "Name" began matching two inputs and this script has been
-        # failing since that step landed. Nothing caught it: the browser checks are not
-        # in CI, which is the standing gap 035j exists to close.
+        # added a "Directory group" field whose hint reads *"…an object id in Entra, a
+        # name in Okta."* — so a bare "Name" began matching two inputs and this script
+        # has been failing since that step landed. Nothing caught it: the browser checks
+        # are not in CI, which is the standing gap 035j exists to close.
         #
         # Anchored with `^Name` and not `^Name\b`: `Field` renders label and hint as
         # adjacent spans, so the accessible name arrives as "NameWhat people will call
@@ -809,7 +818,7 @@ def drive():
 
         page.click("button:has-text('Members')")
         page.wait_for_timeout(1200)
-        says("an empty group reaches nobody", page.content(), "reaches nobody")
+        says("an empty group reaches nobody", page.content(), "No members yet")
 
         # Step 035h. **Both kinds are labelled**, and which one is the norm is a property
         # of the deployment — so a single badge would be read as *the exception* by every
@@ -821,14 +830,14 @@ def drive():
         page.click("button:has-text('Create group')")
         page.wait_for_timeout(1500)
 
-        # **Scoped to the row, not to the page** — the create form's own hint ends "Entra
-        # emits object ids, Okta names", so a page-wide assertion here would pass on copy
+        # **Scoped to the row, not to the page** — the create form's own hint says "The
+        # group's id in your directory", so a page-wide assertion here would pass on copy
         # that has nothing to do with these labels. That file has now paid for the
         # substring lesson six times.
         eng = page.locator(".row:has-text('eng')").first.inner_text()
         oncall = page.locator(".row:has-text('oncall')").first.inner_text()
         says("the linked one is from the directory", eng, "from your directory")
-        says("and says who edits it", eng, "Nobody edits it here")
+        says("and says where its members come from", eng, "Membership comes from your directory")
         says("the hand-made one is managed here", oncall, "managed here")
         check(
             "and is not also called a directory group",
@@ -845,13 +854,15 @@ def drive():
         )
 
         say("deleting names the consequence rather than asking twice")
-        page.click("button:has-text('Delete this group')")
+        page.click("button:has-text('Delete group')")
         page.wait_for_timeout(500)
         content = page.content()
-        says("it says what goes", content, "stops being reachable through it")
-        says("and that nobody is told", content, "Nobody is told")
-        check("with a way out", page.locator("button:has-text('Keep it')").count(), 1)
-        page.click("button:has-text('Keep it')")
+        says("it says what goes", content, "lose access to every agent shared with this group")
+        says("and what stays", content, "Access they hold directly is unaffected")
+        # The way out is the notice's own Cancel; scoped there because the open group
+        # below it has forms of its own.
+        check("with a way out", page.locator(".notice button:has-text('Cancel')").count(), 1)
+        page.click(".notice button:has-text('Cancel')")
 
         # --- her tokens, 035c ------------------------------------------------------
 
@@ -922,7 +933,7 @@ def drive():
         content = page.content()
         says("the personal one is marked", content, "personal")
         says("and the service one is not the same word", content, "service")
-        says("with the consequence spelled out", content, "capped at user")
+        says("with the consequence spelled out", content, "your access")
         # Category 2's rule narrowed in 044, and the check narrows with it: the page
         # said *no mint, no revoke, no form* until step 044 let a **session** mint for
         # itself (the route still refuses every machine caller, which is what the rule
@@ -944,7 +955,7 @@ def drive():
             "and the page's only non-tab control is the session's own mint (044) — "
             "nothing grants to anybody else",
             sorted(page.locator("main button:not([role='tab'])").all_inner_texts()),
-            ["Mint a token"],
+            ["Generate token"],
         )
         says("...and the tabs beside it only choose a snippet (075)",
              page.locator("main button[role='tab']").first.get_attribute("aria-controls"),
@@ -966,13 +977,14 @@ def drive():
         say("she follows a token to what it can actually reach")
         page.click("a:has-text('priya-cursor')")
         try:
-            # **On the heading, not on `text=What it can reach`.** Playwright's `text=`
-            # is a case-insensitive substring match, and the spinner beside it says
-            # *"Working out what it can reach…"* — so the loose selector matched the
-            # loading state in 0.02s and every assertion after it read a page that had
-            # not answered yet. `e2e_mcp_door`'s own lesson at a third address: wait for
-            # the thing being asserted, never for a string that was already there.
-            page.wait_for_selector("h2:text-is('What it can reach')", timeout=20000)
+            # **On the heading, exactly, not on `text=Access`.** Playwright's `text=` is
+            # a case-insensitive substring match, and the spinner beside it says
+            # *"Loading access…"* — so the loose selector matched the loading state in
+            # 0.02s and every assertion after it read a page that had not answered yet.
+            # `:text-is` also keeps "Access by tool" from answering for this card.
+            # `e2e_mcp_door`'s own lesson at a third address: wait for the thing being
+            # asserted, never for a string that was already there.
+            page.wait_for_selector("h2:text-is('Access')", timeout=20000)
         except Exception:
             pass
         content = page.content()
@@ -990,8 +1002,8 @@ def drive():
         # that *widens*: no grant, no share, no scope edit.
         #
         # **This used to assert `count() == 1` and 069 broke it by adding a second
-        # control that is entirely legitimate** — the simulator's *Would this be
-        # allowed?*, a question that writes no row and changes nothing (069 decision 3).
+        # control that is entirely legitimate** — the simulator's *Check*, a question
+        # that writes no row and changes nothing (069 decision 3).
         # The count was standing in for the claim and it stopped being able to: a count
         # of one says nothing about *what* the one is, and a count of two says nothing
         # about whether the second grants. So the names are asserted instead, which is
@@ -1001,7 +1013,7 @@ def drive():
         check(
             "every control on this page narrows or asks; none grants",
             sorted(page.locator("main button").all_inner_texts()),
-            ["Revoke this token", "Would this be allowed?"],
+            ["Check", "Revoke token"],
         )
 
         # --- and why it might stop working, 035e ------------------------------------
@@ -1013,33 +1025,33 @@ def drive():
         # the dense week surviving JSON.
         #
         # **Waited on the heading, not on a substring.** The card's own spinner says
-        # *"Reading what it has spent…"*, so `text=What it has spent` would match the
-        # loading state — the lesson this file already carries twice and `e2e_mcp_door`
-        # a third time.
+        # *"Loading usage…"*, so `text=Usage` would match the loading state — and the
+        # rail's Usage link besides — the lesson this file already carries twice and
+        # `e2e_mcp_door` a third time.
 
         say("and she reads why it might stop working, which was nowhere before")
         try:
-            page.wait_for_selector("h2:text-is('What it has spent')", timeout=20000)
+            page.wait_for_selector("h2:text-is('Usage')", timeout=20000)
         except Exception:
             pass
         content = page.content()
         says("the count is against the ceiling, not on its own", content, "4 of 1,000")
-        says("labelled admitted rather than made", content, "calls admitted today")
+        says("labelled allowed rather than made", content, "requests allowed today")
         # Trap 2 on screen: a token denied five hundred times a day appears here as
         # whatever it succeeded at, and the page has to say so rather than let a reader
         # take this for the token's whole activity.
-        says("with what that excludes said out loud", content, "Admitted, not attempted")
-        says("and the quiet days present rather than missing", content, "Window (UTC)")
+        says("with what that excludes said out loud", content, "Allowed requests only")
+        says("and the quiet days present rather than missing", content, "Day (UTC)")
         check(
             "seven windows, dense — a gap would redraw a quiet day as if it had not happened",
-            page.locator("table:has-text('Calls admitted') tbody tr").count(),
+            page.locator("table:has-text('Requests allowed') tbody tr").count(),
             7,
         )
         check(
             "and nothing here raises a ceiling, which would be a grant — the controls "
             "are still only the revoke and the simulator's question",
             sorted(page.locator("main button").all_inner_texts()),
-            ["Revoke this token", "Would this be allowed?"],
+            ["Check", "Revoke token"],
         )
 
         # --- her own connection, 035f ------------------------------------------------
@@ -1165,7 +1177,7 @@ def drive():
         # administrator widening it would otherwise make this page describe her live
         # credential with scopes it never had.
         says("said to be the ask and not a record of what she granted",
-             content, "not a record of what this connection was granted")
+             content, "not what this connection was granted")
         says("and when the credential last changed", content, "Last changed")
 
         say("and the credential an administrator pasted in says it is already dead")
@@ -1192,7 +1204,8 @@ def drive():
         # --- sharing with a group, 035h -------------------------------------------------
 
         # **The share sheet has never been driven in a browser.** `grep -l "Who can reach
-        # it"` over this directory returned nothing before this block: every assertion
+        # it"` (its heading then; it is "Sharing" now) over this directory returned
+        # nothing before this block: every assertion
         # about it since 10d has been against a mocked `api` module, which cannot tell you
         # that a Postgres `external_id` reaches a `<select>`, or that the two paths this
         # boolean travels — `list_groups` for the menu, `who_has_access` for the row —
@@ -1238,7 +1251,8 @@ def drive():
         sharing.close()
 
         page.goto(f"{APP}/agents/rota")
-        page.wait_for_selector("text=Who can reach it", timeout=15000)
+        # Exactly the sheet's heading: "sharing" is also in the page's own prose.
+        page.wait_for_selector("h2:text-is('Sharing')", timeout=15000)
 
         # One control, not a second Share button: pick who, then the level, then Share.
         page.get_by_role("radio", name=re.compile("A group")).click()
@@ -1264,7 +1278,7 @@ def drive():
         says(
             "and picking it says what cannot be listed",
             page.content(),
-            "including people who have never signed in here",
+            "Its members are not listed here",
         )
 
         page.click("button:has-text('Share')")
@@ -1291,7 +1305,7 @@ def drive():
         says(
             "and says what a directory-backed group costs the reader",
             page.content(),
-            "not listed above",
+            "listed after their next sign-in",
         )
 
         # --- 081: what is stored and not read, shown as exactly that --------------------
@@ -1305,9 +1319,9 @@ def drive():
 
         say("priya opens the agent and sees what is stored without being read")
         page.goto(f"{APP}/agents/rota")
-        page.wait_for_selector("text=Stored, and not read here", timeout=15000)
+        page.wait_for_selector("h2:text-is('Unused settings')", timeout=15000)
 
-        stored_card = page.locator("section:has-text('Stored, and not read here')").first
+        stored_card = page.locator("section:has(h2:text-is('Unused settings'))").first
         text = stored_card.inner_text()
         says("the schema she was sent is on the page", text, '"rota"')
         says(
@@ -1321,7 +1335,7 @@ def drive():
         says(
             "under a sentence that claims nothing enforces any of it",
             text,
-            "an edit here never removes them",
+            "does not read them",
         )
         check(
             "and no card claims a run is checked against the schema",
@@ -1331,9 +1345,10 @@ def drive():
 
         say("and the edit screen offers no way to author any of it")
         page.goto(f"{APP}/agents/rota/edit")
-        # `rota` is granted no tools, so the reach section is `Empty` rather than the
-        # question card — wait on the section every edit screen has instead.
-        page.wait_for_selector("text=What may it do?", timeout=15000)
+        # `rota` is granted no tools, so the resources step is `Empty` rather than the
+        # question card — wait on the page title instead, which paints only once both
+        # the agent and the catalogue have answered.
+        page.wait_for_selector("h1:text-is('Edit rota')", timeout=15000)
         content = page.content()
         check("no JSON Schema box", page.get_by_label(re.compile("JSON Schema")).count(), 0)
         check("no per-run ceilings", "Tool calls per run" in content, False)
@@ -1343,7 +1358,7 @@ def drive():
         # Back to the detail page, which is where the rename scene below starts. The block
         # this replaced ended there by saving; nothing here saves, so it says so.
         page.goto(f"{APP}/agents/rota")
-        page.wait_for_selector("text=Who can reach it", timeout=15000)
+        page.wait_for_selector("h2:text-is('Sharing')", timeout=15000)
 
         say("and she renames the agent, which the browser could not do at all")
         # `owner`. An editor's press would answer 404 about the agent on screen, because
@@ -1353,19 +1368,22 @@ def drive():
         says(
             "she is told what comes with it, before what breaks",
             page.content(),
-            "come with it",
+            "are kept",
         )
-        says("and then what breaks", page.content(), "points at nothing afterwards")
+        says("and then what breaks", page.content(), "There is no redirect")
 
         # The default state of this form — opened, unchanged — is a 422 the server answers
         # with a paragraph about version history. Pre-empted, because it is not a mistake
         # about the name.
+        # The box's submit is the one word "Rename", the same word as the toolbar
+        # button that opened it — which is not rendered while the box is open, but
+        # scoping to the notice says so rather than relying on it.
         check(
             "renaming to the name it already has is blocked rather than earned",
-            page.locator("button:has-text('Rename it')").is_disabled(),
+            page.locator(".notice button:text-is('Rename')").is_disabled(),
             True,
         )
-        says("with the reason said", page.content(), "It is already called rota")
+        says("with the reason said", page.content(), "The name is already rota")
 
         page.get_by_label(re.compile("New name")).fill("Rota 2026")
         page.wait_for_timeout(400)
@@ -1383,14 +1401,14 @@ def drive():
             "/agents/rota → /agents/rota-2026",
         )
 
-        page.click("button:has-text('Rename it')")
+        page.click(".notice button:text-is('Rename')")
         # **Wait for the URL, not for a selector.** The share sheet is on this same page,
-        # so `wait_for_selector("Who can reach it")` returns instantly against the page
+        # so `wait_for_selector("h2:text-is('Sharing')")` returns instantly against the page
         # that is already rendered and every assertion after it reads the *old* screen.
         # That is this file's substring lesson in its other form: a wait that is already
         # satisfied is not a wait. Caught by three probes failing for one reason.
         page.wait_for_url(re.compile(r"/agents/rota-2026$"), timeout=15000)
-        page.wait_for_selector("text=Who can reach it", timeout=15000)
+        page.wait_for_selector("h2:text-is('Sharing')", timeout=15000)
         check("the agent is at its new address", page.url.endswith("/agents/rota-2026"), True)
 
         # **Everything survives it**, asserted through the things rather than through the
@@ -1403,7 +1421,7 @@ def drive():
         )
         says(
             "and so did the schema nobody can edit here",
-            page.locator("section:has-text('Stored, and not read here')").first.inner_text(),
+            page.locator("section:has(h2:text-is('Unused settings'))").first.inner_text(),
             '"rota"',
         )
         check(
@@ -1427,7 +1445,7 @@ def drive():
         sign_in(sam_page, SECOND_PERSON)
         check("he is signed in", SECOND_PERSON in sam_page.content(), True)
         # The bootstrap variable is inert now, and this is the outside view of that.
-        check("and Administration is NOT offered", "Administration" in nav(sam_page), False)
+        check("and the audit log is NOT offered", "Audit log" in nav(sam_page), False)
 
         say("he types the URL anyway, and is refused with a sentence")
         sam_page.goto(f"{APP}/admin/connectors")
@@ -1442,19 +1460,20 @@ def drive():
         say("and his own token page tells him he has none, without offering to help")
         sam_page.goto(f"{APP}/tokens")
         try:
-            sam_page.wait_for_selector("text=You have no tokens", timeout=15000)
+            sam_page.wait_for_selector("text=No access tokens", timeout=15000)
         except Exception:
             pass
         # The nav item is outside the administrative group, so unlike `/admin/connectors`
         # two checks up this is a place he is *meant* to be — and an empty answer here is
         # a true one rather than a refusal.
-        check("Tokens is offered to him", "Tokens" in nav(sam_page), True)
-        says("and the empty state is a sentence", sam_page.content(), "You have no tokens")
-        # 044 moved minting into the page itself, so the empty state points below
-        # rather than at a terminal — the stale `--mint-token` remedy plan 049's
-        # audit flagged is gone from the copy, and this check moved with it.
-        says("pointing at the mint on the page, not at a terminal",
-             sam_page.content(), "Mint one below")
+        check("Access tokens is offered to him", "Access tokens" in nav(sam_page), True)
+        says("and the empty state is a sentence", sam_page.content(), "No access tokens")
+        # 044 moved minting into the page itself, so the empty state points at the
+        # page's own control rather than at a terminal — the stale `--mint-token`
+        # remedy plan 049's audit flagged is gone from the copy, and this check moved
+        # with it. "Generate a token", not "Generate token": the sentence, not the button.
+        says("pointing at the generate control on the page, not at a terminal",
+             sam_page.content(), "Generate a token")
 
         say("but he can connect his own account — which is the whole point")
         sam_page.goto(f"{APP}/connections")
@@ -1664,15 +1683,17 @@ def drive():
         )
         admin.goto(f"{APP}/agents/rota-2026/versions/1")
         try:
-            admin.wait_for_selector("text=what it was told it is", timeout=15000)
+            admin.wait_for_selector("h2:text-is('Instructions')", timeout=15000)
         except Exception:
             pass
         content = admin.content()
         says("the version page carries the version in its title", content, "· v1")
+        # Scoped to the card: the hint that pins these words to a version is three
+        # words, and "version" is all over this page.
         says(
             "and the instructions card says whose words these are",
-            content,
-            "what it was told it is, in this version",
+            admin.locator("section.card:has(h2:text-is('Instructions'))").inner_text(),
+            "in this version",
         )
 
         browser.close()
