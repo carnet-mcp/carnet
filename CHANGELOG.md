@@ -7,7 +7,7 @@ preserves, how far back it works from, what a failure leaves behind — is
 Versions are `MAJOR.MINOR.PATCH` while below 1.0: a minor is a step of work, a patch is
 a fix between steps, and neither is allowed to break an upgrade path.
 
-## Unreleased
+## 0.11.0 — 2026-09-14
 
 **The registry is an argument, the digest is not; and the artefact a person carries in**
 (step 109, decisions 5 and 6). Two environments the deployment could not be told about.
