@@ -49,7 +49,7 @@ hyphens. `carnet --check-file` reports the first refusal by key.
 | Key | What it does |
 | --- | --- |
 | `kind` | `http` (a Streamable HTTP MCP server, the default) or `rest` (a plain HTTP API whose tools you author). `stdio` is refused: a fileborne door has no accounts, and a stdio server holds one credential for everybody |
-| `url` | the endpoint. Plain `http://` and private addresses are refused unless the operator consents to the host in `CARNET_EGRESS_INTERNAL_HOSTS` |
+| `url` | the endpoint. Plain `http://` and private addresses are refused unless the operator consents to the host, or to its network in CIDR, in `CARNET_EGRESS_INTERNAL_HOSTS` |
 | `credential` | the shared credential presented to the server, as a `${VARIABLE}` pointer. A literal is refused. Omit for a server that takes none |
 | `credential_header` | the header the credential travels in. Default `Authorization` |
 | `credential_prefix` | what precedes it in that header. Default `Bearer `; `""` for a vendor that wants the bare token |
@@ -485,7 +485,10 @@ otherwise; a misspelt value is refused rather than defaulted.
 | `CARNET_MCP_TOKENS_PER_DAY` | a daily model-token ceiling on the same subject; zero disables |
 | `CARNET_MCP_USD_PER_DAY` | a daily spend ceiling in dollars on the same subject; zero disables. Read fresh per call, so it can be turned mid-incident |
 | `CARNET_MODEL_RATES` | a file of what each model costs, so spend is priced in your figures rather than the built-in list |
-| `CARNET_EGRESS_INTERNAL_HOSTS` | hosts on the deployment's own network the door may dial over plain http or at private addresses — the operator's consent |
+| `CARNET_EGRESS_INTERNAL_HOSTS` | the deployment's own networks — hostnames, or networks in CIDR such as `10.0.0.0/8` — which the door may dial over plain http or at private addresses. The operator's consent; a name is admitted for where it resolves |
+| `CARNET_EGRESS_PROXY` | the outbound proxy, `http://[user:pass@]host:port`. A declaration that the proxy is the arbiter of where a dial on the internet lands: names go through it intact and the DNS-rebinding check moves to it; the deployment's own networks are dialled direct. `HTTPS_PROXY` is never read, and refuses at start if set without this |
+| `REQUESTS_CA_BUNDLE` | a corporate CA the dial trusts — the root that re-signs intercepted TLS, or issues internal certificates. A file path, mounted; it replaces the bundled public roots rather than adding to them |
+| `CARNET_TLS_MODE` | where the front door's certificate comes from: `acme` (default), `internal` (Caddy's own CA, for a name Let's Encrypt cannot see) or `files` (your own, mounted at `/etc/carnet/tls/`). Read by the front door, not the API |
 
 ### People and administration
 
@@ -519,11 +522,13 @@ otherwise; a misspelt value is refused rather than defaulted.
 | `CARNET_TOKEN_` | variables holding a `carnet.yaml` token's secret — `${CARNET_TOKEN_LAPTOP}`. Yours by construction; never one of Carnet's own settings |
 | `CARNET_CONNECTOR_` | variables holding a connector's shared credential, the same way |
 
-### Set on the compose stack, read by the front door rather than the application
+### Set on the compose stack, read by the front door or by compose itself rather than the application
 
 | Setting | What it does |
 | --- | --- |
 | `CARNET_DOMAIN` | the hostname the front door terminates TLS for |
+| `CARNET_BASE_REGISTRY` | the mirror the four pinned base images are pulled from (default `docker.io`); the digests stay, so a retargeted build is the same bytes from a different address |
+| `CARNET_DB_IMAGE` | the bundled database's image reference, whole — only for a sealed estate where the image arrived in a tarball and the pinned digest cannot match it (`docs/OFFLINE.md`) |
 | `CARNET_HTTP_PORT` / `CARNET_HTTPS_PORT` | the only published ports (default 80 and 443) |
 | `CARNET_DB_PASSWORD` | the bundled database's password |
 | `CARNET_OIDC_ISSUER` / `CARNET_OIDC_CLIENT_ID` / `CARNET_OIDC_SCOPES` | the browser's identity provider, declared once and served to the SPA and its CSP |

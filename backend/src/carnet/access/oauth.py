@@ -1083,8 +1083,8 @@ def _post_form(url: str, form: dict, *, auth, want_body: bool = False):
 
     Tenant consent, not operator: these endpoints come off `oauth_apps`, a tenant's own
     registration, so loopback and private answers are refused unless the operator has
-    named the host in `CARNET_EGRESS_INTERNAL_HOSTS` — the same boundary `check` draws
-    one line up in `_token_request`.
+    named the host, or claimed its network, in `CARNET_EGRESS_INTERNAL_HOSTS` — the
+    same boundary `check` draws one line up in `_token_request`.
 
     A redirect is still never followed, and now that is `dial`'s guarantee rather than
     this call's keyword: a token endpoint that redirects is a token endpoint we should

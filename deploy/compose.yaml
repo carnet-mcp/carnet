@@ -17,7 +17,19 @@ services:
     # Pinned to the multi-arch index digest, like every base image in the Dockerfile
     # (step 055): a tag is a name somebody else can move. The tag stays beside the
     # digest so a reader sees what it was; digest taken 2026-08-30.
-    image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+    #
+    # Two overrides, both step 109, and they answer different environments. The
+    # registry prefix is the on-premises one — the same CARNET_BASE_REGISTRY the
+    # Dockerfile's bases take, so one line in .env retargets all four images at the
+    # company's mirror with the digest kept. The whole reference is the sealed
+    # estate's, where the image arrived in a tarball: whether the digest below still
+    # names it after `docker load` depends on the image store — `docker save` writes an
+    # OCI layout whose index carries it, the containerd store keeps it, the classic
+    # store reads the legacy manifest.json beside it and does not — and the far side
+    # should not have to know which they run. CARNET_DB_IMAGE=postgres:16 names the
+    # loaded tag, which is in the tarball either way (docs/OFFLINE.md). With neither
+    # set this is exactly the reference it always was, spelled with Hub's full name.
+    image: ${CARNET_DB_IMAGE:-${CARNET_BASE_REGISTRY:-docker.io}/library/postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94}
     profiles: ["bundled-db"]
     environment:
       # The superuser stays inside this container: it runs initdb and nothing else.
@@ -43,6 +55,11 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       target: api
+      # Where the base images come from (step 109, decision 5): the Dockerfile's one
+      # ARG, fed from .env so an internal-registry policy is a setting rather than an
+      # edit. Same value on all three builds — they are one Dockerfile.
+      args: &base-registry
+        BASE_REGISTRY: ${CARNET_BASE_REGISTRY:-docker.io}
     image: carnet-api
     command: ["carnet", "--migrate"]
     restart: "no"
@@ -130,9 +147,10 @@ services:
       # days; 0 for no expiry. The flow issues no refresh token, so an expiry is a
       # re-consent — one click for a person still signed in at their provider.
       CARNET_OAUTH_TOKEN_DAYS: ${CARNET_OAUTH_TOKEN_DAYS:-}
-      # The operator's own networks (step 058): hosts listed here may resolve to
-      # loopback or private addresses and still be dialled — internal connectors,
-      # a sidecar. Empty (the default) means every connector host must resolve
+      # The operator's own networks (steps 058, 109): a hostname, or a network in
+      # CIDR — `10.0.0.0/8,fd00::/8,sidecar.internal`. A listed name, or a name
+      # resolving inside a claimed network, may be loopback or private and still be
+      # dialled. Empty (the default) means every connector host must resolve
       # public; link-local (cloud metadata) is refused whatever this says.
       CARNET_EGRESS_INTERNAL_HOSTS: ${CARNET_EGRESS_INTERNAL_HOSTS:-}
       # The customer's own vault (step 070). Set these and a connector's shared
@@ -153,6 +171,32 @@ services:
       # list**, so the sentence in `config.py` promising a deployment can raise it was not
       # true of a deployment. Found by step 070's edge pass, running `the_knobs`.
       CARNET_REQUEST_TIMEOUT: ${CARNET_REQUEST_TIMEOUT:-}
+
+      # --- Your network (step 109) ---------------------------------------------------
+      #
+      # A corporate CA — the one that re-signs intercepted TLS, or issues your internal
+      # services' certificates — is a file this container has to be able to read:
+      # mount it (the commented volume on `api` below) and name it here. `requests`,
+      # which every dial goes through, reads this variable itself; the file REPLACES
+      # the bundled public roots rather than adding to them, so concatenate both if
+      # anything is dialled direct to the internet. Blank means the bundled roots.
+      #
+      # SSL_CERT_FILE is deliberately NOT listed, though it is the other spelling. A
+      # blank value — which is what this closed list hands the container for every
+      # unset variable — makes OpenSSL load a file named "" and leaves Python's
+      # default trust store EMPTY (0 roots against 150, checked in this image's base
+      # on 2026-09-14). A variable that breaks TLS by being left unset is worse than
+      # one that cannot be set.
+      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      # The outbound proxy, and setting it is a declaration: the proxy becomes the
+      # arbiter of where a dial on the internet lands, and the DNS-rebinding check
+      # moves to it — egress.py's docstring has the trade. Your own networks
+      # (CARNET_EGRESS_INTERNAL_HOSTS) are dialled direct and keep every check.
+      # HTTPS_PROXY, HTTP_PROXY and NO_PROXY are deliberately NOT read: the dial
+      # used to half-apply its pin behind an ambient proxy without saying so, and a
+      # Docker daemon injects those three into every container. One set without this
+      # refuses at start, naming this.
+      CARNET_EGRESS_PROXY: ${CARNET_EGRESS_PROXY:-}
     depends_on:
       db:
         condition: service_healthy
@@ -165,6 +209,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       target: api
+      args: *base-registry
     image: carnet-api
     # The image's default command, restated so the compose file reads whole. What the
     # flags mean — and why there is no --workers and no --proxy-headers — is argued in
@@ -178,6 +223,10 @@ services:
       # pointing the variable at where it lands. Uncomment and adjust:
       #   - ./model-rates.json:/etc/carnet/model-rates.json:ro
       # then set CARNET_MODEL_RATES=/etc/carnet/model-rates.json in .env.
+      #
+      # A corporate CA is the second such setting (step 109). Uncomment and adjust:
+      #   - ./corporate-ca.pem:/etc/carnet/ca/corporate-ca.pem:ro
+      # then set REQUESTS_CA_BUNDLE=/etc/carnet/ca/corporate-ca.pem in .env.
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -200,6 +249,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       target: front
+      args: *base-registry
     image: carnet-front
     environment:
       CARNET_DOMAIN: ${CARNET_DOMAIN}
@@ -216,6 +266,10 @@ services:
       # https://oauth2.googleapis.com). Space-separated, added to connect-src and
       # frame-src beside the issuer's own origin.
       CARNET_OIDC_EXTRA_ORIGINS: ${CARNET_OIDC_EXTRA_ORIGINS:-}
+      # Where the certificate comes from (step 109): unset or `acme` is today's
+      # behaviour; `internal` is Caddy's own CA for a name Let's Encrypt cannot see;
+      # `files` serves the pair mounted below, and refuses at start if it is not.
+      CARNET_TLS_MODE: ${CARNET_TLS_MODE:-}
     # The only published ports. Overridable for a trial beside other services;
     # ACME's HTTP challenge needs the real 80/443 when CARNET_DOMAIN is a real name.
     ports:
@@ -226,6 +280,9 @@ services:
       # losing these is only re-issuing certificates, but ACME rate limits exist.
       - caddy-data:/data
       - caddy-config:/config
+      # Your own certificate (step 109, CARNET_TLS_MODE=files): the chain and the key,
+      # PEM, at exactly these two names. Uncomment and adjust:
+      #   - ./tls:/etc/carnet/tls:ro
     depends_on:
       - api
     restart: unless-stopped

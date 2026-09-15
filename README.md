@@ -232,6 +232,10 @@ Or build it from a checkout:
 ```bash
 docker build -t carnet --target api -f deploy/Dockerfile .
 ```
+
+Behind a corporate proxy, an intercepting CA or an internal registry — or with no
+internet at all, where the image has to arrive as a file somebody carries in —
+[docs/OFFLINE.md](docs/OFFLINE.md) is one setting per seam and the offline procedure.
 </details>
 
 ## The whole product, one machine

@@ -2,7 +2,10 @@
 
 This directory is the deployment: a compose file, the image it builds, and the front
 door in front of it. It is written for the platform team running this in their own
-cloud — which, for this product, is the normal case, not the exception.
+cloud or their own datacentre — which, for this product, is the normal case, not the
+exception. If that datacentre has a proxy, an intercepting CA, an internal registry or
+no internet at all, [`docs/OFFLINE.md`](../docs/OFFLINE.md) is the page for that, one
+setting each; this one assumes the open internet and says where it does.
 
 ```
                         443 (TLS terminates here)
@@ -82,7 +85,8 @@ with it read, or grant the role directly:
 
 **Upgrades:** `git pull && docker compose up -d --build`. The dependency graph runs
 the migration before new code serves; `docs/UPGRADING.md` is the contract for what a
-migration may and may not do to your database.
+migration may and may not do to your database. (A sealed estate upgrades by loading the
+next tarball and running `up -d` without `--build` — `docs/OFFLINE.md`.)
 
 **What a build contains is pinned.** The image installs `deploy/requirements.lock`
 with hashes verified, and every base image is pinned to its digest — so rebuilding a
@@ -143,22 +147,94 @@ it: **nothing connects as a superuser.** The app role is `NOSUPERUSER` with
 bypasses row-level security, which makes an entire class of tenant-isolation defect
 invisible until it reaches a customer's ordinary role.
 
+## Your own certificate
+
+The front door gets its certificate one of three ways, chosen by `CARNET_TLS_MODE` in
+`.env` (step 109):
+
+- **`acme`** — the default, and what it has always done: a real `CARNET_DOMAIN` gets a
+  public certificate from Let's Encrypt, which needs DNS pointing here and ports 80/443
+  reachable from the internet; `localhost` is signed by Caddy's own CA.
+- **`internal`** — Caddy's own CA for any name: a trial, or an intranet name Let's
+  Encrypt cannot see. Browsers warn until that CA is trusted;
+  `docker compose exec front cat /data/caddy/pki/authorities/local/root.crt` is the
+  root to distribute.
+- **`files`** — a certificate your own CA issued. Put `cert.pem` (the full chain) and
+  `key.pem`, both PEM, in `./tls` beside `compose.yaml`, uncomment the `tls` volume on
+  the `front` service, set the mode, and `docker compose up -d front`. ACME is never
+  attempted. The certificate must name `CARNET_DOMAIN`: a mismatch is not a start-up
+  refusal but a handshake failure, which the browser reports and the entrypoint cannot.
+
+A missing file under `files` is refused at start, naming the mount — the same rule as
+a half-declared identity provider, and for the same reason: serving anyway would fail
+later, quieter, and in a browser.
+
+## Your registry
+
+The base images — node, python, caddy in the Dockerfile, postgres in the compose file —
+are pinned to Docker Hub by digest. A policy that says images come from the company's
+mirror is one line in `.env`, `CARNET_BASE_REGISTRY=harbor.corp/dockerhub`, and the
+digests stay: a mirror preserves them, so the retargeted build pulls **the same bytes
+from a different address**, which is both what makes the mirror trustworthy and why the
+pins were never meant to be edited to get there. A path after the host is fine; the
+`library/` in the image names follows the prefix, because that is where Docker Hub's
+official images live in every mirror that proxies it. The published image,
+`ghcr.io/carnet-mcp/carnet`, is the `api` target of this same Dockerfile and can be
+mirrored the same way, but the stack builds from the checkout and does not need it.
+
+`CARNET_DB_IMAGE` is the other override and answers a different environment: the sealed
+estate, where the images arrived in a tarball and the pinned digest cannot match an
+image that has been near no registry. `docs/OFFLINE.md` says when to set it, and it is
+never needed where a registry is reachable.
+
+## Behind a corporate proxy
+
+Set `CARNET_EGRESS_PROXY=http://proxy.corp:3128` (or `http://user:pass@…`) in `.env`
+and every dial to the internet goes through it **by name** — the proxy resolves, which
+is what a CONNECT proxy is for and why external names that do not resolve inside the
+building still work. Your own networks (`CARNET_EGRESS_INTERNAL_HOSTS`) are dialled
+direct and keep every check, so the internal Jira never touches the proxy. What the
+declaration trades — the door's DNS-rebinding check on the resolved address moves to
+the proxy — is stated in `backend/src/carnet/tools/mcp/egress.py`'s docstring, and it
+is the right trade only for a proxy that already governs every outbound packet in the
+building. `HTTPS_PROXY` and friends are never read; one of them set without this
+refuses at start, naming it, because a Docker daemon's proxy config injects them into
+every container and an operator who set them expects them to work. If the proxy
+re-signs TLS, its root goes in `REQUESTS_CA_BUNDLE` above. And the proxy must not
+buffer `text/event-stream`, or streamed completions hang until
+`CARNET_MODEL_CHUNK_TIMEOUT` and fail.
+
 ## Your ingress instead of the front door
 
-If TLS already terminates at your load balancer, drop the `front` service and have
-your ingress reproduce its contract — the `Caddyfile` is short and is that contract:
+If TLS already terminates at your load balancer — most often because certificates are
+issued and rotated somewhere the front door cannot see — drop the `front` service and
+have your ingress reproduce its contract. The `Caddyfile` is short and is that
+contract; read as one paragraph, it says:
 
-1. Terminate TLS; speak plain HTTP only on a network this deployment owns.
-2. Enforce the body limit on `/api/hooks/*` (64 KiB, `MAX_DELIVERY_BYTES`): it is the
-   unauthenticated door, a chunked request has no Content-Length, and the app can
-   only measure what it has already buffered — the refusal must happen in front.
-3. Serve `frontend/dist` with an SPA fallback to `index.html`, forward `/api/*` to
-   the API with the prefix stripped, and set `CARNET_PUBLIC_ORIGIN` to the
-   external origin plus `/api`. **And forward `/.well-known/oauth-*` to the API with
-   the path intact** (step 083): the door's OAuth discovery documents live at the
-   origin root by RFC, and the SPA fallback answering them with `index.html` is
-   the `/config.json` failure below at a new address.
-4. Serve the two halves of browser sign-in, and keep them agreeing (plan 031):
+Terminate TLS, and speak plain HTTP to the API only on a network this deployment owns.
+Forward `/api/*` to `api:8000` with the `/api` prefix stripped, and forward
+`/.well-known/oauth-*` to it with the path intact — the door's OAuth discovery
+documents live at the origin root by RFC (step 083), and an SPA fallback answering
+them with `index.html` is a JSON parse error about a server that is plainly up. Cap
+request bodies on `/api/*` at something like 12 MiB: a backstop against the absurd,
+not a boundary — the door's own per-call cap is far lower. Serve `frontend/dist` with
+an SPA fallback to `index.html`, but answer a missing `/assets/*` file with a real 404
+rather than the fallback, or a stale build reports a MIME type error pointing nowhere
+near the cause. Serve the two halves of browser sign-in exactly as the next section
+describes, with an unconfigured `/config.json` a real 404. **Do not buffer the
+response body** (step 108): `/api/v1/chat/completions` streams a model's answer as
+`text/event-stream` while it is still arriving, and an ingress that holds a body to
+inspect it turns every streamed completion into a wait for the whole answer — nginx
+needs `proxy_buffering off` on that path, and a response timeout shorter than
+`CARNET_MODEL_MAX_SECONDS` ends completions early. Set `CARNET_PUBLIC_ORIGIN` to the
+external origin plus `/api`, because the API reads no forwarded header. And point
+whatever routes traffic at **`/api/health/ready`**, not `/api/health`: the first is
+readiness — one real database round trip, 503 with a sentence when the database does
+not answer — and the second is liveness, which deliberately reads nothing and stays
+green through a database outage, so a load balancer draining on it keeps sending
+traffic to a deployment that can only refuse.
+
+The two halves of browser sign-in are the part worth reproducing exactly (plan 031):
    `/config.json` (`{"issuer": …, "client_id": …, "scopes": …}`, content type
    `application/json`, and a **real 404 when unconfigured** — never the SPA
    fallback, which is exactly the masking that once shipped a deployment nobody
@@ -193,12 +269,6 @@ your ingress reproduce its contract — the `Caddyfile` is short and is that con
    `CARNET_OIDC_*`; reproducing it is easier than rederiving it, and
    `scripts/e2e_browser_deploy.py` is what proves a real browser agrees.
 
-5. Point anything that routes traffic at **`/api/health/ready`**, not `/api/health`.
-   The first is readiness — one real database round trip, 503 with a sentence when
-   the database does not answer — and the second is liveness, which deliberately
-   reads nothing and stays green through a database outage. A load balancer draining
-   on liveness keeps sending traffic to a deployment that can only refuse it.
-
 The API trusts no forwarded header — `X-Forwarded-Host` does not change what it
 builds, and client addresses live in the proxy's access log, not the app's. If your
 ingress needs the app to see caller IPs someday, that is a two-file change discussed
@@ -210,8 +280,13 @@ in `docs/plans/030-deployment-artifacts.md`, decision 5.
   Kubernetes; Terraform for the first that names a cloud. Either would mean guessing
   your ingress class, secret manager and database topology — ask, and it becomes a
   conversation instead of a guess.
-- **A registry.** The images build from this checkout; publishing signed images is a
-  step that arrives with the first team that cannot build.
+- **A published front-door image.** `ghcr.io/carnet-mcp/carnet` is the `api` target
+  only, signed and multi-architecture (`release.yml`); `carnet-front` builds from this
+  checkout, or arrives in the offline bundle. A published pair waits for the first
+  deployment that cannot build and is not a sealed estate.
+- **An air-gapped update channel.** A sealed estate upgrades by carrying the next
+  tarball in (`docs/OFFLINE.md`). A delta channel, a mirror of our releases, an update
+  server — none of it, until a customer asks in words.
 - **A backup story beyond Postgres's own.** `db-data` (or your managed instance) is
   the deployment; dump it like any Postgres. `docs/UPGRADING.md` covers what a
   restore is promised to preserve.

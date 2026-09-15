@@ -645,8 +645,10 @@ read time*, so a corrected table reprices the history.
 
 A public Foundry endpoint needs only `--allow-host`. A **private endpoint** resolves to a
 `10.x` address inside the VNet, which egress refuses unless the operator consents:
-`CARNET_EGRESS_INTERNAL_HOSTS=acme-foundry.openai.azure.com`, and Carnet itself deployed
-inside the VNet or peered to it, or the call cannot leave.
+`CARNET_EGRESS_INTERNAL_HOSTS=acme-foundry.openai.azure.com` — or the VNet itself,
+`CARNET_EGRESS_INTERNAL_HOSTS=10.0.0.0/8`, which covers every private endpoint the
+company will ever add — and Carnet itself deployed inside the VNet or peered to it, or
+the call cannot leave.
 
 **This makes Carnet an inline dependency of every model call the company makes.** Before
 it, a Carnet outage stopped tool calls; after it, it stops the agent. There is

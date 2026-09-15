@@ -1155,6 +1155,20 @@ def test_a_plain_http_vault_on_the_operators_own_network_is_accepted(monkeypatch
     assert _vault_setting(monkeypatch, url="https://vault.example.com", token="t")[0]
 
 
+def test_a_network_claim_does_not_admit_a_plain_http_vault(monkeypatch):
+    """Names only here, on purpose (109), where `egress.check` also honours a network
+    claim: the vault dial runs under operator consent, so nothing downstream would hold
+    the resolved answer to a network — the name is the only place the rule can be
+    enforced, and a vault is one host the operator names once."""
+    import ipaddress
+
+    monkeypatch.setattr(
+        config, "EGRESS_INTERNAL_NETWORKS", (ipaddress.ip_network("10.0.0.0/8"),)
+    )
+    with pytest.raises(ValueError, match="not https"):
+        _vault_setting(monkeypatch, url="http://vault.acme.internal", token="t")
+
+
 @pytest.mark.parametrize("url", ["vault.example.com", "https://", "not a url", "op://x"])
 def test_a_vault_url_without_a_host_is_refused(monkeypatch, url):
     with pytest.raises(ValueError) as raised:

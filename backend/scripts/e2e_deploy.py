@@ -36,9 +36,16 @@ and two (`the_sign_in_wiring`, `the_provider_declaration`) on
                               uses, the second origin Google needs, and the eight
                               ways to declare one wrong that must be refusals rather
                               than a malformed policy.
+  - `the_operators_certificate`
+                              step 109: CARNET_TLS_MODE across its three modes,
+                              driven like the provider declaration, and the one
+                              thing a directive cannot prove — a real handshake
+                              presents the mounted certificate, not Caddy's own.
   - `the_knobs`               every setting the application reads is reachable from
                               `.env` — `environment:` is a closed list, and what it
-                              omits is not defaulted but unreachable.
+                              omits is not defaulted but unreachable. Since 109 the
+                              front door's own settings and the network variables
+                              that are not ours by name are held to the same rule.
   - `the_second_coming`       stop and start again: state survives, `--migrate`
                               finds nothing to do, what comes back is the door's
                               services and nothing more — and readiness (not
@@ -67,13 +74,18 @@ drift this script would have caught in a pull request reached an audit instead.
 Costs nothing and calls no model: nothing in the stack is asked to run an agent.
 """
 
+import hashlib
 import json
 import os
 import pathlib
 import re
 import secrets
+import shutil
+import socket
+import ssl
 import subprocess
 import sys
+import tarfile
 import time
 from urllib.parse import urlsplit, urlunsplit
 
@@ -758,6 +770,113 @@ def the_provider_declaration() -> None:
           version.stdout.startswith("v2."), True)
 
 
+def _self_signed(name: str) -> tuple[bytes, bytes, str]:
+    """A certificate and key for `name`, PEM, and the SHA-256 of the certificate's
+    DER — the fingerprint a handshake can be compared against."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject).issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    return (
+        cert.public_bytes(serialization.Encoding.PEM),
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                          serialization.NoEncryption()),
+        hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest(),
+    )
+
+
+def the_operators_certificate() -> None:
+    """Step 109, decision 4: the front door serves a certificate somebody else issued.
+
+    Three modes through one variable, and the entrypoint composes the Caddyfile's
+    `tls` line from it the way it composes the CSP — so the modes are driven with
+    `docker run` the way `the_provider_declaration` drives the provider, a second per
+    case. Then the one thing a directive cannot prove: a front door alone on a port,
+    the pair mounted where `files` expects it, and the certificate a real handshake
+    presents compared byte-for-byte to the one mounted. No API behind it, because a
+    handshake needs none.
+    """
+    say("the operator's certificate: CARNET_TLS_MODE across its three modes")
+
+    def run(**env):
+        args = []
+        for key, value in env.items():
+            args += ["-e", f"{key}={value}"]
+        return subprocess.run(
+            ["docker", "run", "--rm", *args, "carnet-front", "sh", "-c",
+             'echo "TLS=$CARNET_TLS"'],
+            capture_output=True, text=True,
+        )
+
+    check("unset is today's behaviour: no tls directive, so ACME or localhost's own CA",
+          run().stdout.strip(), "TLS=")
+    check("acme says so explicitly and means the same",
+          run(CARNET_TLS_MODE="acme").stdout.strip(), "TLS=")
+    check("internal is Caddy's own CA for any name",
+          run(CARNET_TLS_MODE="internal").stdout.strip(), "TLS=tls internal")
+    missing = run(CARNET_TLS_MODE="files")
+    check("files without the files refuses at start, naming the mount",
+          missing.returncode != 0 and "/etc/carnet/tls/cert.pem" in missing.stderr
+          and "compose.yaml" in missing.stderr, True)
+    bogus = run(CARNET_TLS_MODE="letsencrypt")
+    check("a mode that is not one of the three refuses, naming them",
+          bogus.returncode != 0 and "acme, internal or files" in bogus.stderr, True)
+
+    tls_dir = SCRATCH / "e2e_deploy_tls"
+    tls_dir.mkdir(parents=True, exist_ok=True)
+    cert_pem, key_pem, fingerprint = _self_signed("localhost")
+    (tls_dir / "cert.pem").write_bytes(cert_pem)
+    (tls_dir / "key.pem").write_bytes(key_pem)
+    port = HTTPS_PORT + 5
+    name = "carnet_e2e_tls_front"
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+    started = subprocess.run(
+        ["docker", "run", "-d", "--name", name,
+         "-e", "CARNET_DOMAIN=localhost", "-e", "CARNET_TLS_MODE=files",
+         "-v", f"{tls_dir}:/etc/carnet/tls:ro", "-p", f"{port}:443", "carnet-front"],
+        capture_output=True, text=True,
+    )
+    try:
+        check("the front door starts in files mode with the pair mounted",
+              started.returncode, 0)
+        presented = None
+        deadline = time.time() + 60
+        while time.time() < deadline and presented is None:
+            try:
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                with socket.create_connection(("127.0.0.1", port), timeout=5) as raw, \
+                        context.wrap_socket(raw, server_hostname="localhost") as tls:
+                    presented = tls.getpeercert(binary_form=True)
+            except OSError:
+                time.sleep(1)
+        check("...and the certificate a handshake presents is the mounted one, "
+              "not Caddy's own",
+              hashlib.sha256(presented).hexdigest() if presented else None, fingerprint)
+        logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
+        check("...and nothing was obtained from any issuer",
+              "obtaining certificate" in (logs.stdout + logs.stderr), False)
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
 def the_knobs() -> None:
     """Every setting the application reads has to be reachable from `.env`.
 
@@ -780,7 +899,10 @@ def the_knobs() -> None:
     package = pathlib.Path(app_config.__file__).parent
     read_by_the_app = re.findall(
         r"CARNET_[A-Z_]+",
-        (package / "config.py").read_text() + (package / "core" / "crypto.py").read_text(),
+        (package / "config.py").read_text() + (package / "core" / "crypto.py").read_text()
+        # Step 109: the front door reads settings of its own, in its entrypoint, and
+        # CARNET_TLS_MODE was the first one that could have shipped unreachable.
+        + (DEPLOY / "frontdoor-entrypoint.sh").read_text(),
     )
     # Five names the regex catches that are not deployment settings: the dev-auth bypass
     # is deleted rather than disabled (config.py says so), VAR_DIR and LOCAL_STATE are set
@@ -794,15 +916,40 @@ def the_knobs() -> None:
     # file's token variables, the way CARNET_CONNECTOR_ is for a connector's; and
     # CARNET_TOKEN_ALICE is the example name in config.py's comment. Step 099's census
     # found this list two steps behind the code.
+    #
+    # And three the entrypoint contributes (109): CARNET_CSP and CARNET_TLS are what
+    # it *exports* to the Caddyfile, not settings anybody sets; CARNET_OIDC_ is the
+    # prefix as it appears in a refusal's wording.
     not_a_deployment_setting = {
         "CARNET_INSECURE_DEV_AUTH", "CARNET_VAR_DIR",
         "CARNET_LOCAL_STATE", "CARNET_TENANT", "CARNET_CONNECTOR_",
         "CARNET_FILE", "CARNET_TOKEN_", "CARNET_TOKEN_ALICE",
+        "CARNET_CSP", "CARNET_TLS", "CARNET_OIDC_",
     }
     wanted = set(read_by_the_app) - not_a_deployment_setting
-    declared = set(re.findall(r"CARNET_[A-Z_]+", COMPOSE_FILE.read_text()))
+    compose_text = COMPOSE_FILE.read_text()
+    declared = set(re.findall(r"CARNET_[A-Z_]+", compose_text))
     check("every application setting is reachable from .env",
           sorted(wanted - declared), [])
+
+    # Step 109. The network variables are not ours by name, so the regex cannot see
+    # them and they are held to the rule by hand. REQUESTS_CA_BUNDLE is what
+    # `requests` — every dial — reads for a corporate CA. SSL_CERT_FILE must NOT be
+    # declared: a blank value, which this closed list hands the container for every
+    # unset variable, makes OpenSSL load a file named "" and leaves Python's trust
+    # store empty — checked in the image's own base, 0 roots against 150. A variable
+    # that breaks TLS by being left unset is worse than one that cannot be set.
+    check("the corporate CA variable is reachable from .env",
+          "REQUESTS_CA_BUNDLE:" in compose_text, True)
+    check("...and the one a blank value would break TLS with is not offered",
+          "SSL_CERT_FILE:" in compose_text, False)
+    # Step 109, decisions 5 and 6. Two settings no process reads — compose itself
+    # does, at build and at `up` — so the census above cannot see them either, and
+    # they are held to the rule by hand: the mirror the base images come from, and
+    # the whole database reference for an image that arrived in a tarball.
+    check("the registry prefix and the database image are reachable from .env",
+          [name for name in ("CARNET_BASE_REGISTRY", "CARNET_DB_IMAGE")
+           if name not in compose_text], [])
 
     # And the path works end to end, proven on the setting whose absence made key
     # rotation impossible: put a value in the environment, read it back from inside.
@@ -824,6 +971,308 @@ def the_knobs() -> None:
     rendered = compose("config", "--format", "json", capture_output=True, text=True)
     services = json.loads(rendered.stdout)["services"]
     check("the render has no worker service", "worker" in services, False)
+
+
+MIRROR_PORT = HTTPS_PORT + 6
+
+
+def the_internal_registry() -> None:
+    """Step 109, decision 5: the registry is an argument; the digest is not.
+
+    An on-premises policy says images come from the company's mirror, and until this
+    step obeying it meant editing three FROM lines — spending the reproducibility the
+    pins exist for. Three claims, each checked against a real thing rather than a
+    rendered file:
+
+    - The argument reaches every base image. Proven negatively, with a mirror that
+      does not exist: the refusal names the full path it tried, prefix and digest.
+    - A mirror preserves the digest and the build accepts the pin from it. Proven with
+      a real pull-through registry on this machine — the shape of every Harbor proxy
+      cache and Artifactory remote — whose own access log then says what the build
+      asked it for: the pinned manifest, by digest, and nothing by tag.
+    - What comes out is what went in. The image built through the mirror has the same
+      layers as the one built from Docker Hub, which is what *the same bytes from a
+      different address* means when it is checked rather than asserted.
+    """
+    say("the internal registry: one prefix, the same digests")
+
+    compose_text = COMPOSE_FILE.read_text()
+    pinned_db = re.search(r"postgres:16@sha256:[0-9a-f]{64}", compose_text).group(0)
+    dockerfile = (DEPLOY / "Dockerfile").read_text()
+    pinned_python = re.search(r"python:3\.12-slim@(sha256:[0-9a-f]{64})", dockerfile).group(1)
+
+    def rendered(env_file):
+        out = compose("config", "--format", "json", env_file=env_file,
+                      capture_output=True, text=True)
+        return json.loads(out.stdout)["services"] if out.returncode == 0 else {}
+
+    services = rendered(ENV_FILE)
+    check("with nothing set the bases come from Docker Hub, by its full name",
+          sorted({services[s]["build"]["args"]["BASE_REGISTRY"]
+                  for s in ("migrate", "api", "front")}), ["docker.io"])
+    check("...and so does the pinned database image",
+          services["db"]["image"], f"docker.io/library/{pinned_db}")
+
+    mirror = "harbor.example.internal/dockerhub"
+    mirrored = variant_env(SCRATCH / "e2e_deploy_mirror.env", CARNET_BASE_REGISTRY=mirror)
+    services = rendered(mirrored)
+    check("one line in .env retargets all three builds at the mirror",
+          sorted({services[s]["build"]["args"]["BASE_REGISTRY"]
+                  for s in ("migrate", "api", "front")}), [mirror])
+    check("...and the database image, with the digest kept",
+          services["db"]["image"], f"{mirror}/library/{pinned_db}")
+    mirrored.unlink(missing_ok=True)
+
+    nowhere = subprocess.run(
+        ["docker", "build", "--build-arg", "BASE_REGISTRY=127.0.0.1:1/nowhere",
+         "--target", "api", "-f", str(DEPLOY / "Dockerfile"), str(REPO)],
+        capture_output=True, text=True,
+    )
+    check("a mirror that does not exist refuses, naming the path it tried",
+          nowhere.returncode != 0
+          and f"127.0.0.1:1/nowhere/library/python:3.12-slim@{pinned_python}"
+          in nowhere.stderr, True)
+
+    say("a real pull-through mirror, the shape of a Harbor proxy cache")
+    name = "carnet_e2e_mirror"
+    tag = "carnet_e2e_mirror_api"
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+    started = subprocess.run(
+        ["docker", "run", "-d", "--name", name, "-p", f"{MIRROR_PORT}:5000",
+         "-e", "REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io", "registry:2"],
+        capture_output=True, text=True,
+    )
+    try:
+        check("the mirror starts", started.returncode, 0)
+        with httpx.Client(timeout=5) as client:
+            check("...and answers the registry API",
+                  wait_for(f"http://127.0.0.1:{MIRROR_PORT}/v2/", client, 60), True)
+        prefix = f"localhost:{MIRROR_PORT}"
+        seen = subprocess.run(
+            ["docker", "buildx", "imagetools", "inspect",
+             f"{prefix}/library/python:3.12-slim@{pinned_python}"],
+            capture_output=True, text=True,
+        )
+        check("the pinned python resolves through the mirror to the same digest",
+              seen.returncode == 0 and f"Digest:    {pinned_python}" in seen.stdout, True)
+        built = subprocess.run(
+            ["docker", "build", "-q", "--build-arg", f"BASE_REGISTRY={prefix}",
+             "--target", "api", "-t", tag, "-f", str(DEPLOY / "Dockerfile"), str(REPO)],
+            capture_output=True, text=True,
+        )
+        check("the api image builds with its base from the mirror", built.returncode, 0)
+        if built.returncode != 0:
+            print(built.stderr[-1500:])
+
+        def layers(image):
+            out = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{join .RootFS.Layers \" \"}}",
+                 image], capture_output=True, text=True)
+            return out.stdout.strip()
+
+        check("...and it is the same image as the one built from Docker Hub",
+              layers(tag) == layers("carnet-api") and layers(tag) != "", True)
+        log = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
+        asked = log.stdout + log.stderr
+        check("the mirror's own log says the build asked it for the pin, by digest",
+              f"/v2/library/python/manifests/{pinned_python}" in asked, True)
+        check("...and never by tag", "/v2/library/python/manifests/3.12-slim" in asked,
+              False)
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        subprocess.run(["docker", "rmi", tag], capture_output=True)
+
+
+def the_carried_artefact() -> None:
+    """Step 109, decision 6: the artefact a person carries in.
+
+    The sealed estate is provable only by a machine with its network cable out, and
+    that stays a hand-run procedure — `docs/OFFLINE.md` is its checklist. What a
+    connected runner can prove is everything short of the cable: that the bundle
+    builds from this checkout; carries every file the document promises; verifies
+    with its own `verify.sh` before `docker load` and again after it, by layer list,
+    which is the comparison that survives the two image stores naming an image
+    differently; that its MANIFEST names this commit and this version; and — the
+    offline claim in the one form a connected machine can check — that every image
+    the far side's compose file names came out of the tarball, so nothing is left for
+    a registry to answer.
+    """
+    from carnet import __version__
+
+    say("the carried artefact: the offline bundle, built and verified both sides")
+
+    out = SCRATCH / "e2e_deploy_offline"
+    shutil.rmtree(out, ignore_errors=True)
+    made = subprocess.run(
+        [str(REPO / "backend" / "scripts" / "offline_bundle.sh"), "--out", str(out)],
+        capture_output=True, text=True,
+    )
+    check("offline_bundle.sh runs to the end", made.returncode, 0)
+    if made.returncode != 0:
+        print(made.stderr[-2000:])
+        return
+    tarball = pathlib.Path(made.stdout.strip().splitlines()[-1])
+    check("...and prints the tarball it wrote", tarball.is_file(), True)
+    check("...named for the version and the platform",
+          tarball.name.startswith(f"carnet-offline-{__version__}-linux-"), True)
+
+    try:
+        with tarfile.open(tarball) as archive:
+            archive.extractall(out, filter="data")
+        inside = out / tarball.stem
+        promised = ["images.tar.gz", "MANIFEST", "SHA256SUMS", "verify.sh",
+                    "carnet.example.yaml", "LICENSE", "deploy/compose.yaml",
+                    "deploy/.env.example", "deploy/initdb/01-app-role.sh",
+                    "deploy/Caddyfile", "docs/OFFLINE.md", "docs/UPGRADING.md",
+                    "docs/GUIDE.md"]
+        check("every file docs/OFFLINE.md promises is in it",
+              [f for f in promised if not (inside / f).is_file()], [])
+        check("...and no live .env came along", (inside / "deploy" / ".env").exists(),
+              False)
+
+        manifest = (inside / "MANIFEST").read_text()
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO,
+                                capture_output=True, text=True).stdout.strip()
+        check("MANIFEST names this version", f"version:  {__version__}" in manifest, True)
+        check("...and this commit", f"commit:   {commit}" in manifest, True)
+        check("...and says what the checksums do and do not prove",
+              "does not say who built them" in manifest, True)
+
+        before = subprocess.run(["sh", "verify.sh"], cwd=inside,
+                                capture_output=True, text=True)
+        check("verify.sh: every file matches SHA256SUMS",
+              before.returncode == 0 and "every file matches" in before.stdout, True)
+        (inside / "MANIFEST").write_text(manifest + "\n")
+        tampered = subprocess.run(["sh", "verify.sh"], cwd=inside,
+                                  capture_output=True, text=True)
+        check("...and one altered byte fails it, saying not to load",
+              tampered.returncode != 0 and "do not load" in tampered.stderr, True)
+        (inside / "MANIFEST").write_text(manifest)
+
+        loaded = subprocess.run(["docker", "load", "-i", str(inside / "images.tar.gz")],
+                                capture_output=True, text=True)
+        check("docker load takes the images", loaded.returncode, 0)
+        after = subprocess.run(["sh", "verify.sh", "--loaded"], cwd=inside,
+                               capture_output=True, text=True)
+        check("verify.sh --loaded: what Docker holds is what MANIFEST names",
+              after.returncode == 0 and after.stdout.count("is the image in MANIFEST") == 3,
+              True)
+
+        the_far_side(inside)
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
+ESTATE_PROJECT = "carnet_e2e_estate"
+ESTATE_HTTP = HTTPS_PORT + 7
+ESTATE_HTTPS = HTTPS_PORT + 8
+
+
+def the_far_side(bundle: pathlib.Path) -> None:
+    """`docker compose up -d`, from the bundle, with no --build and nothing to pull.
+
+    The one claim that matters and the one a checklist cannot make. Everything above
+    is about the tarball; this is about whether the estate has a working deployment
+    afterwards — brought up from the bundle's OWN compose file, against the images
+    `docker load` supplied, on a `.env` written the way `docs/OFFLINE.md` says to
+    write one. What a connected runner cannot do is pull the cable out, so the
+    no-network claim is made the way it can be: compose is asked for images that are
+    all present, and its output is read for any attempt to fetch or build.
+
+    It is a second compose project on its own ports, so it neither sees nor disturbs
+    the stack the rest of this script is running.
+    """
+    from carnet.core import crypto
+
+    say("the far side: up from the bundle, no --build, nothing pulled")
+
+    env_path = bundle / "deploy" / ".env"
+    values = dict(
+        line.split("=", 1) for line in
+        (bundle / "deploy" / ".env.example").read_text().splitlines()
+        if "=" in line and not line.startswith("#")
+    )
+    values.update({
+        "CARNET_SECRET_KEY": crypto.generate_key(),
+        "CARNET_DOMAIN": "localhost",
+        # An intranet name's certificate, which is the estate's case: ACME cannot
+        # reach a sealed network and `files` would need a CA nobody here has.
+        "CARNET_TLS_MODE": "internal",
+        # The setting that exists for this environment alone (decision 6): the loaded
+        # tag, because a loaded image carries no registry digest to match the pin.
+        "CARNET_DB_IMAGE": "postgres:16",
+        "CARNET_EGRESS_INTERNAL_HOSTS": "10.0.0.0/8,fd00::/8",
+        "CARNET_HTTP_PORT": str(ESTATE_HTTP),
+        "CARNET_HTTPS_PORT": str(ESTATE_HTTPS),
+        "CARNET_OIDC_ISSUER": "https://idp.corp.example/oauth2/estate",
+        "CARNET_OIDC_CLIENT_ID": "carnet-estate",
+    })
+    env_path.write_text("".join(f"{k}={v}\n" for k, v in values.items()))
+
+    def estate(*args, **kwargs):
+        return subprocess.run(
+            ["docker", "compose", "-p", ESTATE_PROJECT,
+             "-f", str(bundle / "deploy" / "compose.yaml"),
+             "--env-file", str(env_path), *args],
+            **kwargs,
+        )
+
+    try:
+        up = estate("up", "-d", capture_output=True, text=True)
+        check("docker compose up -d succeeds from the bundle", up.returncode, 0)
+        if up.returncode != 0:
+            print((up.stdout + up.stderr)[-2000:])
+            return
+        noise = (up.stdout + up.stderr).lower()
+        check("...and nothing was pulled or built on the way",
+              [word for word in ("pulling", "building", "manifest unknown",
+                                 "pull access denied") if word in noise], [])
+
+        with httpx.Client(verify=False, timeout=15) as client:
+            base = f"https://localhost:{ESTATE_HTTPS}"
+            check("the estate's front door answers readiness over TLS",
+                  wait_for(f"{base}/api/health/ready", client), True)
+            health = client.get(f"{base}/api/health").json()
+            check("...and serves the version the MANIFEST names",
+                  health.get("version"),
+                  next(line.split()[1] for line in
+                       (bundle / "MANIFEST").read_text().splitlines()
+                       if line.startswith("version:")))
+            check("the bundle's own SPA is served",
+                  client.get(f"{base}/").status_code, 200)
+            check("...under a CSP naming the estate's own provider",
+                  "https://idp.corp.example" in
+                  client.get(f"{base}/").headers.get("content-security-policy", ""),
+                  True)
+            check("/config.json is the estate's provider, not ours",
+                  client.get(f"{base}/config.json").json()["issuer"],
+                  "https://idp.corp.example/oauth2/estate")
+            # The door is live and refusing, which is the half a sealed estate can
+            # check without an identity provider to sign into.
+            refused = client.post(f"{base}/api/mcp", json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            check("the door answers an unauthenticated call with a challenge",
+                  (refused.status_code,
+                   "Bearer" in refused.headers.get("www-authenticate", "")),
+                  (401, True))
+
+        logs = estate("logs", "migrate", capture_output=True, text=True).stdout
+        check("the migration ran before anything served",
+              "migration" in logs.lower() or "applied" in logs.lower(), True)
+        check("the database is the tag the bundle carried, not a digest",
+              subprocess.run(
+                  ["docker", "inspect", "-f", "{{.Config.Image}}",
+                   estate("ps", "-q", "db", capture_output=True,
+                          text=True).stdout.split()[0]],
+                  capture_output=True, text=True).stdout.strip(), "postgres:16")
+        # ACME is the thing that cannot work here, so it must not have been tried.
+        front = estate("logs", "front", capture_output=True, text=True)
+        check("no issuer on the internet was contacted for the certificate",
+              [word for word in ("acme-v02", "letsencrypt", "zerossl")
+               if word in (front.stdout + front.stderr).lower()], [])
+    finally:
+        estate("down", "-v", "--remove-orphans", "-t", "5",
+               capture_output=True, text=True)
 
 
 def the_second_coming() -> None:
@@ -1131,7 +1580,8 @@ def main() -> int:
     ENV_FILE = write_env(SCRATCH / "e2e_deploy.env")
     try:
         for scene in (the_first_five_minutes, the_running_stack, the_sign_in_wiring,
-                      the_provider_declaration, the_knobs, the_second_coming,
+                      the_provider_declaration, the_operators_certificate, the_knobs,
+                      the_internal_registry, the_carried_artefact, the_second_coming,
                       the_owner_check_can_go_red, the_managed_database):
             # One scene's crash must not cost the verdict on every other scene, and
             # must not be mistaken for a pass. `e2e_rls.py` learned the same lesson

@@ -265,7 +265,12 @@ def main() -> int:
     os.environ["CARNET_DATABASE_URL"] = dsn
     os.environ["CARNET_SECRET_KEY"] = base64.b64encode(os.urandom(32)).decode()
     os.environ["CARNET_TENANT"] = TENANT
-    os.environ["CARNET_EGRESS_INTERNAL_HOSTS"] = HOST
+    # Step 109: consent by network rather than by name — `localtest.me` resolves to
+    # loopback, and the claim admits it for where it resolves. This script runs in
+    # CI, so the CIDR path is exercised on a real socket on every push.
+    # Both families: the name answers `::1` as well, and a claim admits only what it
+    # covers — the edge pass that found this is the sentence in `.env.example`.
+    os.environ["CARNET_EGRESS_INTERNAL_HOSTS"] = "127.0.0.0/8,::1/128"
     os.environ["CARNET_PUBLIC_ORIGIN"] = API
     os.environ["REQUESTS_CA_BUNDLE"] = str(make_certificate())
     os.environ["SSL_CERT_FILE"] = str(CERT_FILE)

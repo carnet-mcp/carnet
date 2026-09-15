@@ -149,6 +149,47 @@ fi
 CARNET_CSP="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'${origins}; frame-src 'self'${origins}; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'self'"
 export CARNET_CSP
 
+# --- the certificate (step 109, decision 4) -------------------------------------------
+#
+# Three ways the front door gets its certificate, chosen by CARNET_TLS_MODE, and the
+# Caddyfile's `{$CARNET_TLS}` line is where the choice lands — composed here, beside
+# the CSP, for the same reason: the Caddyfile stays declarative and this script is
+# the whole surface to audit.
+#
+#   acme (default)  what this file has always done: a real name gets a public
+#                   certificate via ACME; `localhost` is signed by Caddy's own CA
+#   internal        Caddy's own CA for ANY name — a trial, or a name Let's Encrypt
+#                   cannot see, such as an intranet name behind a firewall
+#   files           a certificate somebody else issued — the company's own CA. Mount
+#                   the pair at /etc/carnet/tls/{cert,key}.pem (compose.yaml has the
+#                   commented volume) and it is served as-is; ACME is never attempted
+#
+# `files` without the files is refused here, naming the mount, rather than by Caddy
+# a few seconds later with a Go error about an open() — the half-declared-provider
+# rule above. What this script cannot check is that the certificate names
+# CARNET_DOMAIN: a mismatch is not a start failure but a handshake failure, which
+# the browser reports.
+tls_mode="${CARNET_TLS_MODE:-acme}"
+case "$tls_mode" in
+    acme) CARNET_TLS="" ;;
+    internal) CARNET_TLS="tls internal" ;;
+    files)
+        for f in /etc/carnet/tls/cert.pem /etc/carnet/tls/key.pem; do
+            [ -r "$f" ] || refuse "CARNET_TLS_MODE=files but $f is not readable." \
+                "Mount the certificate and key at /etc/carnet/tls/cert.pem and" \
+                "/etc/carnet/tls/key.pem (the commented volume on the front service" \
+                "in compose.yaml), or choose acme or internal."
+        done
+        CARNET_TLS="tls /etc/carnet/tls/cert.pem /etc/carnet/tls/key.pem"
+        ;;
+    *)
+        refuse "CARNET_TLS_MODE must be acme, internal or files, not '$tls_mode'." \
+            "acme is a public certificate for a public name (the default); internal" \
+            "is Caddy's own CA for any name; files is a certificate you mount."
+        ;;
+esac
+export CARNET_TLS
+
 # The image's own command, not a copy of it. Hardcoding `caddy run …` here worked and
 # was wrong in a way worth stating: it made the container ignore its CMD, so
 # `docker run carnet-front caddy version` silently started a web server instead —

@@ -1,20 +1,28 @@
-# The front door: TLS, the two body limits, the /api rewrite, the SPA fallback.
+# The front door: TLS, the body limit, the /api rewrite, the SPA fallback.
 #
 # This file is the contract a deployment's own ingress must reproduce if it replaces
-# this container (plan 030, decision 3): terminate TLS, enforce the body limit on
-# serve the bundle with an SPA fallback, forward /api/* with the prefix
-# stripped, and set CARNET_PUBLIC_ORIGIN to the external origin plus /api.
+# this container (plan 030, decision 3; deploy/README.md walks it as one paragraph):
+# terminate TLS, cap request bodies on /api/*, serve the bundle with an SPA fallback,
+# forward /api/* with the prefix stripped and /.well-known/oauth-* with the path
+# intact, serve the two halves of browser sign-in, and set CARNET_PUBLIC_ORIGIN to
+# the external origin plus /api.
 #
-# And since step 032: let a quiet read finish. GET /api/runs/{id}?wait=… is held by
-# the API for up to ~25s and answers the instant the run changes — live progress
-# without polling. Caddy needs no setting for this (no response timeout by default,
-# no buffering that outlasts one); a replacement ingress that cuts quiet reads under
-# ~30s silently turns live progress back into 2s polling. deploy/README.md item 5.
+# And since step 108: do not buffer the response body. /api/v1/chat/completions
+# streams a model's answer as text/event-stream while it is still arriving, and an
+# ingress that holds a body to inspect it turns every streamed completion into a
+# wait for the whole answer — which plan 108 named as the thing engineers would fork
+# the agent to bypass. Caddy flushes text/event-stream without being asked and sets
+# no response timeout by default, so this file needs no setting for it; a
+# replacement ingress does (nginx: proxy_buffering off on that path), and one with
+# a response timeout under CARNET_MODEL_MAX_SECONDS ends completions early.
 #
 # TLS is on by default: a real CARNET_DOMAIN gets an ACME certificate (which needs
 # DNS pointing here and ports 80/443 reachable); `localhost` is signed by Caddy's own
-# internal CA, so a browser warns until that CA is trusted. The default this file
-# exists to abolish is plain HTTP.
+# internal CA, so a browser warns until that CA is trusted. Since step 109 a company
+# whose name Let's Encrypt cannot see, or whose own CA issues its certificates, sets
+# CARNET_TLS_MODE — `internal`, or `files` with the pair mounted — and the
+# {$CARNET_TLS} line below is where that lands. The default this file exists to
+# abolish is plain HTTP.
 
 {
 	# A config endpoint on a front door is surface nobody asked for.
@@ -22,6 +30,12 @@
 }
 
 {$CARNET_DOMAIN}
+
+# The certificate (step 109): empty for today's behaviour — ACME for a real name,
+# Caddy's internal CA for localhost — or `tls internal`, or `tls <cert> <key>` for a
+# company's own. Composed by frontdoor-entrypoint.sh from CARNET_TLS_MODE, which
+# refuses a mode whose files are missing before Caddy ever reads this line.
+{$CARNET_TLS}
 
 # Client addresses are recorded here, at the terminating proxy, because the API
 # deliberately reads no forwarded header — PUBLIC_ORIGIN is configuration, not a Host

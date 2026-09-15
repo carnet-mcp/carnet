@@ -312,7 +312,7 @@ def test_a_literal_address_needs_no_pin(monkeypatch):
     monkeypatch.setattr(egress.socket, "getaddrinfo", never)
 
     assert egress.pinned("https://93.184.216.34/mcp") == (
-        "https://93.184.216.34/mcp", {}, ""
+        "https://93.184.216.34/mcp", {}, "", ""
     )
 
 
@@ -331,7 +331,7 @@ def test_operator_consent_admits_a_local_provider(monkeypatch):
     literal or by the `localhost` name, and the operator registered it — while under
     no consent at all the same URLs stay refused, as they always were."""
     pin = egress.pinned("http://127.0.0.1:8901/jwks", operator_consented=True)
-    assert pin == ("http://127.0.0.1:8901/jwks", {}, "")
+    assert pin == ("http://127.0.0.1:8901/jwks", {}, "", "")
 
     monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("127.0.0.1"))
     pin = egress.pinned("http://localhost:8901/jwks", operator_consented=True)
@@ -598,3 +598,531 @@ def test_every_dial_in_the_codebase_goes_through_dial():
         f"resolves to at dial time: {offenders}. Use egress.dial(session, ...) — see "
         "step 064, which exists because two such dials went unnoticed for six steps."
     )
+
+
+# --- the operator consents to networks (step 109) ------------------------------------
+#
+# Plan 109's first decision, and the one that stopped an on-premises install: the
+# variable took hostnames only, so an operator whose estate is 10.0.0.0/8 enumerated
+# every name and restarted per connector. Now a CIDR is a claim, decided on the answers.
+
+
+def _claims(monkeypatch, *entries):
+    """Set the variable the way an operator would and parse it the way the app does."""
+    from carnet import config
+
+    monkeypatch.setenv("CARNET_EGRESS_INTERNAL_HOSTS", ",".join(entries))
+    monkeypatch.setattr(config, "EGRESS_INTERNAL_HOSTS", config._internal_hosts())
+    monkeypatch.setattr(
+        config, "EGRESS_INTERNAL_NETWORKS", config._internal_networks()
+    )
+
+
+def test_a_hostname_that_merely_looks_numeric_is_still_a_hostname(monkeypatch):
+    """The refusal above must not reach a real name. A label a resolver cannot read as
+    an address stays a hostname, hyphens and digits and all."""
+    from carnet import config
+
+    _claims(monkeypatch, "mcp-01.corp", "10-4-service.acme.internal", "jira", "v2.api")
+
+    assert config.EGRESS_INTERNAL_HOSTS == frozenset(
+        {"mcp-01.corp", "10-4-service.acme.internal", "jira", "v2.api"}
+    )
+    assert config.EGRESS_INTERNAL_NETWORKS == ()
+
+
+def test_one_variable_two_kinds_of_entry(monkeypatch):
+    """A hostname stays a hostname, normalised as before; a CIDR is a network; a bare
+    address is the network of one, which is what listing it always should have meant
+    — as a "host" it did nothing, because a literal is refused on the name."""
+    from carnet import config
+
+    _claims(monkeypatch, " Jira.corp. ", "10.0.0.0/8", "fd00::/8", "192.168.1.7", "")
+
+    assert config.EGRESS_INTERNAL_HOSTS == frozenset({"jira.corp"})
+    assert [str(n) for n in config.EGRESS_INTERNAL_NETWORKS] == [
+        "10.0.0.0/8", "fd00::/8", "192.168.1.7/32"
+    ]
+
+
+@pytest.mark.parametrize(
+    "entry, names",
+    [
+        ("10.0.0.1/8", ["host bits", "10.0.0.0/8"]),
+        ("acme.corp/8", ["not a network", "CIDR"]),
+        ("10.0.0.0/33", ["not a network"]),
+        ("0.0.0.0/0", ["169.254.0.0/16", "no operator may consent"]),
+        ("::/0", ["fe80::/10"]),
+        ("169.254.0.0/16", ["metadata"]),
+        ("224.0.0.0/4", ["multicast"]),
+        # An address range and a legacy short address: both are what a firewall's own
+        # screen shows an operator, and both were kept as hostnames that could never
+        # match until `e2e_on_premises.py` typed one and watched nothing happen.
+        ("10.0.0.0-10.255.255.255", ["address range", "10.0.0.0/8"]),
+        ("192.168.1.1-192.168.1.9", ["address range", "CIDR"]),
+        ("10.0.0", ["a resolver would accept it", "10.0.0.0/8"]),
+        ("0x0a.0.0.1", ["a resolver would accept it"]),
+    ],
+)
+def test_a_claim_that_cannot_mean_my_network_is_refused_at_load(
+    monkeypatch, entry, names
+):
+    """Refused at load, naming the entry and the fix: a security claim is not widened
+    on the operator's behalf, a stray slash is not kept as a name that never matches,
+    and a claim the dial would override at every call is a setting that silently does
+    nothing — the shape `the_knobs` exists to kill."""
+    from carnet import config
+
+    monkeypatch.setenv("CARNET_EGRESS_INTERNAL_HOSTS", f"jira.corp,{entry}")
+
+    with pytest.raises(ValueError) as raised:
+        config._internal_hosts()
+        config._internal_networks()
+
+    said = str(raised.value)
+    assert entry in said
+    for name in names:
+        assert name in said, said
+
+
+def test_the_load_time_list_is_a_subset_of_the_dial_time_rule():
+    """The courtesy must never contradict the guarantee: every range the parser refuses
+    is one `_never_consentable` refuses at every dial, so nothing an operator is told
+    they cannot claim would have been admitted had the parser stayed quiet."""
+    from carnet import config
+
+    for network in config._UNCLAIMABLE:
+        for address in (network.network_address, network.broadcast_address):
+            assert egress._never_consentable(address), str(address)
+
+
+def test_a_name_inside_a_claimed_network_may_resolve_private(monkeypatch):
+    """The plan's whole point: the operator says `10.0.0.0/8` once, and every internal
+    name is admitted for where it resolves — no entry per connector, no restart."""
+    _claims(monkeypatch, "10.0.0.0/8")
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("10.42.0.7"))
+
+    pin = egress.pinned("https://jira.corp/rest")
+
+    assert pin == ("https://10.42.0.7/rest", {"Host": "jira.corp"}, "jira.corp", "")
+
+
+def test_a_claim_admits_only_what_it_covers(monkeypatch):
+    """A /16 is not a /8. The refusal names the setting and says a network may go in
+    it, because a refusal whose remedy does not remedy is a dead end."""
+    _claims(monkeypatch, "10.1.0.0/16")
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("10.2.0.7"))
+
+    with pytest.raises(egress.EgressRefused, match="private") as refusal:
+        egress.pinned("https://jira.corp/rest")
+    assert "network in CIDR" in str(refusal.value)
+
+
+def test_every_answer_must_be_inside_the_claim(monkeypatch):
+    """The rebinding rule survives the claim: a record half inside the operator's
+    network and half outside is a poisoned record, whichever half is dialled."""
+    _claims(monkeypatch, "10.0.0.0/8")
+    monkeypatch.setattr(
+        egress.socket, "getaddrinfo", _answers("10.0.0.7", "192.168.0.7")
+    )
+
+    with pytest.raises(egress.EgressRefused, match="192.168.0.7"):
+        egress.pinned("https://jira.corp/rest")
+
+
+def test_a_claim_does_not_cross_address_families(monkeypatch):
+    """A v6 claim admits a v6 answer; a v4 claim does not admit an IPv4-mapped v6
+    answer, which the resolver does not hand out for stream lookups and which is the
+    safe direction to refuse if it ever does."""
+    _claims(monkeypatch, "10.0.0.0/8", "fd00::/8")
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("fd00::7"))
+    assert egress.pinned("https://jira.corp/rest").url == "https://[fd00::7]/rest"
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("::ffff:10.0.0.7"))
+    with pytest.raises(egress.EgressRefused):
+        egress.pinned("https://jira.corp/rest")
+
+
+def test_the_metadata_service_is_refused_under_every_claim(monkeypatch):
+    """`0.0.0.0/0` cannot be written — the parser refuses it — and a claim smuggled
+    past the parser still cannot reach link-local, because the never list is read
+    before the claim is. Two layers, and the second one is the guarantee."""
+    import ipaddress
+
+    _claims(monkeypatch, "10.0.0.0/8")
+    monkeypatch.setattr(
+        egress.config,
+        "EGRESS_INTERNAL_NETWORKS",
+        (ipaddress.ip_network("0.0.0.0/0"),),
+    )
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("169.254.169.254"))
+
+    with pytest.raises(egress.EgressRefused, match="metadata"):
+        egress.pinned("https://evil.example/mcp")
+
+
+def test_plain_http_under_a_network_claim_is_decided_on_the_answers(
+    fresh, monkeypatch
+):
+    """`check` resolves nothing, so it cannot know whether an unlisted name is inside
+    10/8; it admits the name and `pinned` holds every answer to the claim. Inside:
+    dialled, no TLS name to pin. Outside — even a public answer — refused, because the
+    credential travels in clear only over wire the operator said was theirs. The cost
+    stated in the module docstring: this refusal lands at the first dial rather than
+    at registration."""
+    _claims(monkeypatch, "10.0.0.0/8")
+    storage.active().allow_host(fresh, "jira.corp", actor=TEST_ACTOR)
+
+    assert egress.check(fresh, "http://jira.corp:8080/rest") == "jira.corp"
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("10.0.0.7"))
+    pin = egress.pinned("http://jira.corp:8080/rest")
+    assert pin == ("http://10.0.0.7:8080/rest", {"Host": "jira.corp:8080"}, "", "")
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("93.184.216.34"))
+    with pytest.raises(egress.EgressRefused, match="not https") as refusal:
+        egress.pinned("http://jira.corp:8080/rest")
+    assert "CARNET_EGRESS_INTERNAL_HOSTS" in str(refusal.value)
+
+
+def test_without_a_claim_plain_http_is_still_refused_on_the_name(fresh, monkeypatch):
+    """Byte-for-byte what 063 built: no claim, unlisted name, refused before anything
+    resolves. And a literal over http is held to the same rule at the pin — a literal
+    is its own answer — until its address is claimed."""
+    _claims(monkeypatch)
+    storage.active().allow_host(fresh, "api.acme.com", actor=TEST_ACTOR)
+
+    with pytest.raises(egress.EgressRefused, match="not https"):
+        egress.check(fresh, "http://api.acme.com/v1")
+    with pytest.raises(egress.EgressRefused, match="not https"):
+        egress.pinned("http://93.184.216.34/v1")
+
+    _claims(monkeypatch, "93.184.216.34")
+    assert egress.pinned("http://93.184.216.34/v1") == (
+        "http://93.184.216.34/v1", {}, "", ""
+    )
+
+
+# --- an outbound proxy, and what it trades (step 109, decision 3) --------------------
+#
+# The module docstring has the argument. What is proven here: what may be typed, that
+# no ambient variable can route a dial, which names go through and which are dialled
+# direct, that what the local resolver can refuse it still refuses, and — with a real
+# CONNECT proxy and a real TLS upstream in this process — that the name reaches the
+# proxy intact, resolution is the proxy's, and the CA bundle is what verifies it.
+
+PROXY = "http://proxy.corp:3128"
+
+
+def _proxy(monkeypatch, url=PROXY, *entries):
+    _claims(monkeypatch, *entries)
+    monkeypatch.setattr(egress.config, "EGRESS_PROXY", url)
+
+
+def test_the_proxy_setting_is_a_url_and_nothing_else(monkeypatch):
+    from carnet import config
+
+    for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("CARNET_EGRESS_PROXY", raising=False)
+    assert config._egress_proxy() == ""
+
+    monkeypatch.setenv("CARNET_EGRESS_PROXY", " http://user:pass@proxy.corp:3128 ")
+    assert config._egress_proxy() == "http://user:pass@proxy.corp:3128"
+
+    for bad in ("socks5://proxy.corp:1080", "proxy.corp:3128", "http://"):
+        monkeypatch.setenv("CARNET_EGRESS_PROXY", bad)
+        with pytest.raises(ValueError, match="CARNET_EGRESS_PROXY"):
+            config._egress_proxy()
+
+
+def test_an_ambient_proxy_variable_is_refused_at_load_unless_declared(monkeypatch):
+    """The `_vault` precedent. HTTPS_PROXY usually arrives from a Docker daemon's
+    proxy config rather than from anybody's hand, and an operator who set it expects
+    dials to use it; refusing at start, naming the setting that would, beats every
+    dial silently ignoring it. Declared, the ambient one is simply ignored."""
+    from carnet import config
+
+    monkeypatch.delenv("CARNET_EGRESS_PROXY", raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://squid.corp:3128")
+
+    with pytest.raises(ValueError) as raised:
+        config._egress_proxy()
+    said = str(raised.value)
+    assert "HTTPS_PROXY" in said and "CARNET_EGRESS_PROXY=http://squid.corp:3128" in said
+
+    monkeypatch.setenv("CARNET_EGRESS_PROXY", PROXY)
+    assert config._egress_proxy() == PROXY
+
+
+def test_the_ca_bundle_must_exist_at_load(monkeypatch, tmp_path):
+    """Set and missing, every TLS dial fails later with a certificate error that never
+    names the mount that missed."""
+    from carnet import config
+
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("CURL_CA_BUNDLE", raising=False)
+    assert config._ca_bundle() == ""
+
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(tmp_path / "missing.pem"))
+    with pytest.raises(ValueError, match="REQUESTS_CA_BUNDLE"):
+        config._ca_bundle()
+
+    bundle = tmp_path / "corp.pem"
+    bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(bundle))
+    assert config._ca_bundle() == str(bundle)
+
+
+def test_a_name_the_proxy_must_resolve_goes_through_by_name(monkeypatch):
+    """The case the path exists for: behind a CONNECT proxy an external name often
+    does not resolve locally at all. Before 109 that was a refusal about a host the
+    proxy would have reached; now the name goes through intact, and nothing pins."""
+    _proxy(monkeypatch)
+
+    def gone(*_args, **_kwargs):
+        raise OSError("no such name")
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", gone)
+
+    assert egress.pinned("https://api.vendor.com/v1") == (
+        "https://api.vendor.com/v1", {}, "", PROXY
+    )
+
+
+def test_a_name_on_the_internet_goes_through_the_proxy(monkeypatch):
+    """Resolvable and public: the internet is where this name lives, and behind a
+    proxy the internet is reached through it — by name, not by the locally resolved
+    address, which is the fiction 109 names."""
+    _proxy(monkeypatch)
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("93.184.216.34"))
+
+    assert egress.pinned("https://api.vendor.com/v1").proxy == PROXY
+    assert egress.pinned("https://93.184.216.34/v1").proxy == PROXY
+
+
+def test_the_operators_own_network_is_dialled_direct_and_pinned(monkeypatch):
+    """A proxy does not touch the internal Jira: a name resolving into a claimed
+    network, or listed by name, keeps every check it had without a proxy — pinned to
+    the vetted address, the TLS name kept — and never sees the equipment."""
+    _proxy(monkeypatch, PROXY, "10.0.0.0/8", "wiki.corp")
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("10.42.0.7"))
+
+    assert egress.pinned("https://jira.corp/rest") == (
+        "https://10.42.0.7/rest", {"Host": "jira.corp"}, "jira.corp", ""
+    )
+    assert egress.pinned("https://wiki.corp/").proxy == ""
+    # And a private LITERAL stays refused on the name, proxy or no proxy — 058's rule,
+    # which 109 keeps: a claim admits a name for where it resolves, not an address.
+    with pytest.raises(egress.EgressRefused, match="private"):
+        egress.pinned("https://10.42.0.9/")
+
+
+def test_local_answers_are_consulted_for_what_they_refuse_never_what_they_admit(
+    monkeypatch,
+):
+    """The trade stays as small as it can: a name that DOES resolve here, to
+    link-local or to a private address nobody claimed, is refused before any proxy is
+    asked — the proxy is the arbiter of the internet, not of this deployment's
+    metadata service."""
+    _proxy(monkeypatch, PROXY, "10.0.0.0/8")
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("169.254.169.254"))
+    with pytest.raises(egress.EgressRefused, match="metadata"):
+        egress.pinned("https://evil.example/mcp")
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("192.168.1.9"))
+    with pytest.raises(egress.EgressRefused, match="private"):
+        egress.pinned("https://neighbour.corp/mcp")
+
+    with pytest.raises(egress.EgressRefused, match="loopback"):
+        egress.pinned("https://127.0.0.1/mcp")
+
+
+def test_the_proxy_path_is_https_only_unless_the_name_is_listed(monkeypatch):
+    """`check` admits plain http on a network claim and leaves the answers to
+    `pinned`; on the proxy path there are no answers, so the in-clear rule falls back
+    to the one thing the name alone establishes — whether the operator listed it."""
+    _proxy(monkeypatch, PROXY, "10.0.0.0/8", "legacy.corp")
+
+    def gone(*_args, **_kwargs):
+        raise OSError("no such name")
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", gone)
+
+    with pytest.raises(egress.EgressRefused, match="not https"):
+        egress.pinned("http://api.vendor.com/v1")
+    assert egress.pinned("http://legacy.corp/v1").proxy == PROXY
+
+
+def test_dial_lets_the_environment_in_through_two_named_variables_only(monkeypatch):
+    """`trust_env` off, so HTTPS_PROXY and .netrc reach no dial; the proxy is the
+    pin's, from the setting, and the CA is read by config — because switching off
+    `trust_env` switched off the library's own reading of REQUESTS_CA_BUNDLE."""
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _answers("93.184.216.34"))
+    monkeypatch.setattr(egress.config, "EGRESS_CA_BUNDLE", "/etc/carnet/ca/corp.pem")
+
+    _proxy(monkeypatch, "")
+    session = _Recorder()
+    egress.dial(session, "GET", "https://api.acme.com/v1")
+    sent = session.calls[0]
+    assert session.trust_env is False
+    assert sent["verify"] == "/etc/carnet/ca/corp.pem"
+    assert "proxies" not in sent
+    assert sent["url"] == "https://93.184.216.34/v1"
+
+    _proxy(monkeypatch, PROXY)
+    session = _Recorder()
+    egress.dial(session, "GET", "https://api.acme.com/v1", verify=False)
+    sent = session.calls[0]
+    assert sent["proxies"] == {"http": PROXY, "https": PROXY}
+    assert sent["url"] == "https://api.acme.com/v1" and "Host" not in sent["headers"]
+    assert session.mounted == []
+    assert sent["verify"] is False  # a caller that passes verify keeps its own
+
+
+# ---- the real thing: a CONNECT proxy and a TLS upstream, in this process -----------
+
+
+def _certificate(name):
+    """A self-signed certificate for `name`, on disk, and its key."""
+    import datetime
+    import tempfile
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject).issuer_name(subject)
+        .public_key(key.public_key()).serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(hours=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    folder = tempfile.mkdtemp()
+    cert_path, key_path = f"{folder}/cert.pem", f"{folder}/key.pem"
+    with open(cert_path, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
+    with open(key_path, "wb") as f:
+        f.write(key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ))
+    return cert_path, key_path
+
+
+@pytest.fixture
+def tunnel():
+    """A TLS upstream answering as `upstream.invalid`, and a CONNECT proxy that is the
+    only thing which knows where that name lives. Yields the proxy URL, the CA to
+    trust, and the list of targets the proxy was asked to CONNECT to."""
+    import select
+    import ssl
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    cert_path, key_path = _certificate("upstream.invalid")
+
+    class Upstream(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"hello from " + self.headers.get("Host", "?").encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    upstream.socket = context.wrap_socket(upstream.socket, server_side=True)
+    upstream_port = upstream.server_address[1]
+    connects = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def handle(self):
+            # The tunnel is torn down under the handler by design; `socketserver` would
+            # print a traceback into an otherwise green run, which is `e2e_openai_
+            # surface`'s Foundry fake's reason for the same override.
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+                pass
+
+        def do_CONNECT(self):
+            connects.append(self.path)
+            name, _, port = self.path.partition(":")
+            # The proxy's own resolution — the one thing a CONNECT proxy is for.
+            if name != "upstream.invalid":
+                self.send_error(502, "unknown host")
+                return
+            import socket as sock
+
+            far = sock.create_connection(("127.0.0.1", upstream_port))
+            self.send_response(200, "Connection established")
+            self.end_headers()
+            near = self.connection
+            self.close_connection = True
+            pairs = {near: far, far: near}
+            while True:
+                readable, _, _ = select.select(list(pairs), [], [], 5)
+                if not readable:
+                    break
+                done = False
+                for sock_ in readable:
+                    data = sock_.recv(65536)
+                    if not data:
+                        done = True
+                        break
+                    pairs[sock_].sendall(data)
+                if done:
+                    break
+            far.close()
+
+        def log_message(self, *_):
+            pass
+
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    for server in (upstream, proxy):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{proxy.server_address[1]}", cert_path, connects
+    finally:
+        for server in (upstream, proxy):
+            server.shutdown()
+            server.server_close()
+
+
+def test_a_real_dial_through_a_real_connect_proxy(monkeypatch, tunnel):
+    """End to end, in this process: a name that resolves nowhere on this machine is
+    reached because the proxy resolves it, the proxy saw the NAME and never an
+    address, TLS verified against that name through the tunnel with the declared CA
+    — and without the CA the same dial fails, which is what proves the bundle is read
+    by `dial` now that `trust_env` is off."""
+    import requests
+
+    proxy_url, ca, connects = tunnel
+    _proxy(monkeypatch, proxy_url)
+    monkeypatch.setattr(egress.config, "EGRESS_CA_BUNDLE", ca)
+    monkeypatch.setenv("HTTPS_PROXY", "http://nowhere.invalid:1")  # must be ignored
+
+    with requests.Session() as session:
+        response = egress.dial(session, "GET", "https://upstream.invalid/", timeout=10)
+
+    assert response.status_code == 200
+    assert response.text == "hello from upstream.invalid"
+    assert connects == ["upstream.invalid:443"]
+
+    monkeypatch.setattr(egress.config, "EGRESS_CA_BUNDLE", "")
+    with requests.Session() as session, pytest.raises(requests.exceptions.SSLError):
+        egress.dial(session, "GET", "https://upstream.invalid/", timeout=10)

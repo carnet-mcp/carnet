@@ -351,8 +351,12 @@ def main():
 
     os.environ["CARNET_DATABASE_URL"] = DSN
     # Step 058: the dial vets DNS answers, and localtest.me resolves to loopback
-    # on purpose — the operator (this script) consents to its own machine.
-    os.environ["CARNET_EGRESS_INTERNAL_HOSTS"] = "localtest.me"
+    # on purpose — the operator (this script) consents to its own machine. Since
+    # 109 by network rather than by name: the claim admits the name for where it
+    # resolves, which is the shape an on-premises operator actually writes.
+    # Both families: the name answers `::1` as well, and a claim admits only what it
+    # covers — the edge pass that found this is the sentence in `.env.example`.
+    os.environ["CARNET_EGRESS_INTERNAL_HOSTS"] = "127.0.0.0/8,::1/128"
     os.environ.setdefault("CARNET_SECRET_KEY", _generate_key())
     os.environ["CARNET_TENANT"] = TENANT
     # No worker: nothing here submits a run, and a door call must not become one.

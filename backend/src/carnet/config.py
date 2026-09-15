@@ -4,7 +4,9 @@ Everything that touches the filesystem resolves through this module, so there is
 place to change when this moves behind a server or into a container.
 """
 
+import ipaddress
 import os
+import socket
 from pathlib import Path
 
 
@@ -501,7 +503,7 @@ _CONNECTOR_ENV_PREFIX = "CARNET_CONNECTOR_"
 _TOKEN_ENV_PREFIX = "CARNET_TOKEN_"
 
 
-# --- Egress: the operator's own networks (step 058) ---------------------------
+# --- Egress: the operator's own networks (steps 058, 109) ----------------------
 #
 # The tenant consents to HOSTS (the per-tenant allowlist `mcp.egress` checks); the
 # operator consents to NETWORKS. A name listed here may resolve to loopback or private
@@ -512,16 +514,221 @@ _TOKEN_ENV_PREFIX = "CARNET_TOKEN_"
 # the operator's own topology is already declared. Link-local — where cloud metadata
 # lives — is refused for every name, listed or not.
 #
+# Until step 109 the sentence above was a promise the code did not keep: the variable
+# took exact hostnames only, so an operator whose whole estate is `10.0.0.0/8` could not
+# say the true thing — they enumerated every name that would ever be dialled and
+# restarted to add one, a deploy cycle per connector, which is where the first
+# on-premises install stopped (plan 109). One variable, two kinds of entry:
+#
+#     CARNET_EGRESS_INTERNAL_HOSTS=jira.corp,10.0.0.0/8,fd00::/8
+#
+# An entry that parses as an IP network is a network the operator has claimed; anything
+# else is an exact hostname, as before. `egress.pinned` has the resolved answers in hand
+# and tests each one against the claims — a name is admitted for where it *resolves*,
+# which is the only sense in which a network can be consented to. A bare address is a
+# /32 (or /128), which is what listing one always should have meant: as a "host" it did
+# nothing, because a literal is refused on the name before any set is read.
+#
+# Two rules the parser holds so that the dial never has to, both refused at load on
+# `_retention_days`' precedent — a setting somebody types once and finds out about
+# during a tool call is the shape `the_knobs` exists to kill:
+#
+#   - A claim covering an address no operator may consent to — link-local, multicast,
+#     reserved, unspecified — is refused, naming the entry. `0.0.0.0/0` is not "my
+#     network"; and a claim `egress._never_consentable` would override at every dial is
+#     a setting that silently does nothing.
+#   - `10.0.0.1/8` has host bits set and is refused naming `10.0.0.0/8`, rather than
+#     widened silently — it is a security claim, and the parser does not guess at one.
+#     An entry carrying a `/` that is no network at all is refused for the same reason,
+#     rather than kept as a hostname that can never match.
+#   - An entry that is plainly an ADDRESS written a way `ip_network` refuses is refused
+#     too, rather than kept as a hostname. Two spellings reach this and both are what a
+#     firewall's own screen shows: a range (`10.0.0.0-10.255.255.255`), and the legacy
+#     short forms a resolver still accepts (`10.0.0`, `0x0a.0.0.1`) — which
+#     `egress._as_ip` reads AS addresses at dial time, so admitting one here as a name
+#     would have the two halves of this module disagree about what was typed. Found by
+#     `e2e_on_premises.py`, which typed a range and watched nothing happen.
+#
 # Empty by default, which is the fail-closed reading: with nothing listed, every name
 # must resolve to public addresses only.
-def _internal_hosts() -> frozenset:
+def _egress_entries() -> list:
     raw = os.environ.get("CARNET_EGRESS_INTERNAL_HOSTS") or ""
-    return frozenset(
-        host.strip().rstrip(".").lower() for host in raw.split(",") if host.strip()
+    return [entry.strip() for entry in raw.split(",") if entry.strip()]
+
+
+def _an_address(text: str) -> bool:
+    """Would a resolver read this as an address? `egress._as_ip`'s two parsers, asked
+    here so the setting cannot be read one way and dialled another."""
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        pass
+    try:
+        socket.inet_aton(text)
+        return True
+    except OSError:
+        return False
+
+
+def _as_network(entry: str):
+    """The entry as an `ip_network`, or None when it is a hostname. Raises for an entry
+    that meant to be a network or an address and is neither."""
+    try:
+        return ipaddress.ip_network(entry)
+    except ValueError:
+        pass
+    if "/" not in entry:
+        halves = entry.split("-")
+        if len(halves) == 2 and all(_an_address(half.strip()) for half in halves):
+            raise ValueError(
+                f"CARNET_EGRESS_INTERNAL_HOSTS entry '{entry}' is an address range, "
+                "which this setting does not take. Write the network in CIDR — "
+                "10.0.0.0/8 for 10.0.0.0-10.255.255.255 — or list the addresses."
+            )
+        if _an_address(entry):
+            raise ValueError(
+                f"CARNET_EGRESS_INTERNAL_HOSTS entry '{entry}' is an address written a "
+                "way this setting does not take, though a resolver would accept it. "
+                "Write it in full (10.0.0.1), or as the network in CIDR (10.0.0.0/8)."
+            )
+        return None
+    try:
+        widened = ipaddress.ip_network(entry, strict=False)
+    except ValueError:
+        raise ValueError(
+            f"CARNET_EGRESS_INTERNAL_HOSTS entry '{entry}' carries a '/' but is not a "
+            "network. A network is written as CIDR — 10.0.0.0/8, 192.168.1.0/24, "
+            "fd00::/8 — and a hostname carries no slash."
+        ) from None
+    raise ValueError(
+        f"CARNET_EGRESS_INTERNAL_HOSTS entry '{entry}' has host bits set. Write the "
+        f"network — {widened} — or the one address, without a prefix. A network "
+        "claim is not widened on your behalf."
     )
 
 
+# The ranges `egress._never_consentable` refuses under every setting, spelled as
+# networks so a claim can be tested for overlap at load. A subset, and a test asserts
+# it stays one: the dial's check is the guarantee, this is the courtesy of saying so
+# before the first call rather than at it.
+_UNCLAIMABLE = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "169.254.0.0/16", "fe80::/10",  # link-local — the metadata service
+        "224.0.0.0/4", "ff00::/8",  # multicast
+        "240.0.0.0/4",  # reserved
+        "0.0.0.0/32", "::/128",  # unspecified
+    )
+)
+
+
+def _internal_hosts() -> frozenset:
+    return frozenset(
+        entry.rstrip(".").lower()
+        for entry in _egress_entries()
+        if _as_network(entry) is None
+    )
+
+
+def _internal_networks() -> tuple:
+    networks = []
+    for entry in _egress_entries():
+        network = _as_network(entry)
+        if network is None:
+            continue
+        for never in _UNCLAIMABLE:
+            if never.version == network.version and network.overlaps(never):
+                raise ValueError(
+                    f"CARNET_EGRESS_INTERNAL_HOSTS entry '{entry}' covers {never}, "
+                    "which no operator may consent to — link-local is where cloud "
+                    "metadata services live, and multicast, reserved and unspecified "
+                    "addresses are not destinations. Claim the networks that are "
+                    "yours: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fd00::/8."
+                )
+        networks.append(network)
+    return tuple(networks)
+
+
 EGRESS_INTERNAL_HOSTS = _internal_hosts()
+EGRESS_INTERNAL_NETWORKS = _internal_networks()
+
+
+# --- Egress: the outbound proxy, and the CA the dial trusts (step 109) -----------
+#
+# `CARNET_EGRESS_PROXY` is the deployment's outbound proxy, and **setting it is the
+# operator declaring that the proxy is the arbiter of where a dial lands.** What that
+# costs, and why it is a declaration rather than a convenience, is `egress.py`'s
+# module docstring; what is decided here is only what may be typed.
+#
+# **No ambient proxy variable is read, on purpose.** `requests` would honour
+# HTTPS_PROXY from the environment by itself, and until 109 it did — which produced
+# the worst of the three possible behaviours: `pinned` resolved the name locally,
+# rewrote the URL to an address, and then the request went through a proxy for which
+# the TLS pin was never applied, and nothing in any log said so. `egress.dial` sets
+# `trust_env=False`, so the environment can no longer do that. An ambient variable
+# with this setting empty is refused at load, naming both — the `_vault` precedent:
+# a coherence check at start beats an operator who set HTTPS_PROXY (or whose Docker
+# daemon injected it into every container, which is how it usually arrives) and
+# watches every dial ignore it. With this setting present the ambient ones are
+# simply ignored; NO_PROXY is never read — the bypass is the operator's own networks,
+# `CARNET_EGRESS_INTERNAL_HOSTS`, which are dialled direct.
+#
+# `REQUESTS_CA_BUNDLE` is the one other environment variable a dial honours, and it
+# is honoured here rather than by `requests` — `trust_env=False` switches off the
+# library's own reading of it — so the set of environment influences on a dial is
+# exactly these two, both named. A path that is not a readable file refuses at load:
+# every TLS dial would fail three days later with an SSLError about a certificate,
+# when the fault was a mount that missed.
+_AMBIENT_PROXY = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")
+
+
+def _egress_proxy() -> str:
+    from urllib.parse import urlsplit
+
+    raw = (os.environ.get("CARNET_EGRESS_PROXY") or "").strip()
+    ambient = [
+        name for name in (*_AMBIENT_PROXY, *(n.lower() for n in _AMBIENT_PROXY))
+        if os.environ.get(name)
+    ]
+    if not raw:
+        if ambient:
+            raise ValueError(
+                f"{', '.join(ambient)} is set but CARNET_EGRESS_PROXY is not. The door "
+                "reads no ambient proxy variable, on purpose: behind a proxy the DNS "
+                "pin cannot apply, and a proxy that arrives from the environment is "
+                "one nobody declared. If dials should go through it, set "
+                f"CARNET_EGRESS_PROXY={os.environ.get(ambient[0])} — and read what "
+                "that trades in egress.py — or unset it."
+            )
+        return ""
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(
+            f"CARNET_EGRESS_PROXY must be an http or https URL naming the proxy — "
+            f"http://proxy.corp:3128, or http://user:pass@proxy.corp:3128 — not "
+            f"'{raw}'. SOCKS is not supported; neither are Kerberos or NTLM proxies."
+        )
+    return raw
+
+
+def _ca_bundle() -> str:
+    path = (
+        os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("CURL_CA_BUNDLE") or ""
+    ).strip()
+    if path and not Path(path).is_file():
+        raise ValueError(
+            f"REQUESTS_CA_BUNDLE names '{path}', which is not a readable file. It is "
+            "the CA every dial verifies against — mount the certificate where this "
+            "path says (compose.yaml has the commented volume) or unset it to use the "
+            "bundled public roots. Set and missing, every TLS dial would fail later "
+            "with a certificate error that never names the mount."
+        )
+    return path
+
+
+EGRESS_PROXY = _egress_proxy()
+EGRESS_CA_BUNDLE = _ca_bundle()
 
 
 def is_platform_env(name: str) -> bool:
@@ -608,6 +815,10 @@ def _vault() -> tuple:
             )
         # Mirrors `egress.check`'s sentence, because it is the same rule made by the same
         # person: "TLS optional here" and "this is my own network" are one claim.
+        # Names only, deliberately, where `check` also honours a network claim (109):
+        # the vault is one host the operator names once, and its dial runs under
+        # operator consent, so nothing downstream would test the resolved answer
+        # against a network — here is the only place the rule can be enforced.
         if parts.scheme != "https" and host not in EGRESS_INTERNAL_HOSTS:
             raise ValueError(
                 f"CARNET_VAULT_URL '{url}' is not https, which would put the 1Password "

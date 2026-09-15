@@ -288,7 +288,14 @@ jobs:
 
       - name: Install
         working-directory: backend
-        run: pip install -e ".[dev,postgres,api,access]"
+        # `harness` is here for one reason and it is worth naming: `e2e_openai_surface`
+        # drives the OpenAI-compatible surface with the **real** `openai` SDK, because
+        # a surface that only our own client can speak is not compatible with anything.
+        # Step 108 put that script in this job and did not add the extra, and the first
+        # CI run that included it — 2026-09-15, the branch's first since — died on
+        # `ModuleNotFoundError: No module named 'openai'` before the harness after it
+        # had run at all.
+        run: pip install -e ".[dev,postgres,api,access,harness]"
 
       - name: Every released migration, over populated tables, timed
         working-directory: backend
@@ -342,19 +349,37 @@ jobs:
       # They dial `localtest.me` (a public name for loopback) for `egress`'s reason and
       # skip loudly without DNS, which the guard turns into a failure — a silent skip is
       # a green run that tested nothing, the same rule as every other guard in this file.
+      #
+      # `e2e_on_premises` (step 109) is the environment the product is bought for and
+      # the class CI cannot otherwise see: a corporate CA, a CONNECT proxy, an internal
+      # model gateway on a private answer, and every refusal an operator meets at
+      # start-up. It needs no Docker and no browser — the one part that does, the front
+      # door's three TLS modes, is proven in the deploy job instead.
       - name: The journeys nothing else covered (step 099)
         working-directory: backend
         shell: bash
         env:
           CARNET_E2E_PG: postgresql://postgres:test@localhost:5432
+        #
+        # Every script runs, and the verdict is taken at the end. The first version
+        # stopped at the first failure, which is how `e2e_on_premises` sat in this list
+        # for a run without executing once: the script before it could not import its
+        # SDK, and a list that stops hides everything after the first thing to break.
         run: |
-          for script in e2e_file_workflows e2e_open_admin e2e_team_journey e2e_audit_stream e2e_openai_surface; do
-            python "scripts/$script.py" | tee "/tmp/$script.log"
-            if grep -q "SKIPPED:" "/tmp/$script.log"; then
+          failed=()
+          for script in e2e_file_workflows e2e_open_admin e2e_team_journey e2e_audit_stream e2e_openai_surface e2e_on_premises; do
+            if ! python "scripts/$script.py" | tee "/tmp/$script.log"; then
+              echo "::error::$script failed."
+              failed+=("$script")
+            elif grep -q "SKIPPED:" "/tmp/$script.log"; then
               echo "::error::$script skipped — its world is missing from this job."
-              exit 1
+              failed+=("$script (skipped)")
             fi
           done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::did not pass: ${failed[*]}"
+            exit 1
+          fi
 
   browser:
     name: browser e2e (real Chromium, dev bundle + shipped CSP)

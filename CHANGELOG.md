@@ -9,6 +9,114 @@ a fix between steps, and neither is allowed to break an upgrade path.
 
 ## Unreleased
 
+**The registry is an argument, the digest is not; and the artefact a person carries in**
+(step 109, decisions 5 and 6). Two environments the deployment could not be told about.
+On-premises policy says images come from the company's mirror, and the only way to obey
+it was to edit the pinned `FROM` lines — spending the reproducibility the pins exist
+for. `CARNET_BASE_REGISTRY` is now one prefix through the Dockerfile's single `ARG` and
+the compose file's database image, with every digest kept: a mirror preserves them, so a
+retargeted build pulls the same bytes from a different address, which the deploy e2e
+proves against a real pull-through registry whose own log shows the build asking for the
+pin by digest, and the image that comes out has the layers of the one built from Docker
+Hub. The sealed estate — no outbound path at all — gets `scripts/offline_bundle.sh`: one
+tarball of the two built images and the pinned Postgres, the deployment directory by
+name, `MANIFEST`, `SHA256SUMS` and a `verify.sh` that checks the files before `docker
+load` and the loaded images after it, by layer list, because the classic and containerd
+image stores name the same image by different digests. `CARNET_DB_IMAGE` exists for that
+far side alone: a loaded image has been near no registry, so the pinned digest cannot
+match it and compose would pull from nowhere. `docs/OFFLINE.md` is the page — one
+setting per seam for on-premises, the carry-in procedure, and the half that matters
+most, what does not work there: keyless `cosign verify`, ACME, the README's quickstart,
+and why a checksum is not a signature. Nothing changes for a deployment on a reachable
+registry. Walking the far side by hand found the defect worth having: a bundle unpacked
+where the container runtime cannot read it — `/tmp` on Docker Desktop — brings the stack
+up with **empty bind mounts**, so the bundled database never runs its init script and
+the only symptom is `migrate` exiting with *password authentication failed for user
+"carnet_app"*, a sentence about a password on a machine with no internet to search from.
+`verify.sh --loaded` now mounts the bundle's own file into the loaded image and says so
+in those words, beside an architecture check for the other failure with no good symptom:
+an arm64 bundle loads perfectly onto an amd64 server and then exits `exec format error`.
+And the deploy e2e now brings the estate **up from the bundle** on its own ports — no
+`--build`, nothing pulled, readiness over TLS, the estate's own provider in the CSP, the
+door answering an unauthenticated call with a challenge — so the sealed-estate claim is
+a test rather than a checklist.
+
+**Every harness in the journeys step runs, and the step says which did not pass.** The
+branch's first CI run since step 108 died in that step on `ModuleNotFoundError: No
+module named 'openai'` — `e2e_openai_surface` drives the OpenAI-compatible surface with
+the real SDK, deliberately, and the job installed every extra but `harness`. The extra
+is added, and with it the shape that hid the problem: the loop stopped at the first
+failure, so `e2e_on_premises` sat in the list for a whole run without executing once.
+Every script now runs and the verdict is taken at the end, naming each that failed or
+skipped.
+
+**The estate, driven end to end** (step 109, decision 7). `e2e_on_premises.py` is the
+environment class every other harness is blind to, because they all run on an open
+network: a corporate CA that signs everything so nothing verifies against a public root,
+an internal model gateway on a name that resolves to a private answer, a vendor at a
+`.invalid` name that resolves nowhere and is reachable only through a real CONNECT proxy,
+and Carnet restarted per configuration because that is how a setting changes. 102 checks,
+in CI; `--live` adds a real Anthropic call through the tunnel and the negative half —
+that the corporate root *alone* fails against a real vendor, which is what
+`.env.example`'s "it replaces the public roots" sentence costs if it is not believed.
+Two things it found: **an address range written the way a firewall shows it
+(`10.0.0.0-10.255.255.255`), and a legacy short address (`10.0.0`), were kept as
+hostnames that could never match** — both now refused at start with the CIDR spelling
+named, while a hostname that merely looks numeric (`10-4-service.acme.internal`) stays a
+hostname. And the harness's own first draft was wrong twice in ways worth recording: it
+framed SSE with no `Transfer-Encoding`, and it asserted a streamed call passed on status
+and `[DONE]` alone — both of which an error event satisfies.
+
+**A proxy is either honoured or refused, never silently half-applied** (step 109,
+decision 3). Setting `HTTPS_PROXY` used to get the worst of the three possible
+behaviours: `pinned` resolved the name locally, rewrote the URL to the address, and the
+request went through a proxy for which the TLS pin was never applied — `mount_pinned`
+overrides `init_poolmanager`, never `proxy_manager_for` — and nothing said so. Now
+`CARNET_EGRESS_PROXY` is the only proxy setting, and setting it is a declaration: the
+proxy is the arbiter of where a dial on the internet lands. A name that resolves
+public, or does not resolve locally at all, goes through it intact; the deployment's
+own networks are dialled direct and pinned exactly as before; and what the local
+resolver *can* refuse — link-local, an unclaimed private answer — it still refuses
+before any proxy is asked. What is given up is the resolved-answer check on internet
+names, and `egress.py` says so at length. `dial` sets `trust_env=False`, so the
+environment reaches a dial through exactly two named variables — this one and
+`REQUESTS_CA_BUNDLE`, which `config` now reads and checks exists at load. An ambient
+`HTTPS_PROXY` with the setting empty refuses at start, naming both. Proven end to end
+in-process: a real CONNECT proxy, a real TLS upstream by a name that resolves nowhere,
+the proxy asked for the name and never an address, and the same dial failing without
+the CA.
+
+**An intercepting CA is a mount and one variable; the front door serves a certificate
+somebody else issued** (step 109, decisions 2 and 4). Two seams a deployment behind a
+corporate proxy or an internal CA could not reach. `REQUESTS_CA_BUNDLE` joins
+`compose.yaml`'s closed environment list with a commented mount, and `.env.example`
+says the one thing about it that bites — the file replaces the bundled public roots.
+`SSL_CERT_FILE` is deliberately not offered: a blank value, which every unset variable
+in that list becomes, empties Python's trust store (0 roots against 150, in this
+image's base). `CARNET_TLS_MODE` — `acme`, `internal`, `files` — is composed into the
+Caddyfile's `tls` line by the entrypoint the way the CSP already is; `files` without
+the mounted pair refuses at start naming the mount. The `Caddyfile` header and the
+deploy README's ingress contract are rewritten as one paragraph, minus an obligation
+about a hooks door that left in 078, plus the one 108 added and nobody wrote down:
+**do not buffer the response body**, or every streamed completion waits for the whole
+answer. The deploy e2e drives the three modes and proves a real handshake presents
+the mounted certificate.
+
+**The operator consents to networks, because that is what the code already claimed**
+(step 109, decision 1). `config.py` has said since step 058 that *the tenant consents to
+hosts; the operator consents to networks*, and `CARNET_EGRESS_INTERNAL_HOSTS` took exact
+hostnames — so an operator whose estate is `10.0.0.0/8` enumerated every name that would
+ever be dialled and restarted to add one, a deploy cycle per connector, which is where
+the first on-premises install stopped. An entry may now be a network in CIDR; a bare
+address is a `/32`. `egress.pinned` tests every resolved answer against the claims beside
+the name test it already made — a name is admitted for where it resolves, which is the
+only sense in which a network can be consented to — and link-local stays refused under
+every claim, with `0.0.0.0/0` refused at load because it covers it. Plain http moves with
+the claim: `check` resolves nothing, so under a network claim the in-clear rule is applied
+by `pinned` to the answers, and a public plain-http URL is refused at its first dial rather
+than at registration. Existing values are read exactly as before; the vault URL rule stays
+name-only, on purpose. See `docs/UPGRADING.md`.
+
 **A personal token's name and daily allowance are its owner's** (step 108, sequencing
 item 1, migration 054). Two corrections found by walking plan 108's journey — a
 company's own coding agent minting a personal token on every engineer's machine — end to

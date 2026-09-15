@@ -14,8 +14,22 @@
 # stays beside the digest so a reader sees what it was; moving a pin is a deliberate
 # edit, taken with a fresh `docker buildx imagetools inspect <tag>`. Digests taken
 # 2026-08-30.
+#
+# The registry is an argument; the digest is not (step 109, decision 5). An on-premises
+# policy says images come from the company's own mirror — Harbor, Artifactory, a
+# pull-through cache — and before this line the only way to obey it was to edit the
+# three FROM lines, which is what breaks the reproducibility the pinning exists for.
+# One prefix, defaulting to Docker Hub's own name, and the digests stay: a mirror
+# preserves them, so a retargeted build pulls the same bytes from a different address,
+# and that is exactly the property that makes the mirror trustworthy. A path after the
+# host is fine (`artifactory.corp/docker-remote`); `library/` follows it because that
+# is where Docker Hub's official images live in every mirror that proxies it. Declared
+# before the first FROM so every FROM sees it; a build with nothing passed is unchanged.
+# `deploy/compose.yaml` passes CARNET_BASE_REGISTRY through; `docs/OFFLINE.md` is the
+# customer's page.
+ARG BASE_REGISTRY=docker.io
 
-FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS frontend-build
+FROM ${BASE_REGISTRY}/library/node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS frontend-build
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -24,7 +38,7 @@ COPY frontend/ ./
 RUN npm run build
 
 
-FROM python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217 AS api
+FROM ${BASE_REGISTRY}/library/python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217 AS api
 WORKDIR /app
 # The dependencies come from the lock, first and alone (step 055): `--require-hashes`
 # means a substituted or tampered wheel fails the build, and a layer that changes only
@@ -60,7 +74,7 @@ CMD ["uvicorn", "carnet.api:app", "--host", "0.0.0.0", "--port", "8000", \
      "--root-path", "/api"]
 
 
-FROM caddy:2@sha256:df7f1c2fb114453b951de51a98efc010db1655a92c2e86be6706714e2417a78d AS front
+FROM ${BASE_REGISTRY}/library/caddy:2@sha256:df7f1c2fb114453b951de51a98efc010db1655a92c2e86be6706714e2417a78d AS front
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
 # The boot step that turns CARNET_OIDC_* into /srv/config.json and the CSP header —
 # one declaration, two artifacts, composed at container start so the image stays

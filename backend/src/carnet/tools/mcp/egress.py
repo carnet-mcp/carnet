@@ -60,9 +60,55 @@ discipline five files have to keep.
 One consent question came with the closure: a BYOC deployment's own connectors
 legitimately resolve to private addresses, and the tenant allowlist is the wrong place
 to say so — a tenant cannot consent to somebody else's network. So the operator names
-their own networks' hosts in `CARNET_EGRESS_INTERNAL_HOSTS`, and a listed name may
-resolve to loopback or private space; link-local — the metadata service — is refused
-for every name, listed or not.
+their own networks in `CARNET_EGRESS_INTERNAL_HOSTS` — a hostname, or since step 109
+a network in CIDR — and a listed name, or an answer inside a claimed network, may be
+loopback or private space; link-local — the metadata service — is refused for every
+name and every claim.
+
+**A network claim is decided on the answers, never on the name**, because that is the
+only thing a network can be a claim about. `check` resolves nothing, so it cannot
+know whether an unlisted name is inside `10.0.0.0/8`; what it can do is refuse what it
+can refuse on the name and leave the rest to `pinned`, which has the answers. One rule
+moves with that: plain http was refused by `check` unless the name was listed, and
+under a network claim it is instead refused by `pinned` unless every answer is inside
+one — the credential crosses only wire the operator said was theirs. The cost, stated:
+a public plain-http URL registered while a network is claimed is refused at its first
+dial rather than at registration. `check` is the convenience and `pinned` the
+load-bearing site (`rest/__init__.py`'s sentence), so the refusal moved to the site
+that was always the one that mattered.
+
+## The proxy, and what it trades
+
+A module whose argument is *every dial goes through both* now has a second path and
+must say what it costs. `CARNET_EGRESS_PROXY` (step 109) is the deployment's outbound
+proxy, and setting it is the operator declaring the proxy is the arbiter of where a
+dial lands. On that path `pinned` sends the **name**, intact, to the proxy: it does not
+rewrite the URL to an address and `server_hostname` is `''`, so nothing pretends to
+have pinned. What is given up is the resolved-answer check — DNS-rebinding
+protection — and the honest statement is that it moves to the proxy, a piece of
+equipment built to make exactly that decision and already making it for everything
+else in the building. `check` still runs on the name, the tenant allowlist still runs
+in full, and the never-consentable ranges are still refused on the name.
+
+Two things keep the trade smaller than it sounds. **The operator's own network is
+dialled direct**, pinned, exactly as without a proxy: a name that resolves locally
+into a claimed network or is listed by name never sees the proxy, so an internal
+Jira keeps every check it had and only the internet goes through the equipment built
+for it. And **local answers are consulted for what they can refuse, never for what
+they admit**: a name that does resolve here, to link-local or to a private address
+nobody claimed, is refused before any proxy is asked. Only a name that resolves to a
+public address, or does not resolve at all — the usual case behind a CONNECT proxy,
+where external names are the proxy's to resolve — goes through. The proxy path is
+https only unless the name is listed: through a proxy a plain-http credential would
+cross wire the operator never said was theirs.
+
+Before 109 an ambient `HTTPS_PROXY` produced the worst of the three possible
+behaviours — a locally-resolved address dialled through the proxy with the pin quietly
+not applied, since `mount_pinned` overrides `init_poolmanager` and never
+`proxy_manager_for` — and nothing said so. `dial` now sets `trust_env=False`, so the
+environment influences a dial through exactly two named variables: this one, and
+`REQUESTS_CA_BUNDLE`, which `dial` reads itself because switching off `trust_env`
+switched off the library's reading of it.
 """
 
 import ipaddress
@@ -235,12 +281,21 @@ def check(tenant_id: str, url: str) -> str:
     # connector URL puts a bearer credential on the wire in clear across whatever
     # sits between. `CARNET_EGRESS_INTERNAL_HOSTS` is the same consent boundary
     # 058 drew for private addresses, because "TLS optional here" and "this is my
-    # own network" are the same claim, made by the same person.
-    if urlsplit(url).scheme != "https" and host not in config.EGRESS_INTERNAL_HOSTS:
+    # own network" are the same claim, made by the same person. Under a network
+    # claim (109) the name alone cannot answer it — this function resolves nothing —
+    # so the rule is applied to the answers in `pinned`, and here only when no
+    # network is claimed and the name is not listed, which is the case the name
+    # decides outright.
+    if (
+        urlsplit(url).scheme != "https"
+        and host not in config.EGRESS_INTERNAL_HOSTS
+        and not config.EGRESS_INTERNAL_NETWORKS
+    ):
         raise EgressRefused(
             f"'{url}' is not https, which would put this connector's credential on "
             "the wire in clear. Use https — or, if this host is on the deployment's "
-            "own network, the operator may name it in CARNET_EGRESS_INTERNAL_HOSTS."
+            "own network, the operator may name it, or its network in CIDR, in "
+            "CARNET_EGRESS_INTERNAL_HOSTS."
         )
 
     allowed = {row["host"] for row in storage.active().allowed_hosts(tenant_id)}
@@ -266,13 +321,16 @@ class PinnedDial(NamedTuple):
 
     `url` carries the checked address in its authority; `headers` carries the `Host`
     the origin server expects; `server_hostname` is the name TLS must verify against
-    (`''` when there is nothing to pin — an http URL, or a literal address). Built by
-    `pinned`, consumed by the two real dial functions and by nothing else.
+    (`''` when there is nothing to pin — an http URL, or a literal address). `proxy`
+    (step 109) is the outbound proxy this dial goes through, or `''`: when set, `url`
+    is the caller's own, unrewritten, and the name is the proxy's to resolve. Built by
+    `pinned`, consumed by `dial` and by nothing else.
     """
 
     url: str
     headers: dict
     server_hostname: str
+    proxy: str = ""
 
 
 def _never_consentable(address) -> str:
@@ -295,6 +353,41 @@ def _never_consentable(address) -> str:
     return ""
 
 
+def _claimed(address) -> bool:
+    """Is this resolved address inside a network the operator claimed? Step 109.
+
+    Membership across families is simply false — `ipaddress` answers that without an
+    error — so a v4 answer is not admitted by a v6 claim or the reverse, and an
+    IPv4-mapped v6 answer (`::ffff:10.0.0.7`) is not admitted by `10.0.0.0/8`. The
+    resolver does not hand those out for `SOCK_STREAM` lookups, and refusing one is
+    the safe direction if it ever does.
+    """
+    return any(address in network for network in config.EGRESS_INTERNAL_NETWORKS)
+
+
+def _via_proxy(url: str, host: str, *, consented: bool) -> PinnedDial:
+    """The proxy path (step 109): the name goes through intact, and nothing pins.
+
+    https only unless the operator listed the name: `check` admits a plain-http URL
+    on the strength of a network claim and leaves the answers to `pinned`, and on
+    this path there are no answers to hold to the claim — so the in-clear rule falls
+    back to the one thing the name alone can establish.
+    """
+    if urlsplit(url).scheme != "https" and not consented:
+        raise EgressRefused(
+            f"'{url}' is not https, and '{host}' is not on the deployment's own "
+            "network — it is not listed, and it resolves outside every claimed "
+            "network or not at all — so through the proxy the credential would cross "
+            "wire that is not yours in clear. Use https, or, if this host is yours, "
+            "name it in CARNET_EGRESS_INTERNAL_HOSTS."
+        )
+    return PinnedDial(url, {}, "", config.EGRESS_PROXY)
+
+
+def _public(address) -> bool:
+    return not (address.is_private or address.is_loopback)
+
+
 def pinned(url: str, *, operator_consented: bool = False) -> PinnedDial:
     """Resolve at dial time, refuse forbidden answers, pin the checked address.
 
@@ -315,9 +408,24 @@ def pinned(url: str, *, operator_consented: bool = False) -> PinnedDial:
     (and literals, and `localhost` itself), which is where a `--local` provider or an
     in-network IdP actually lives. The never-consentable ranges — link-local, where
     the metadata service lives — are refused under every flag this function has.
+
+    **Three ways an answer is covered** (step 109), tested per answer: the operator
+    flag, the name being listed, or the answer lying inside a network the operator
+    claimed in CIDR. An uncovered answer is held to `forbidden_reason` as before, and
+    — new here, because `check` cannot decide it on the name — an uncovered answer
+    over plain http is refused whatever range it is in: the credential travels in
+    clear only over wire the operator said was theirs. A literal is held to the same
+    http rule, because a literal is its own answer.
+
+    **Under `CARNET_EGRESS_PROXY`** the module docstring's trade applies: a name on
+    the operator's own network is dialled direct exactly as below; a name that
+    resolves public, or does not resolve, goes to the proxy by name; and what the
+    local resolver *can* refuse it still refuses.
     """
     split = urlsplit(url)
     host = host_of(url)
+    consented = operator_consented or host in config.EGRESS_INTERNAL_HOSTS
+    proxy = config.EGRESS_PROXY
 
     literal = _as_ip(host)
     if literal is not None or host in _LOOPBACK_NAMES:
@@ -327,6 +435,18 @@ def pinned(url: str, *, operator_consented: bool = False) -> PinnedDial:
         if reason:
             raise EgressRefused(f"'{host}' will not be dialled because {reason}.")
         if literal is not None:
+            if split.scheme != "https" and not (consented or _claimed(literal)):
+                raise EgressRefused(
+                    f"'{url}' is not https and '{host}' is not inside any network "
+                    "the operator claimed, so the credential would cross a wire "
+                    "that is not theirs in clear. Use https — or, if this address "
+                    "is on the deployment's own network, the operator may claim it "
+                    "in CARNET_EGRESS_INTERNAL_HOSTS."
+                )
+            # A public literal is the internet's, and behind a proxy the internet
+            # is reached through it; one on the operator's network is dialled direct.
+            if proxy and _public(literal) and not (consented or _claimed(literal)):
+                return _via_proxy(url, host, consented=consented)
             return PinnedDial(url, {}, "")
         # `localhost` under operator consent: a name, resolved below like any other.
 
@@ -336,6 +456,10 @@ def pinned(url: str, *, operator_consented: bool = False) -> PinnedDial:
             type=socket.SOCK_STREAM,
         )
     except OSError as exc:
+        if proxy:
+            # The case the proxy path exists for: behind a CONNECT proxy an external
+            # name often does not resolve here at all, and resolution is the proxy's.
+            return _via_proxy(url, host, consented=consented)
         raise EgressRefused(
             f"'{host}' could not be resolved ({exc}), so nothing was dialled."
         ) from exc
@@ -345,25 +469,38 @@ def pinned(url: str, *, operator_consented: bool = False) -> PinnedDial:
         if info[4][0] not in answers:
             answers.append(info[4][0])
 
-    internal = operator_consented or host in config.EGRESS_INTERNAL_HOSTS
     for answer in answers:
         address = ipaddress.ip_address(answer)
         reason = _never_consentable(address)
-        if not reason and not internal:
+        covered = consented or _claimed(address)
+        if not reason and not covered:
             reason = forbidden_reason(answer)
+        if not reason and not covered and split.scheme != "https":
+            reason = (
+                "the URL is not https and this address is not inside any network "
+                "the operator claimed, so the credential would cross a wire that "
+                "is not theirs in clear"
+            )
         if reason:
             remedy = (
                 ""
                 if _never_consentable(address)
                 else "\n  If this host is on this deployment's own network, the "
-                "operator may say so: add it to CARNET_EGRESS_INTERNAL_HOSTS "
-                "in the deployment's environment."
+                "operator may say so: add its name, or its network in CIDR, to "
+                "CARNET_EGRESS_INTERNAL_HOSTS in the deployment's environment."
             )
             raise EgressRefused(
                 f"'{host}' resolves to {answer}, which will not be dialled because "
                 f"{reason}. A name is not an address — this is the DNS-rebinding "
                 f"check, and it vets every answer the name gives.{remedy}"
             )
+
+    # Every answer survived what the local resolver can refuse. Under a proxy, an
+    # answer on the internet means the internet is where this name lives, and the
+    # internet is reached through the proxy — by name, so the proxy resolves it.
+    # Only a name whose every answer is the operator's own is dialled direct.
+    if proxy and any(_public(ipaddress.ip_address(a)) for a in answers):
+        return _via_proxy(url, host, consented=consented)
 
     # The first IPv4 answer when there is one, the first answer otherwise. A pin is
     # one address — it cannot do happy-eyeballs — and preferring the A record is the
@@ -445,6 +582,16 @@ def dial(
     `transport`, which resolves once per transport on purpose and would otherwise pay
     a DNS query per JSON-RPC message. Everyone else omits it and resolves per call.
 
+    **The environment reaches a dial through two named variables and nothing else**
+    (step 109). `trust_env` is switched off on the session, so an ambient
+    HTTPS_PROXY can no longer route a pinned dial through a proxy the pin does not
+    apply to, and `.netrc` cannot add credentials to a request nobody wrote; the
+    proxy is `pin.proxy`, from `CARNET_EGRESS_PROXY`, and the CA is
+    `REQUESTS_CA_BUNDLE`, read by `config` — because switching off `trust_env` also
+    switched off the library's own reading of it, and a corporate CA is the one
+    thing a deployment behind a proxy needs the dial to trust. A caller that passes
+    `verify` keeps its own.
+
     **It returns the response without interpreting it.** A 3xx means different things
     to different callers — `rest` returns it to the model as a tool error naming its
     status, `oidc` must name the redirect rather than fail to parse it — so refusing
@@ -454,6 +601,10 @@ def dial(
     pin = pin if pin is not None else pinned(url, operator_consented=operator_consented)
     if pin.server_hostname:
         mount_pinned(session, pin.server_hostname)
+    session.trust_env = False
+    kwargs.setdefault("verify", config.EGRESS_CA_BUNDLE or True)
+    if pin.proxy:
+        kwargs["proxies"] = {"http": pin.proxy, "https": pin.proxy}
     return session.request(
         method,
         pin.url,

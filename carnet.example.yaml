@@ -100,4 +100,6 @@ tokens:
 # Running an MCP server on this machine? Its address is private and its scheme is
 # plain http, both of which the door refuses unless you consent to the host:
 #   -e CARNET_EGRESS_INTERNAL_HOSTS=host.docker.internal
-# then `url: http://host.docker.internal:3000/mcp/`.
+# then `url: http://host.docker.internal:3000/mcp/`. On a network whose TLS is
+# re-signed by your own CA, mount that root and name it:
+#   -v ./corporate-ca.pem:/ca.pem:ro -e REQUESTS_CA_BUNDLE=/ca.pem

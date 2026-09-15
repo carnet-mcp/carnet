@@ -233,6 +233,65 @@ shipped Caddyfile, the Vite dev proxy and `--local` all carry the rule. Every UR
 documents derives from `CARNET_PUBLIC_ORIGIN`, so a value that is wrong for the connector
 callback is now wrong for three documents as well.
 
+**An internal registry, and an install with no network (109).** Two settings, both
+optional, neither read by any process — compose reads them. `CARNET_BASE_REGISTRY` is
+the mirror the four pinned base images come from; unset is `docker.io` and a build is
+byte-for-byte what it was, and set, the digests stay, so the retargeted build pulls the
+same bytes from a different address. `CARNET_DB_IMAGE` names the bundled database's
+image whole and is only for a sealed estate, where the images arrived in a tarball and
+the pinned digest cannot match an image that has been near no registry.
+`backend/scripts/offline_bundle.sh` produces that tarball and `docs/OFFLINE.md` — in it
+— is the procedure on the far side, including the one line that differs from this
+document: `docker compose up -d` **without `--build`**, because there is nothing to
+build from and nowhere to pull from. An existing deployment on a reachable registry
+changes nothing.
+
+**Two `CARNET_EGRESS_INTERNAL_HOSTS` entries that used to do nothing now refuse (109).**
+An address range (`10.0.0.0-10.255.255.255`) and a legacy short address (`10.0.0`) were
+kept as hostnames that could never match anything. Both refuse at start now, naming the
+CIDR spelling. If your deployment carries either, it is not consenting to what you think
+it is — write `10.0.0.0/8`. A hostname that merely contains digits and hyphens
+(`10-4-service.acme.internal`) is unaffected.
+
+**An outbound proxy is now a setting, and an ambient one is refused (109).** If your
+deployment's environment carries `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY` — a
+Docker daemon's proxy config injects them into every container — the API now
+**refuses to start** until you either set `CARNET_EGRESS_PROXY` to that URL or
+remove the variable. This is deliberate: before this release an ambient proxy routed
+dials through it with the TLS pin silently not applied, and a deployment that was
+working by accident is the one this refusal exists for. With `CARNET_EGRESS_PROXY`
+set, dials to the internet go through the proxy by name and your own networks
+(`CARNET_EGRESS_INTERNAL_HOSTS`) are dialled direct; the DNS-rebinding check on
+internet names moves to the proxy, which `egress.py`'s docstring explains. A
+`REQUESTS_CA_BUNDLE` that names a file which does not exist also refuses at start now.
+
+**A corporate CA, and your own certificate (109).** Two settings, both optional, both
+inert until set. `REQUESTS_CA_BUNDLE` is a file path the API container reads for the
+CA that re-signs your intercepted TLS or issues your internal services' certificates;
+mount the file (`compose.yaml` has the commented volume) and note it *replaces* the
+bundled public roots. `CARNET_TLS_MODE` on the front door is `acme` (unchanged),
+`internal` (Caddy's own CA for a name Let's Encrypt cannot see) or `files` (your
+certificate and key, mounted at `/etc/carnet/tls/`); `files` without the files refuses
+at start. If you replaced the front door with your own ingress, one obligation has
+been added to its contract since streaming arrived in 108: do not buffer the response
+body on `/api/v1/chat/completions`, and do not time it out under
+`CARNET_MODEL_MAX_SECONDS`.
+
+**`CARNET_EGRESS_INTERNAL_HOSTS` takes networks (109).** Nothing about an existing
+value changes: every hostname you have listed is read exactly as before. What is new is
+that an entry may be a network in CIDR — `10.0.0.0/8`, `fd00::/8` — and a connector whose
+name resolves inside one is admitted for where it resolves, so an on-premises estate is
+one entry rather than a name per connector and a restart to add each. A bare address is
+the network of one. Two things refuse at start-up rather than silently doing nothing: a
+claim covering an address nobody may consent to (`0.0.0.0/0` covers link-local, where
+cloud metadata lives), and a network with host bits set (`10.0.0.1/8` — write
+`10.0.0.0/8`). Every answer a name gives is held to the claim, so a dual-stack name needs
+both families claimed — `10.0.0.0/8,fd00::/8` — and the refusal names the answer that was
+not covered. One behaviour moves under a claim: plain `http://` to an unlisted name is
+now refused at the first dial, on what the name resolves to, rather than at registration
+— every answer must lie inside a claimed network, or the credential would cross wire that
+is not yours in clear. The vault URL rule is unchanged and takes names only.
+
 **Step 078 — settings that are no longer read, and one that never needs setting.**
 The runtime left the tree, and with it every setting it read: `CARNET_BENCH`,
 `CARNET_WORKERS`, `CARNET_RUN_LEASE`, `CARNET_RUN_HEARTBEAT`,
