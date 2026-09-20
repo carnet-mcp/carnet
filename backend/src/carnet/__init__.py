@@ -24,4 +24,4 @@ credentials, and audit are enforced.
 #
 # Read by `--version` and by `GET /health`, which is the point: "what are you running"
 # has to have an answer from a machine you cannot see. Until 027 nothing read it at all.
-__version__ = "0.11.0"
+__version__ = "0.12.0"

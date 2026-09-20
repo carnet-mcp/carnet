@@ -519,6 +519,22 @@ Nothing here is a database change, so `--migrate` neither checks it nor can. Wha
 does check it is `GET /config.json` on the running deployment: it answers
 `application/json` naming your issuer when this is right, and **404** when it is not.
 
+**The published front door, and a migration that asks nothing of you (110).** Two
+optional settings, both read by compose rather than by any process. `CARNET_API_IMAGE`
+and `CARNET_FRONT_IMAGE` name the published pair, so `docker compose pull` replaces
+`docker compose up --build` for a team whose policy forbids building; unset, the build
+happens exactly as it did. Until this release only the API image was published, so such
+a team could pull one half of a deployment and had to build the other from a checkout.
+Both images are cosign-signed keylessly and `README.md` carries the verify command.
+Migration `056` lands with this release and requires nothing: one nullable column
+recording which recipe a connector came from, applied by `--migrate`, with every
+existing row reading `NULL` and behaving exactly as before.
+
+**The client package is not part of your deployment (111).** `pip install carnet-mcp` is
+a library a customer imports into their own agent's process. It holds no credential, runs
+nothing here, and changes no setting on this side. A deployment that never hears of it is
+not missing anything.
+
 ---
 
 ## When a migration fails
