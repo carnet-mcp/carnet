@@ -268,9 +268,9 @@ tools = tools("https://carnet.example.com/api/mcp", "<your token>")
 
 The LangChain adapter is run end to end by `backend/scripts/e2e_client_langchain.py`
 against a real door, including a grant revoked mid-session; the other three adapters were
-run from here against a real door for list, call and refusal. It is published to PyPI on
-a `client-v*` tag; until the first one, install it from the checkout with
-`pip install -e "client[langchain]"`.
+run from here against a real door for list, call and refusal. It is on PyPI, published from a `client-v*`
+tag by `release-client.yml` through trusted publishing, so there is no API token in this
+repository's secrets.
 
 #### The four adapters, without anything from Carnet
 

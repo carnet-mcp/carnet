@@ -49,9 +49,10 @@ the next call — visibility going stale while enforcement does not. An eleventh
 runs the client's suite in its own virtualenv on 3.10 and 3.12 and builds the
 distribution; `release-client.yml` publishes on a `client-v*` tag through PyPI's trusted
 publishing, so there is no API token to rotate. The client is versioned apart from the
-server on purpose, and `check_versions.py` names it as a not-source in writing. Not
-published yet: the PyPI project and its trusted publisher are a one-time act by whoever
-owns the name there, and no `client-v*` tag has been pushed. An edge pass the same day
+server on purpose, and `check_versions.py` names it as a not-source in writing.
+**Published as `carnet-mcp` 0.1.0 on 2026-09-20**, from the tag `client-v0.1.0`, and
+verified by installing it from PyPI into a clean environment and calling a live door
+through it. An edge pass the same day
 drove every part for real — real agent loops in all four frameworks against a scripted
 model, a misbehaving upstream, concurrency, Python 3.10, a clean-environment wheel
 install, a real browser — and fixed six client defects it found, the worst of which was a
