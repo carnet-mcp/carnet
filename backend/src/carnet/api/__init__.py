@@ -57,6 +57,8 @@ from . import (
     errors,
     routes_admin,
     routes_admin_connectors,
+    routes_admin_idps,
+    routes_admin_people,
     routes_agents,
     routes_connections,
     routes_groups,
@@ -409,6 +411,8 @@ def create_app() -> FastAPI:
     app.include_router(routes_oauth.router)
     app.include_router(routes_admin.router)
     app.include_router(routes_admin_connectors.router)
+    app.include_router(routes_admin_idps.router)
+    app.include_router(routes_admin_people.router)
 
     @app.get("/health", response_model=Health, tags=["meta"])
     def health() -> Health:

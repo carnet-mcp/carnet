@@ -7,7 +7,6 @@ import {
   Card,
   Empty,
   Badge,
-  Field,
   FieldGroup,
   Notice,
   PageHead,
@@ -16,7 +15,7 @@ import {
   type Tone,
 } from "../../components/ui";
 import { api } from "../../lib/api";
-import type { ConnectorSummary, HostEntry, Recipe } from "../../lib/types";
+import type { ConnectorSummary, HostEntry } from "../../lib/types";
 import { useResource } from "../../lib/useResource";
 
 /** Connector onboarding, in the order migration 021 forces — read as a screen, not as a
@@ -56,18 +55,14 @@ import { useResource } from "../../lib/useResource";
 export default function ConnectorsPage() {
   const hosts = useResource(() => api.listHosts(), []);
   const connectors = useResource(() => api.listConnectors(), []);
-  const recipes = useResource(() => api.listRecipes(), []);
-  // The recipe whose values the form below is pre-filled from, or null for a blank form.
-  const [chosen, setChosen] = useState<Recipe | null>(null);
 
-  const approved = (hosts.data ?? []).filter((row) => !row.warning);
   const live = connectors.data ?? [];
 
   return (
     <>
       <PageHead
         title="Connectors"
-        lede="A connector is an MCP server or REST API that agents can use tools from. To add one: approve its host, register it, then approve each tool you want to make available. Tools are unavailable until approved."
+        lede="A connector is an MCP server or REST API that agents can use tools from. Tools are unavailable until approved."
       />
 
       {/* **What is connected, first and as cards.** The page used to reach this last, as a
@@ -84,7 +79,7 @@ export default function ConnectorsPage() {
         {connectors.data && live.length === 0 && (
           <Empty title="No connectors" icon="connectors">
             <p className="sentence">
-              Add one below. Until then, agents can only use the built-in tools.
+              Add one. Until then, agents can only use the built-in tools.
             </p>
           </Empty>
         )}
@@ -96,57 +91,24 @@ export default function ConnectorsPage() {
             ))}
           </div>
         )}
-      </Card>
 
-      <Card title="Add a connector">
-        {/* **Above the gate, deliberately.** A recipe names the addresses it needs, so it
-            is the thing that answers "which addresses do I allow" — and gating it behind
-            having already allowed one would hide the answer behind the question. The
-            *form* stays gated, because registration genuinely cannot succeed yet. */}
-        <RecipeChooser
-          resource={recipes}
-          chosen={chosen}
-          onChoose={setChosen}
-          approved={approved}
-          onAllowed={hosts.reload}
-          canAllow={Boolean(hosts.data)}
-        />
-
-        {/* Stage 2, disabled with the reason rather than hidden. Hiding it would make the
-            page look complete while the thing somebody came to do is invisible.
-
-            **Three states, not two.** The allowlist failing to load is not the same as
-            being empty, and saying "add one below" to somebody the server just refused
-            would send them to a form that is not there and would not work if it were.
-            `Failure` on the allowlist card has already said the true thing. */}
-        {/* **Nothing at all until the allowlist has answered.** `approved` is derived
-            from `hosts.data ?? []`, so it is empty while the request is in flight and
-            the gate below is true of *loading* as well as of *empty* — which flashed
-            "nothing can be added yet" at somebody whose workspace has twelve addresses
-            allowed. Found by an e2e that matched this paragraph's own words before the
-            card it points at had rendered. */}
-        {hosts.loading || hosts.error ? null : approved.length === 0 ? (
-          <p className="sentence">
-            Approve a host first. A connector&rsquo;s URL must be on an approved host.
-            Approve one under <strong>Approved hosts</strong> at the bottom of this page,
-            or pick a preset above and approve the hosts it needs.
-          </p>
-        ) : (
-          <NewConnector
-            // Remounted when the choice changes, so a recipe's values become the form's
-            // initial state rather than being copied in by an effect that then has to
-            // decide what to do about fields somebody already typed in.
-            key={chosen?.id ?? "blank"}
-            recipe={chosen}
-            hosts={approved}
-            onCreated={connectors.reload}
-          />
+        {/* **Only when the list actually loaded** — `your_role`'s lesson: a
+            non-administrator who deep-links here gets the server's 403, and a button to
+            a setup they cannot perform under it would read as a bug rather than a rule.
+            The setup itself is its own pages since 107 D4 (`/admin/connectors/new`):
+            one question per screen, in the order the backend needs them, which a stack
+            of cards on this page could never make visible. */}
+        {connectors.data && (
+          <div className="conn-foot">
+            <Button kind="primary" to="/admin/connectors/new">
+              Add a connector
+            </Button>
+          </div>
         )}
       </Card>
 
-      {/* Plumbing, and last. It is a control with exactly one consumer and that consumer
-          is above it — a separate screen would be a screen somebody visits once, gets
-          wrong, and does not connect to the registration that then fails. */}
+      {/* Plumbing, and last. The setup approves a host where the question is asked; this
+          card is where the whole allowlist is read and where one is withdrawn. */}
       <Hosts resource={hosts} />
     </>
   );
@@ -333,580 +295,6 @@ function Hosts({ resource }: { resource: ReturnType<typeof useResource<HostEntry
         </Notice>
       )}
     </Card>
-  );
-}
-
-/** Stage 1b: the apps this build ships a preset for. Step 068, redrawn by 091.
- *
- * **A recipe fills the form below and decides nothing.** It switches nothing on, allows no
- * address, and carries no client id or secret — every one of those is a property of the
- * checked-in files rather than of this component, so none of them can be undone by an edit
- * here. What it does is set the initial state of a form, which is why choosing one is a
- * remount rather than a mutation.
- *
- * **091: the addresses it needs can be allowed from here.** They used to be listed here and
- * allowed from a form in a different card, which is the question and the answer on opposite
- * ends of a page. `Allow` posts exactly the request that form posts — same endpoint, same
- * deliberate act by somebody who may make it, offered where the question is asked.
- */
-function RecipeChooser({
-  resource,
-  chosen,
-  onChoose,
-  approved,
-  onAllowed,
-  canAllow,
-}: {
-  resource: ReturnType<typeof useResource<Recipe[]>>;
-  chosen: Recipe | null;
-  onChoose: (recipe: Recipe | null) => void;
-  approved: HostEntry[];
-  onAllowed: () => void;
-  /** False when the allowlist could not be read — the 403 case. An `Allow` button that
-   *  refuses the person who pressed it reads as a bug where its absence reads as a rule,
-   *  which is `your_role`'s lesson applied to the second control that learned it. */
-  canAllow: boolean;
-}) {
-  const [allowing, setAllowing] = useState("");
-  const [failure, setFailure] = useState("");
-
-  if (resource.loading) return <Spinner label="Loading presets…" />;
-  // A failed catalogue is not a failed page: everything below still works, and the whole
-  // feature is a convenience over a form somebody can fill in by hand. Saying so beats
-  // rendering `Failure` and implying registration is broken.
-  if (resource.error)
-    return (
-      <p className="sentence muted">
-        Presets could not be loaded ({String(resource.error)}). You can still register a
-        connector below.
-      </p>
-    );
-  const recipes = resource.data ?? [];
-  if (recipes.length === 0) return null;
-
-  const approvedHosts = new Set(approved.map((row) => row.host));
-
-  const allow = (host: string, why: string) => {
-    setAllowing(host);
-    setFailure("");
-    api
-      .approveHost(host, why)
-      .then(onAllowed)
-      .catch((cause: unknown) =>
-        setFailure(cause instanceof Error ? cause.message : String(cause)),
-      )
-      .finally(() => setAllowing(""));
-  };
-
-  return (
-    <>
-      <FieldGroup label="Start from a preset" hint="A preset fills in the form below.">
-        <div className="pick-grid">
-          {recipes.map((recipe) => (
-            <label
-              key={recipe.id}
-              className={`pick-card${chosen?.id === recipe.id ? " on" : ""}`}
-            >
-              <input
-                type="radio"
-                name="recipe"
-                checked={chosen?.id === recipe.id}
-                onChange={() => onChoose(recipe)}
-              />
-              <BrandMark hints={[recipe.id, recipe.connector.connector_id]} size={36} />
-              <span className="pick-name">{recipe.name}</span>
-            </label>
-          ))}
-          <label className={`pick-card${chosen === null ? " on" : ""}`}>
-            <input
-              type="radio"
-              name="recipe"
-              checked={chosen === null}
-              onChange={() => onChoose(null)}
-            />
-            <BrandMark hints={[]} plain size={36} />
-            <span className="pick-name">Something else</span>
-          </label>
-        </div>
-      </FieldGroup>
-
-      {chosen && (
-        <div className="recipe-detail">
-          {/* Staleness is computed by the server and rendered as a fact, never hidden. We
-              are not in the call path of a consent flow once the URL is handed over, so a
-              vendor moving an endpoint is something we learn from a customer — there is no
-              freshness to check, only a claim to stop making. */}
-          <p className="sentence">
-            <strong>{chosen.name}</strong>{" "}
-            {chosen.staleness === "verified" ? (
-              <Badge tone="good">checked {chosen.verified_on}</Badge>
-            ) : chosen.staleness === "stale" ? (
-              <Badge tone="warn">last checked {chosen.verified_on}</Badge>
-            ) : (
-              <Badge tone="warn">not checked</Badge>
-            )}
-          </p>
-          <p className="sentence muted">{chosen.description}</p>
-
-          {chosen.staleness !== "verified" && (
-            <Notice tone="warn" title="Check these values against the vendor">
-              <p className="sentence">
-                {chosen.staleness === "unverified"
-                  ? "These endpoints and scopes have not been verified."
-                  : `These values were last checked on ${chosen.verified_on}.`}{" "}
-                Vendors change OAuth endpoints and scopes. You can edit every field below
-                before you register.
-              </p>
-            </Notice>
-          )}
-
-          {/* The addresses, with the button that allows one beside the reason it is
-              needed. Allowing is still a separate deliberate act — it is the same act,
-              in the place the question is asked. */}
-          <p className="sentence">
-            <strong>Hosts this preset needs.</strong> Connectors can only connect to
-            approved hosts.
-          </p>
-          <ul className="needs">
-            {chosen.hosts.map((host) => (
-              <li key={host.host} className="needs-host">
-                <span className="needs-name">
-                  {/* The address and its state on one line, then the reason under it.
-                      A `Badge` is `display: inline-flex` and stretches to whatever box it
-                      is a flex item of — in a column that is the full width of the row. */}
-                  <span className="needs-top">
-                    <code>{host.host}</code>
-                    {approvedHosts.has(host.host) ? (
-                      <Badge tone="good">approved</Badge>
-                    ) : (
-                      <Badge tone="warn">not approved</Badge>
-                    )}
-                  </span>
-                  <span className="row-sub">{host.why}</span>
-                </span>
-                {!approvedHosts.has(host.host) && canAllow && (
-                  <Button
-                    busy={allowing === host.host}
-                    onClick={() => allow(host.host, host.why)}
-                  >
-                    Allow
-                  </Button>
-                )}
-              </li>
-            ))}
-          </ul>
-          {failure && (
-            <Notice tone="warn">
-              <p className="sentence">{failure}</p>
-            </Notice>
-          )}
-
-          {/* The two things a preset deliberately did not do, said out loud. Silence here
-              is how somebody concludes a preset with four proposed tools approved four. */}
-          {(chosen.tools.length > 0 || chosen.oauth) && (
-            <p className="sentence muted">
-              {chosen.tools.length > 0
-                ? `The preset suggests ${chosen.tools.length} tool${chosen.tools.length === 1 ? "" : "s"}. Approve each one on the connector's page after registering. `
-                : ""}
-              {chosen.oauth
-                ? "The OAuth app is set up on the connector's page. The client ID and secret come from the vendor's console."
-                : ""}
-            </p>
-          )}
-        </div>
-      )}
-    </>
-  );
-}
-
-/** Stage 2: the row, which switches nothing on and says so.
- *
- * There is no field for a command, and that is `tools.STDIO_REFUSED` expressed as a form:
- * a registered connector speaks HTTP because HTTP is the only transport that can carry a
- * per-user credential. A stdio server takes its credential from the environment when it
- * starts and holds it for the process's life, so every user of every agent would share one
- * service account.
- *
- * **091 folded four controls behind `<details>` and no more than four.** The REST credential
- * scheme, the extra headers and the description matter to the person registering an API
- * vendor and to nobody else. The asserted-identity box stayed visible: it is the one control
- * on this page whose failure mode is being ticked unread, and a tidying pass that hid it
- * would be the wrong half of the form getting shorter.
- */
-function NewConnector({
-  recipe,
-  hosts,
-  onCreated,
-}: {
-  /** The recipe this form's initial state came from, or null. Its values are DEFAULTS —
-   *  every field below is editable, and that is what makes a wrong recipe cost one form
-   *  rather than a broken registration. Carried through to the request as provenance
-   *  only; nothing in the database points back at it. */
-  recipe: Recipe | null;
-  hosts: HostEntry[];
-  onCreated: () => void;
-}) {
-  // **A recipe's values are this form's initial state and nothing more.** Not an effect
-  // that copies them in later, which would have to decide what to do about fields
-  // somebody has already typed into; the component is remounted on a new choice instead.
-  // Every one of these stays editable, which is the property that makes a stale recipe
-  // cost one form's worth of wrong defaults rather than a broken registration.
-  const preset = recipe?.connector;
-  const [id, setId] = useState(preset?.connector_id ?? "");
-  const [url, setUrl] = useState(preset?.url ?? "");
-  const [kind, setKind] = useState<"http" | "rest">(preset?.kind ?? "http");
-  const [credentialEnv, setCredentialEnv] = useState(preset?.credential_env ?? "");
-  // 070. Two fields on the wire and **one choice** here, because the server refuses
-  // both being set and a form that can express a refusal is a form that will. A recipe
-  // never presets this: a checked-in file knows a vendor's endpoints and cannot know
-  // where in your vault your token is.
-  const [held, setHeld] = useState<"env" | "vault">("env");
-  const [credentialRef, setCredentialRef] = useState("");
-  // `null` on the wire means *the launch's own default*, which is what a blank box means
-  // here — so a recipe that does not override the header arrives as a blank box rather
-  // than as the literal word "Authorization".
-  const [credentialHeader, setCredentialHeader] = useState(
-    preset?.credential_header ?? "",
-  );
-  // Starts at the real default and is ALWAYS sent for a REST connector (061): what
-  // the field shows is what precedes the credential, with no hidden untouched state.
-  // It used to start at "" and be omitted when empty, and the hint taught a
-  // keystroke trick (type a space, delete it) that landed back on "" — so the
-  // documented way to select the bare token was a no-op and every x-api-key
-  // connector 401ed with a remedy that did not remedy (plan 049's audit).
-  //
-  // A recipe's `credential_prefix` is `""` for an `x-api-key` vendor and `null` for one
-  // that wants the default — and 061's whole finding was that those two must not
-  // collapse. `?? "Bearer "` keeps them apart: null takes the default, `""` survives.
-  const [credentialPrefix, setCredentialPrefix] = useState(
-    preset?.credential_prefix ?? "Bearer ",
-  );
-  const [headers, setHeaders] = useState<{ name: string; value: string }[]>(
-    Object.entries(preset?.headers ?? {}).map(([name, value]) => ({ name, value })),
-  );
-  const [description, setDescription] = useState(preset?.description ?? "");
-  const [asserts, setAsserts] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState("");
-
-  const rest = kind === "rest";
-
-  const register = () => {
-    setBusy(true);
-    setFailure("");
-    api
-      .registerConnector({
-        connector_id: id.trim(),
-        url: url.trim(),
-        kind,
-        // Exactly one of the two is ever sent, and the other is sent EMPTY rather than
-        // omitted — so switching the choice and registering cannot leave the previous
-        // answer behind on a field the request no longer mentions.
-        credential_env: held === "env" ? credentialEnv.trim() : "",
-        credential_ref: held === "vault" ? credentialRef.trim() : "",
-        description: description.trim(),
-        allow_asserted_identity: asserts,
-        // Provenance only. The server checks it names a recipe this build ships and
-        // drops it otherwise; nothing in the database points back at one.
-        ...(recipe ? { from_recipe: recipe.id } : {}),
-        // **REST only.** The header keeps omit-when-empty — empty genuinely means the
-        // default header name, with no second meaning to collide with. The prefix is
-        // the opposite case and is always sent (061): its field starts at the real
-        // default, so what it shows is what is sent, and a cleared field honestly
-        // means "" — the bare token an x-api-key vendor wants.
-        ...(rest && credentialHeader.trim()
-          ? { credential_header: credentialHeader.trim() }
-          : {}),
-        ...(rest ? { credential_prefix: credentialPrefix } : {}),
-        ...(rest && headers.some((h) => h.name.trim())
-          ? {
-              headers: Object.fromEntries(
-                headers
-                  .filter((h) => h.name.trim())
-                  .map((h) => [h.name.trim(), h.value]),
-              ),
-            }
-          : {}),
-      })
-      .then(() => {
-        setId("");
-        setUrl("");
-        setCredentialEnv("");
-        setCredentialHeader("");
-        setCredentialPrefix("");
-        setHeaders([]);
-        setDescription("");
-        setAsserts(false);
-        // `kind` deliberately survives: registering three REST connectors in a row is
-        // the ordinary shape, and resetting it would silently make the fourth an MCP
-        // server whose authored tools are then refused.
-        onCreated();
-      })
-      .catch((cause: unknown) =>
-        setFailure(cause instanceof Error ? cause.message : String(cause)),
-      )
-      .finally(() => setBusy(false));
-  };
-
-  return (
-    <div className="inline-form">
-      <Field label="ID" hint="Lowercase letters, digits and hyphens. Prefixes every tool name.">
-        <input value={id} placeholder="jira" onChange={(e) => setId(e.target.value)} />
-      </Field>
-
-      {/* **Chosen here and never edited**, on the token kind radio's precedent — the
-          two have different security properties and there is no update path, so the
-          consequence belongs at the point of choice rather than at the first surprise.
-          What it decides is how tools get onto this connector at all. */}
-      <div className="choices stacked" role="radiogroup" aria-label="What kind of server it is">
-        <label className={`choice big${rest ? "" : " on"}`}>
-          <input
-            type="radio"
-            name="connector-kind"
-            checked={!rest}
-            onChange={() => setKind("http")}
-          />
-          <span>
-            <strong>MCP server</strong>
-            <span className="muted">
-              {" "}
-              — Tools are discovered from the server. Streamable HTTP.
-            </span>
-          </span>
-        </label>
-        <label className={`choice big${rest ? " on" : ""}`}>
-          <input
-            type="radio"
-            name="connector-kind"
-            checked={rest}
-            onChange={() => setKind("rest")}
-          />
-          <span>
-            <strong>REST API</strong>
-            <span className="muted">
-              {" "}
-              — You write each tool&rsquo;s schema and request mapping. Used for model
-              providers.
-            </span>
-          </span>
-        </label>
-      </div>
-
-      <Field
-        label="Address"
-        hint={
-          rest
-            ? `The base URL each tool's path is joined to. Its host must be one of: ${hosts
-                .map((h) => h.host)
-                .join(", ")}`
-            : `The Streamable HTTP endpoint. Its host must be one of: ${hosts
-                .map((h) => h.host)
-                .join(", ")}`
-        }
-      >
-        <input
-          value={url}
-          placeholder={rest ? "https://api.acme.com/v1" : "https://mcp.acme.com/mcp"}
-          onChange={(e) => setUrl(e.target.value)}
-        />
-      </Field>
-
-      {/* Where the shared credential lives. One choice rather than two boxes, because
-          the server refuses both being set — and a form that can express a refusal is a
-          form somebody will fill in that way. A per-person credential is neither: it
-          comes from a consent flow.
-
-          `stacked` and `big`, because each option carries a sentence — the shape the
-          model picker uses, and the shape `.choice.big.on` is the only one styled for:
-          a plain `.choice` renders the selected state as nothing at all. */}
-      <div
-        className="choices stacked"
-        role="radiogroup"
-        aria-label="Where the shared key is kept"
-      >
-        <label className={`choice big${held === "env" ? " on" : ""}`}>
-          <input
-            type="radio"
-            name="credential-held"
-            checked={held === "env"}
-            onChange={() => setHeld("env")}
-          />
-          <span>
-            <strong>Environment variable</strong>
-            <span className="muted">
-              {" "}
-              — Read from this deployment&rsquo;s environment. The default.
-            </span>
-          </span>
-        </label>
-        <label className={`choice big${held === "vault" ? " on" : ""}`}>
-          <input
-            type="radio"
-            name="credential-held"
-            checked={held === "vault"}
-            onChange={() => setHeld("vault")}
-          />
-          <span>
-            <strong>Vault reference</strong>
-            <span className="muted">
-              {" "}
-              — A 1Password reference, read on every call and never stored here. Calls
-              are slower and fail while the vault is unavailable.
-            </span>
-          </span>
-        </label>
-      </div>
-
-      {held === "env" ? (
-        <Field
-          label="Credential variable"
-          hint="Optional. The environment variable holding the shared credential."
-        >
-          <input
-            value={credentialEnv}
-            placeholder="JIRA_TOKEN"
-            onChange={(e) => setCredentialEnv(e.target.value)}
-          />
-        </Field>
-      ) : (
-        <Field
-          label="Vault reference"
-          hint="The credential's location in your 1Password vault. Item IDs resolve faster than names."
-        >
-          <input
-            value={credentialRef}
-            placeholder="op://Engineering/Jira/credential"
-            onChange={(e) => setCredentialRef(e.target.value)}
-          />
-        </Field>
-      )}
-
-      {/* **Folded, not removed.** Four controls that matter to the person registering an
-          API vendor and to nobody else. REST-only for the two credential fields, because
-          only REST has a reason: an MCP server presents its credential as
-          `Authorization: Bearer` by protocol convention, so offering these there would be
-          offering a way to break it. */}
-      <details className="more">
-        <summary>More options</summary>
-        <div className="more-body">
-          {rest && (
-            <>
-              <Field
-                label="Credential header"
-                hint="The header the API reads the credential from. Blank means Authorization."
-              >
-                <input
-                  value={credentialHeader}
-                  placeholder="x-api-key"
-                  onChange={(e) => setCredentialHeader(e.target.value)}
-                />
-              </Field>
-              <Field
-                label="Credential prefix"
-                hint="Sent before the credential, trailing space included. Clear it to send the bare token."
-              >
-                <input
-                  value={credentialPrefix}
-                  onChange={(e) => setCredentialPrefix(e.target.value)}
-                />
-              </Field>
-              <FieldGroup
-                label="Other headers"
-                hint="Sent on every request, for example an API version. Not secret."
-              >
-                {headers.map((header, index) => (
-                  <div className="spread" key={index}>
-                    <input
-                      value={header.name}
-                      placeholder="anthropic-version"
-                      onChange={(e) =>
-                        setHeaders(
-                          headers.map((h, i) =>
-                            i === index ? { ...h, name: e.target.value } : h,
-                          ),
-                        )
-                      }
-                    />
-                    <input
-                      value={header.value}
-                      placeholder="2023-06-01"
-                      onChange={(e) =>
-                        setHeaders(
-                          headers.map((h, i) =>
-                            i === index ? { ...h, value: e.target.value } : h,
-                          ),
-                        )
-                      }
-                    />
-                    <Button
-                      kind="quiet"
-                      onClick={() => setHeaders(headers.filter((_, i) => i !== index))}
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                ))}
-                <Button onClick={() => setHeaders([...headers, { name: "", value: "" }])}>
-                  Add a header
-                </Button>
-              </FieldGroup>
-            </>
-          )}
-
-          <Field label="Description" hint="Optional. Shown when choosing tools.">
-            <input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </Field>
-        </div>
-      </details>
-
-      {/* **A security control, so not a preference-shaped checkbox.** The claim is the
-          label and the consequence is beside it — the device the wizard's ceilings step
-          used before 081 deleted it, for the same reason: 033's posture is *verified or
-          nothing*, and the failure mode of this field is somebody ticking it without
-          reading it. It is the one control 091 refused to fold away.
-
-          Settable at registration because a connector born trusting a caller should say so
-          from its first administrative record. **Changed afterwards on the connector's own
-          page**, and the last sentence says so: registration writes one record for the whole
-          registration, while `PUT .../asserted-identity` writes a record naming the actor
-          and the new value — which is what a security control changing state is owed. This
-          form must not become a second toggle. */}
-      <label className="choice big">
-        <input
-          type="checkbox"
-          checked={asserts}
-          onChange={(e) => setAsserts(e.target.checked)}
-        />
-        <span>
-          <strong>Accept asserted identity</strong>
-          <span className="muted">
-            {" "}
-            — A calling service may name who it acts on behalf of without verification.
-            Such calls are logged as <code>asserted</code>, not <code>verified</code>. You
-            can change this later on the connector&apos;s page.
-          </span>
-        </span>
-      </label>
-
-      {failure && (
-        <Notice tone="warn">
-          <p className="sentence">{failure}</p>
-        </Notice>
-      )}
-
-      <Button
-        kind="primary"
-        busy={busy}
-        disabled={!id.trim() || !url.trim()}
-        onClick={register}
-      >
-        Register
-      </Button>
-      <p className="muted">Next: approve the tools you want to make available.</p>
-    </div>
   );
 }
 

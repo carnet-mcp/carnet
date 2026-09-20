@@ -1,0 +1,93 @@
+# Publish `carnet-mcp`, the client package in `client/`, to PyPI. Plan 111, step (b4).
+#
+# A second release channel, and it is kept apart from `release.yml` on purpose:
+#
+#   a tag `client-v*`   the client's release. `v*` is the server's, and the two are
+#                       separately versioned (see `backend/scripts/check_versions.py`'s
+#                       docstring for why), so the tag patterns cannot overlap.
+#   workflow_dispatch   a build without a publish — the dry run, so the distribution
+#                       can be looked at before anybody is ready to tag.
+#
+# **No API token.** PyPI's trusted publishing: the job presents GitHub's OIDC token and
+# PyPI checks it against a publisher configured on the project (this repository, this
+# workflow file, the `pypi` environment). That is the whole of the credential story, and
+# it was chosen because plan 111's open list named *the publish credentials are a new
+# secret with a new rotation story* — a secret that does not exist needs neither.
+# Configuring the publisher on pypi.org is a one-time act by whoever owns the project
+# name there, and until it is done a tag push fails at the publish step with PyPI's
+# own sentence, which is the right failure.
+#
+# PyPI is not GHCR: a yanked version is not a deleted one. The version check below is
+# the preflight that makes a wrong tag fail before anything is uploaded.
+
+name: release-client
+
+on:
+  push:
+    tags: ["client-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: The tag must state the version the package reports
+        if: startsWith(github.ref, 'refs/tags/client-v')
+        working-directory: client
+        # `check_versions.py`'s rule for the server, applied here: a tag claiming a
+        # version the code does not report is a release that does not exist.
+        run: |
+          stated="${GITHUB_REF_NAME#client-v}"
+          reported="$(python -c 'import re,pathlib; print(re.search(r"__version__ = \"([^\"]+)\"", pathlib.Path("src/carnet_mcp/_version.py").read_text()).group(1))')"
+          if [ "$stated" != "$reported" ]; then
+            echo "::error::tag says $stated, client/src/carnet_mcp/_version.py says $reported"
+            exit 1
+          fi
+
+      - name: Test
+        working-directory: client
+        run: |
+          pip install -e ".[dev,langchain]"
+          pytest -q
+
+      - name: Build
+        working-directory: client
+        run: |
+          pip install build
+          python -m build
+          ls -l dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: carnet-mcp-dist
+          path: client/dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    # Only on the tag. A manual run stops at the artifact above.
+    if: startsWith(github.ref, 'refs/tags/client-v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: carnet-mcp-dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

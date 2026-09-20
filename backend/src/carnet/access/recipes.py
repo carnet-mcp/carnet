@@ -209,6 +209,45 @@ def _refuse(recipe_id: str, sentence: str) -> None:
     raise RecipeRefused(f"recipe '{recipe_id}': {sentence}")
 
 
+# The two credential shaping fields where `""` is a real value — an `x-api-key` vendor
+# wants `--credential-prefix ''` (045c) — so only `None` means *not supplied* for them.
+# For everything else an empty string is what an unfilled form field and an absent flag
+# both look like, and the preset's value is what "unfilled" should mean.
+_NONE_MEANS_UNSET = frozenset({"credential_header", "credential_prefix"})
+
+
+def connector_defaults(recipe: dict, given: dict) -> dict:
+    """The preset's connector half as defaults under whatever the caller supplied.
+
+    **The one merge rule, for both doors** (plan 110 D6). The CLI had this in
+    `_apply_connector_recipe` and the browser had a second copy in TypeScript that
+    prefilled a form and then sent the id as provenance only — so `POST
+    /admin/connectors` never applied a recipe at all, and the two implementations
+    drifted on the first field 086 added. Now the route applies the preset here, the
+    CLI merges through here, and the browser may send only the id and what the person
+    changed.
+
+    **The caller always wins**, which is rule 1 of step 068 in one line: a recipe is a
+    default, not a dependency, so there is no value it supplies that an operator cannot
+    override without editing this build. `headers` merge key by key, the caller's on top.
+    Returns only the keys `register_connector` takes; `connector_id` is the caller's.
+    """
+    preset = dict(recipe.get("connector") or {})
+    preset.pop("connector_id", None)
+    merged: dict = {}
+    for key in (set(preset) | set(given)) - {"connector_id", "headers"}:
+        supplied = given.get(key)
+        unset = supplied is None if key in _NONE_MEANS_UNSET else supplied in (None, "")
+        merged[key] = preset.get(key) if unset else supplied
+    # Always present, so a caller reads one shape: the preset's headers with the
+    # caller's on top, or None — which `register_connector` reads as the launch's own
+    # default — when neither side has any.
+    headers = dict(preset.get("headers") or {})
+    headers.update(dict(given.get("headers") or {}))
+    merged["headers"] = headers or None
+    return merged
+
+
 def check_field_sets() -> None:
     """**The check plan 068's rule 5 calls the one that earns its keep.**
 

@@ -50,13 +50,25 @@ import type {
   Overview,
   GrantOutcome,
   HostApproved,
+  ConnectorDeregistered,
+  DiscoveryCredential,
   HostEntry,
+  IdpDiscovered,
+  IdpEntry,
+  IdpRegistered,
+  IdpRemoved,
+  IdpRequest,
+  PersonEntry,
+  PersonStatus,
+  RoleEntry,
+  ToolWithdrawn,
   MemberOutcome,
   OAuthConfigured,
   Recipe,
   ScopeNote,
   Revoked,
   ConnectionSummary,
+  ConnectionTest,
   ConsentStart,
   DisconnectOutcome,
   GroupDetail,
@@ -86,6 +98,11 @@ import type {
  *  The prefix is stripped by whatever forwards the request, so the API's own URLs stay
  *  clean for `curl`, the CLI and any integration. */
 const BASE = "/api";
+
+/** A log page (110f, plan 107 D10). A hundred rather than the old two hundred, because
+ *  the page is no longer the window: *Show older* turns it, so its size is about how
+ *  much a person reads at once rather than how much history is reachable. */
+export const LOG_PAGE = 100;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -383,6 +400,16 @@ export const api = {
    *  agent, which is why Connections is a page rather than a section of one. */
   listConnections: () => request<ConnectionSummary[]>("/connections"),
 
+  /** Ask the server for its tool list under this person's own connected account (plan
+   *  107 D11). A count and the server's label; no tool is called and nothing is written.
+   *  A 400 when no account is connected — it never falls back to the shared credential,
+   *  because *the shared one works* is not what the button asks. */
+  testConnection: (connectorId: string) =>
+    request<ConnectionTest>(
+      `/connectors/${encodeURIComponent(connectorId)}/connection/test`,
+      { method: "POST" },
+    ),
+
   /** Begin a consent flow. Returns **where to send the browser**, and never a token.
    *
    *  The caller must then do a top-level navigation — `window.location.assign(url)` — not
@@ -423,11 +450,18 @@ export const api = {
    *  than paraphrased and never retried: `deps.py` writes it to be actionable by a
    *  person, and a UI that signed out on it would loop on a login that cannot help.
    *
-   *  Oldest first, most recent `limit` records. No filters and no pagination — those
-   *  arrive with evidence about what somebody actually needs, matching `--admin-log`'s
-   *  deliberate cheapness. `limit` is capped by the server's signature, so an over-large
-   *  value is a 422 naming the field rather than a silent truncation. */
-  adminAudit: (limit = 200) => request<AdminRecord[]>(`/admin-audit?limit=${limit}`),
+   *  **Newest first since 110f (plan 107 D10)**, a page of `limit` rows, and `before` —
+   *  a row's `id` — asks for the rows older than it: *show older*, from the oldest row on
+   *  the page, so a row appended between two requests moves nothing. The evidence 12b
+   *  said pagination would wait for arrived: the first administrator who scrolled to the
+   *  bottom for the row they came for and found the one before it unreachable. `limit`
+   *  is capped by the server's signature, so an over-large value is a 422 naming the
+   *  field rather than a silent truncation. */
+  adminAudit: (options: { limit?: number; before?: number } = {}) => {
+    const query = new URLSearchParams({ limit: String(options.limit ?? LOG_PAGE) });
+    if (options.before !== undefined) query.set("before", String(options.before));
+    return request<AdminRecord[]>(`/admin-audit?${query}`);
+  },
 
   /** The MCP door's traffic — every tool call a machine token made through `/mcp`.
    *  **Administrators only**, and a 403 for everybody else carrying the server's own
@@ -458,6 +492,8 @@ export const api = {
   adminDoorCalls: (
     options: {
       limit?: number;
+      /** Rows older than this id — *show older*. 110f. */
+      before?: number;
       since?: string;
       until?: string;
       tool?: string;
@@ -473,7 +509,8 @@ export const api = {
       identitySource?: string;
     } = {},
   ) => {
-    const query = new URLSearchParams({ limit: String(options.limit ?? 200) });
+    const query = new URLSearchParams({ limit: String(options.limit ?? LOG_PAGE) });
+    if (options.before !== undefined) query.set("before", String(options.before));
     // Set only when asked for, `adminDenials`' rule — an empty string is a value the
     // server would refuse for a closed vocabulary and would match nothing for an id, so
     // "no filter" has to be an absent parameter rather than a blank one.
@@ -545,12 +582,15 @@ export const api = {
   adminDenials: (
     options: {
       limit?: number;
+      /** Rows older than this id — *show older*. 110f. */
+      before?: number;
       principalId?: string;
       resourceId?: string;
       resourceKind?: string;
     } = {},
   ) => {
-    const query = new URLSearchParams({ limit: String(options.limit ?? 200) });
+    const query = new URLSearchParams({ limit: String(options.limit ?? LOG_PAGE) });
+    if (options.before !== undefined) query.set("before", String(options.before));
     // Set only when asked for. An empty string is a value the server would refuse for
     // `resource_kind` and would match nothing for the two ids, so "no filter" has to be
     // an absent parameter rather than a blank one.
@@ -657,6 +697,68 @@ export const api = {
   revokeHost: (host: string) =>
     request<Revoked>(`/admin/hosts/${encodeURIComponent(host)}`, { method: "DELETE" }),
 
+  // --- administration: identity providers (110) ---------------------------------------
+  //
+  // The first thing in an administrator's hour, and until 110 the only one with no
+  // browser path at all. Four calls, and the removal goes in the query rather than the
+  // path for the host approval's reason inverted: an issuer is a URL and always carries a
+  // slash, which is a routing 404 in a path segment even percent-encoded.
+
+  listIdps: () => request<IdpEntry[]>("/admin/idps"),
+
+  /** Register or replace a provider. 200 either way — the store's write is an upsert —
+   *  and `replaced` says which happened. Every refusal is the server's own sentence: a
+   *  malformed row, a wildcard domain on anybody but the local provider, or (409) an
+   *  issuer that would make a token ambiguous between two tenants. Render them. */
+  registerIdp: (body: IdpRequest) =>
+    request<IdpRegistered>("/admin/idps", { method: "POST", body: JSON.stringify(body) }),
+
+  /** Remove one. The server refuses the provider the caller signed in through, with a
+   *  sentence saying why, because removing it locks the tenant out with them inside. */
+  removeIdp: (issuer: string, discriminatorValue: string | null) => {
+    const query = new URLSearchParams({ issuer });
+    if (discriminatorValue) query.set("discriminator_value", discriminatorValue);
+    return request<IdpRemoved>(`/admin/idps?${query.toString()}`, { method: "DELETE" });
+  },
+
+  /** Ask an issuer for its discovery document. A pinned dial from the server, with the
+   *  operator's consent presumed as for the JWKS fetch; a provider that serves none is a
+   *  502 whose sentence says to type the JWKS URL by hand. */
+  discoverIdp: (issuer: string) =>
+    request<IdpDiscovered>("/admin/idps/discover", {
+      method: "POST",
+      body: JSON.stringify({ issuer }),
+    }),
+
+  // --- administration: people and platform roles (110) ----------------------------------
+  //
+  // Disabling is here and granting is not. `--disable-user` reduces authority — sign-in
+  // refused, every token refused at its next call, nothing deleted — and a compromised
+  // session that disables people is a nuisance a shell can undo. Granting a platform role
+  // is the one authority that reproduces, so it stays in the terminal (12b, 110 D3), and
+  // the roles page prints the command instead of offering a button.
+
+  listPeople: () => request<PersonEntry[]>("/admin/users"),
+
+  /** One person by exact address, or nobody (plan 107 D10). Administrators only — the
+   *  enumeration concern that kept this out was about *anybody here*, and an
+   *  administrator already reads every id in the audit log. Exact, never a prefix: the
+   *  groups page adds a member by the address a colleague is known by, and a search box
+   *  over the directory is a different thing. */
+  findPerson: (email: string) =>
+    request<PersonEntry[]>(`/admin/users?email=${encodeURIComponent(email)}`),
+
+  /** Cut somebody off now. The server refuses the caller's own row with a sentence, since
+   *  there is no way back from a browser. */
+  disablePerson: (id: string) =>
+    request<PersonStatus>(`/admin/users/${encodeURIComponent(id)}/disable`, { method: "POST" }),
+
+  enablePerson: (id: string) =>
+    request<PersonStatus>(`/admin/users/${encodeURIComponent(id)}/enable`, { method: "POST" }),
+
+  /** Who holds a platform role. A read; there is no write, on purpose. */
+  listRoles: () => request<RoleEntry[]>("/admin/roles"),
+
   listConnectors: () => request<ConnectorSummary[]>("/admin/connectors"),
 
   getConnector: (connectorId: string) =>
@@ -731,6 +833,35 @@ export const api = {
     request<DiscoveryResult>(
       `/admin/connectors/${encodeURIComponent(connectorId)}/discovery`,
       { method: "POST" },
+    ),
+
+  /** Which credential a Discover would use, before the click (107 D5). Dials nothing. */
+  discoveryCredential: (connectorId: string) =>
+    request<DiscoveryCredential>(
+      `/admin/connectors/${encodeURIComponent(connectorId)}/discovery-credential`,
+    ),
+
+  /** Withdraw one approval (107 D7) — `vetTool`'s inverse, keyed by the remote name. Any
+   *  agent granting it becomes invalid at its next read; nothing else is touched. */
+  withdrawTool: (connectorId: string, remoteName: string) =>
+    request<ToolWithdrawn>(
+      `/admin/connectors/${encodeURIComponent(connectorId)}/tools/` +
+        encodeURIComponent(remoteName),
+      { method: "DELETE" },
+    ),
+
+  /** Deregister a connector and every approval on it (107 D7). A 409 with the sentence
+   *  — and the number of people — while anybody has an account connected to it, because
+   *  a sealed credential is never deleted as a *side effect*.
+   *
+   *  `disconnectAccounts` is the deliberate way through that refusal: those connections
+   *  are removed in the same transaction and the answer says how many. Nothing is
+   *  revoked at the provider, so the caller has to tell those people. */
+  deregisterConnector: (connectorId: string, disconnectAccounts = false) =>
+    request<ConnectorDeregistered>(
+      `/admin/connectors/${encodeURIComponent(connectorId)}` +
+        (disconnectAccounts ? "?disconnect_accounts=true" : ""),
+      { method: "DELETE" },
     ),
 
   /** Approve one tool. **Append, never replace** — a failed tenth never costs nine, and
@@ -828,6 +959,9 @@ export const api = {
     name: string;
     acts_as_owner?: boolean;
     expires_days?: number;
+    /** Plan 107 D9: grant a service token an agent in the same request. Editors only,
+     *  which is the share seam's own rule; refused with a sentence on a personal token. */
+    grant?: { agent: string; role?: "user" | "editor" };
   }) =>
     request<MintedToken>("/me/tokens", {
       method: "POST",

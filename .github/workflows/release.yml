@@ -23,6 +23,19 @@
 # SBOM is attached as an attestation rather than uploaded as an artefact, so *what is in
 # this image* is answerable from the registry rather than from a build somebody has to go
 # and find.
+#
+# **Two images since step 110 (decision 11), not one.** `ghcr.io/carnet-mcp/carnet` is
+# the `api` target — the door, the CLI, the thing the quickstart's `docker run` names.
+# `ghcr.io/carnet-mcp/carnet-front` is the `front` target — Caddy, the bundle and the
+# entrypoint that composes the CSP and the certificate from `CARNET_OIDC_*` and
+# `CARNET_TLS_MODE`. Until 110 the second was "build it from a checkout", which for a
+# team whose policy forbids building — the only team a published image is *for* — made
+# the published deployment half of one, and half a deployment is worse than either
+# whole thing. Same tags, same keyless signature, same anonymous-pull smoke, in its own
+# job so the two builds run side by side rather than doubling the release's wall clock
+# (the `front` target builds the frontend bundle, which `api` never does). The compose
+# file takes both by name through `CARNET_API_IMAGE` and `CARNET_FRONT_IMAGE`, so a
+# team that cannot build is `docker compose pull` and two lines in `.env`.
 
 name: release
 
@@ -89,6 +102,9 @@ jobs:
         with:
           context: .
           file: deploy/Dockerfile
+          # The `front` target is the `front` job below. One job per image, on purpose:
+          # a failed front build must not leave the API image unpublished, and the two
+          # builds share nothing but the base-image cache.
           target: api
           platforms: linux/amd64,linux/arm64
           push: true
@@ -124,6 +140,87 @@ jobs:
             echo "Verify the signature:"
             echo '```bash'
             echo "cosign verify ${{ env.IMAGE }}@${{ steps.build.outputs.digest }} \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  front:
+    name: build, push and sign the front door
+    runs-on: ubuntu-latest
+    # The same steps as `image`, on the other target, to a second package. Duplicated
+    # rather than a matrix because the two images are not two of one thing: they have
+    # different labels, different smokes, and one of them exists only when the other is
+    # deployed beside it. A matrix would make the summary read as if there were one.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Sign in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out the tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}-front
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ inputs.tag || 'edge' }},enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.title=carnet-front
+            org.opencontainers.image.description=Carnet's front door - TLS, the browser bundle and the /api rewrite, composed from CARNET_OIDC_* and CARNET_TLS_MODE at start. Deploy beside ghcr.io/carnet-mcp/carnet.
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: front
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image
+        run: cosign sign --yes "${IMAGE}-front@${DIGEST}"
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Say what was published
+        run: |
+          {
+            echo "### Published (front door)"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo
+            echo "Verify the signature:"
+            echo '```bash'
+            echo "cosign verify ${{ env.IMAGE }}-front@${{ steps.build.outputs.digest }} \\"
             echo "  --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \\"
             echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
             echo '```'
@@ -205,3 +302,40 @@ jobs:
 
       - name: The architectures that were published
         run: docker buildx imagetools inspect "$IMAGE_REF" | grep -E "Name|Platform" | head -20
+
+  smoke-front:
+    name: the published front door serves
+    needs: front
+    runs-on: ubuntu-latest
+    # The front door has no API behind it here, and does not need one to prove the
+    # things a stranger's `docker run` can get wrong: that the package is public, that
+    # the entrypoint composes a policy and a certificate from nothing but two variables,
+    # and that the bundle is in the image. Everything past that — the /api rewrite, the
+    # provider in the CSP, a browser signing in — is `e2e_deploy.py`'s and runs on
+    # every pull request against the same Dockerfile target.
+    steps:
+      # For `deploy/smoke-front.sh` below. The image comes from the registry; the check
+      # that interrogates it comes from the repository, so the two cannot drift.
+      - uses: actions/checkout@v7
+
+      - name: Pull the front door the way a stranger does — anonymously
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io || true
+          TAG="${{ github.event_name == 'workflow_dispatch' && (inputs.tag || 'edge') || 'latest' }}"
+          echo "FRONT_REF=${{ env.IMAGE }}-front:${TAG}" >> "$GITHUB_ENV"
+          if ! docker pull "${{ env.IMAGE }}-front:${TAG}"; then
+            echo "::error::anonymous pull of ${{ env.IMAGE }}-front:${TAG} failed. If this says 'unauthorized', the GHCR package is private — make it public at https://github.com/orgs/carnet-mcp/packages/container/carnet-front/settings"
+            exit 1
+          fi
+
+      # The four checks below live in `deploy/smoke-front.sh`, so what CI runs before a
+      # release and what a person can run against a published image by hand are one
+      # file rather than two that drift. Rehearsed against a locally built image of the
+      # same Dockerfile target in the pass after 110f; what only this job can prove is
+      # the registry half above — that the package is public and the pull anonymous.
+      - name: The image alone serves, refuses and 404s
+        run: deploy/smoke-front.sh "$FRONT_REF"
+
+      - name: The architectures that were published
+        run: docker buildx imagetools inspect "$FRONT_REF" | grep -E "Name|Platform" | head -20

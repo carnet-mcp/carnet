@@ -36,7 +36,7 @@ README written for the platform team that runs it in their own cloud.
 | `PUT /agents/{name}/grants/{kind}/{id}` | **`editor`.** Share it. `kind` is `user`, `group` or `email`; the answer says `granted` or `pending`, which is the distinction 006 hid from the sharer |
 | `DELETE /agents/{name}/grants/{kind}/{id}` | **`editor`.** **204**. Revoking somebody whose access is inherited is a **400** naming the group, not a silent no-op |
 | `GET /me` | who you are here, and **whether you may administer this workspace**. No role required — a non-administrator calls it precisely in order to be told they are not one |
-| `GET /admin-audit` | **`admin`.** The administrative log — *who changed who may do what* — oldest first, `limit` capped by the signature. Reading it is deliberately **not** itself recorded |
+| `GET /admin-audit` | **`admin`.** The administrative log — *who changed who may do what* — newest first since 110f, every row carrying its `id`, `?before=<id>` for the rows older than it, `limit` capped by the signature. Reading it is deliberately **not** itself recorded |
 | `GET /groups` | this tenant's groups: id, name, description. **No grant filter**, like `GET /tools` — it is the menu an `editor` picks from when sharing |
 | `POST /groups` | **`admin`.** Create one. **201**, carrying the opaque `group_id` grants will name |
 | `GET /groups/{id}` | **`admin`**, because it carries **membership** — "who is in every group" is a directory of the company, where a name only says a team exists |

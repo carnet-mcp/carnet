@@ -86,6 +86,7 @@ from .base import (
     CANCELLABLE_RUN_STATUSES,
     CONNECTOR_EXISTS,
     CONNECTOR_IN_USE,
+    connected_accounts,
     DEADLINE_PASSED,
     DENIAL_FIELDS,
     DERIVED_CONNECTOR_FIELDS,
@@ -165,6 +166,7 @@ from .base import (
     make_tombstone,
     normalize_email,
     normalize_host,
+    idp_detail,
     normalize_idp,
     normalize_authorize_params,
     normalize_run,
@@ -244,6 +246,8 @@ class InMemoryStorage:
         # a dict of this size makes an index a fiction with a maintenance cost.
         self._agents: dict[str, dict[str, dict]] = {}
         self._connectors: dict[str, dict[str, dict]] = {}
+        # (tenant_id, connector_id) -> recipe id, migration 056. See `create_connector`.
+        self._connector_recipes: dict = {}
         # (tenant, connector) -> the review record for its vetted tools. Separate from
         # the manifest because it is separate in the database, and for the reason it is
         # separate there: provenance is not something a caller asserts by passing a dict.
@@ -257,6 +261,10 @@ class InMemoryStorage:
         # which is what `audit_records` documents and what BIGINT IDENTITY gives us
         # in Postgres.
         self._audit: list[tuple] = []
+        # One sequence over the three logs, as Postgres's identity columns are one per
+        # table: what matters is that ids rise with insertion within a log, which one
+        # counter guarantees. Assigned at append, read back on every row (110f).
+        self._log_ids = 0
         # Migration 022, and a second flat list for the same reason the first is one:
         # insertion order IS the ordering guarantee, which is what BIGINT IDENTITY gives
         # in Postgres. Separate from `_audit` because the two tables are separate, and
@@ -1329,6 +1337,10 @@ class InMemoryStorage:
                     CONNECTOR_EXISTS.format(connector=connector_id, tenant=tenant_id)
                 )
 
+            # Beside the row rather than on it: the row is the manifest, which
+            # round-trips through `save_connector` and must not carry a key that
+            # wholesale write cannot know (migration 056's reasoning).
+            self._connector_recipes[(tenant_id, connector_id)] = from_recipe or ""
             self._connectors[tenant_id][connector_id] = {
                 "id": connector_id,
                 "description": description or "",
@@ -1365,6 +1377,41 @@ class InMemoryStorage:
                 )
             row["allow_asserted_identity"] = bool(allowed)
             self._append_admin(tenant_id, record)
+
+    def connector_recipe(self, tenant_id: str, connector_id: str) -> str:
+        with self._lock:
+            return self._connector_recipes.get((tenant_id, connector_id), "")
+
+    def delete_vetted_tool(
+        self, tenant_id: str, connector_id: str, remote_name: str, *, actor: str
+    ) -> bool:
+        record = make_admin_record(
+            "connector.unvet",
+            "connector",
+            connector_id or "",
+            actor,
+            {"remote_name": remote_name},
+        )
+        with self._lock:
+            connector = self._connectors.get(tenant_id, {}).get(connector_id)
+            if connector is None:
+                raise NoSuchConnectorError(
+                    NO_SUCH_CONNECTOR_TO_VET.format(connector=connector_id, tenant=tenant_id)
+                )
+            before = list(connector.get("vetted") or [])
+            after = [row for row in before if row.get("remote_name") != remote_name]
+            if len(after) == len(before):
+                return False
+            connector["vetted"] = after
+            # The review record goes with the row, as it does in Postgres where it is
+            # columns on the same row: an approval that no longer exists has no
+            # approver. The log keeps who approved it and who withdrew it.
+            key = (tenant_id, connector_id)
+            self._vetting[key] = [
+                entry for entry in self._vetting.get(key, []) if entry.get("remote_name") != remote_name
+            ]
+            self._append_admin(tenant_id, record)
+            return True
 
     def vet_tool(
         self,
@@ -1535,22 +1582,47 @@ class InMemoryStorage:
             for row in stored["vetted"]
         ]
 
-    def delete_connector(self, tenant_id: str, connector_id: str, *, actor: str) -> None:
-        record = make_admin_record(
-            "connector.delete", "connector", connector_id or "", actor
-        )
-
+    def delete_connector(
+        self,
+        tenant_id: str,
+        connector_id: str,
+        *,
+        actor: str,
+        disconnect_accounts: bool = False,
+    ) -> int:
         with self._lock:
-            # Migration 021's delete half: RESTRICT, checked before anything is
-            # removed so a refusal leaves the connector and its vetting intact.
-            if any(
-                key[0] == tenant_id and key[3] == connector_id
+            # Migration 021's delete half: RESTRICT, checked **before anything is
+            # removed** so a refusal leaves the connector, its vetting and its recipe
+            # intact. The recipe used to be dropped on the line above this check, which
+            # meant a refused deletion still forgot which preset a connector came from —
+            # a divergence from Postgres, where the recipe is a column on the row the
+            # refusal protects.
+            connected = [
+                key
                 for key in self._connections
-            ):
+                if key[0] == tenant_id and key[3] == connector_id
+            ]
+            if connected and not disconnect_accounts:
                 raise ConnectorInUseError(
-                    CONNECTOR_IN_USE.format(connector=connector_id, tenant=tenant_id)
+                    CONNECTOR_IN_USE.format(
+                        connector=connector_id,
+                        tenant=tenant_id,
+                        accounts=connected_accounts(len(connected)),
+                    )
                 )
 
+            # Built here rather than before the lock, because the count belongs in the
+            # record and is only known now. Still before any mutation, which is what the
+            # ordering rule is actually about: `make_admin_record` refuses a malformed
+            # actor, and a refusal must not leave a half-written store behind it.
+            record = make_admin_record(
+                "connector.delete", "connector", connector_id or "", actor,
+                {"disconnected": len(connected)} if connected else None,
+            )
+
+            for key in connected:
+                del self._connections[key]
+            self._connector_recipes.pop((tenant_id, connector_id), None)
             removed = self._connectors.get(tenant_id, {}).pop(connector_id, None)
             # The cascade, by hand. `vetted_tools` has ON DELETE CASCADE; a vetting
             # decision has no meaning without the connector it was made about.
@@ -1569,6 +1641,7 @@ class InMemoryStorage:
             # accumulate records of deletions that did not happen.
             if removed is not None:
                 self._append_admin(tenant_id, record)
+            return len(connected)
 
     def load_vetting_record(self, tenant_id: str) -> list[dict]:
         with self._lock:
@@ -1644,7 +1717,8 @@ class InMemoryStorage:
 
         with self._lock:
             self._require_tenant(tenant_id)
-            self._audit.append((tenant_id, copy.deepcopy(row)))
+            self._log_ids += 1
+            self._audit.append((tenant_id, {**copy.deepcopy(row), "id": self._log_ids}))
 
     def audit_records(
         self,
@@ -1690,7 +1764,8 @@ class InMemoryStorage:
         rather than half-written. Postgres gets the same property from the transaction;
         this gets it from the order.
         """
-        self._admin.append((tenant_id, copy.deepcopy(record)))
+        self._log_ids += 1
+        self._admin.append((tenant_id, {**copy.deepcopy(record), "id": self._log_ids}))
 
     def admin_audit_records(
         self,
@@ -1699,6 +1774,7 @@ class InMemoryStorage:
         action: str | None = None,
         target_kind: str | None = None,
         target_id: str | None = None,
+        before: int | None = None,
         limit: int | None = None,
     ) -> list[dict]:
         with self._lock:
@@ -1721,6 +1797,8 @@ class InMemoryStorage:
             # record is.
             row["ts"] = row["ts"].isoformat(timespec="milliseconds")
 
+        if before is not None:
+            rows = [row for row in rows if row["id"] < before]
         if limit is not None:
             rows = rows[-limit:] if limit > 0 else []
         return rows
@@ -1768,7 +1846,8 @@ class InMemoryStorage:
             # for a deleted customer is one that re-populates a table the deletion just
             # emptied.
             self._require_tenant(tenant_id)
-            self._denials.append((tenant_id, copy.deepcopy(row)))
+            self._log_ids += 1
+            self._denials.append((tenant_id, {**copy.deepcopy(row), "id": self._log_ids}))
 
     def denial_records(
         self,
@@ -1778,6 +1857,7 @@ class InMemoryStorage:
         principal_id: str | None = None,
         resource_kind: str | None = None,
         resource_id: str | None = None,
+        before: int | None = None,
         limit: int | None = None,
     ) -> list[dict]:
         with self._lock:
@@ -1798,6 +1878,8 @@ class InMemoryStorage:
             # would make the two stores disagree about what a record is.
             row["ts"] = row["ts"].isoformat(timespec="milliseconds")
 
+        if before is not None:
+            rows = [row for row in rows if row["id"] < before]
         if limit is not None:
             rows = rows[-limit:] if limit > 0 else []
         return rows
@@ -1844,6 +1926,7 @@ class InMemoryStorage:
         self,
         tenant_id: str,
         *,
+        before: int | None = None,
         limit: int | None = None,
         since: date | None = None,
         until: date | None = None,
@@ -1899,6 +1982,8 @@ class InMemoryStorage:
                     continue
                 rows.append({**copy.deepcopy(record), "tenant_id": tid, "owner": owner})
 
+        if before is not None:
+            rows = [row for row in rows if row["id"] < before]
         if limit is not None:
             # The most recent N, still oldest-first — `audit_records`' rule.
             rows = rows[-limit:] if limit > 0 else []
@@ -2774,8 +2859,15 @@ class InMemoryStorage:
 
     # --- identity providers -----------------------------------------------------
 
-    def save_tenant_idp(self, tenant_id: str, idp: dict) -> None:
+    def save_tenant_idp(self, tenant_id: str, idp: dict, *, actor: str | None = None) -> None:
         row = normalize_idp(idp)
+        # Built before the lock, as every record here is: `make_admin_record` refuses a
+        # malformed actor, and a refusal must not leave a half-written store behind it.
+        record = (
+            make_admin_record("idp.save", "idp", row["issuer"], actor, idp_detail(row))
+            if actor
+            else None
+        )
 
         with self._lock:
             self._require_tenant(tenant_id)
@@ -2785,6 +2877,8 @@ class InMemoryStorage:
 
             was = (self._idps.get(key) or {}).get("groups_claim")
             self._idps[key] = {**row, "tenant_id": tenant_id}
+            if record is not None:
+                self._append_admin(tenant_id, record)
             # Step 033e: the claim mapping is half of what a reconciliation reads, so a
             # registration that **moves** it must be believed at the next request — and
             # one that does not must not stampede the tenant. See the Postgres sibling.
@@ -2844,8 +2938,22 @@ class InMemoryStorage:
         return sorted(rows, key=lambda r: (r["issuer"], r["discriminator_value"] or ""))
 
     def delete_tenant_idp(
-        self, tenant_id: str, issuer: str, discriminator_value: str | None = None
+        self,
+        tenant_id: str,
+        issuer: str,
+        discriminator_value: str | None = None,
+        *,
+        actor: str | None = None,
     ) -> None:
+        record = (
+            make_admin_record(
+                "idp.remove", "idp", issuer, actor,
+                {"discriminator_value": discriminator_value or ""},
+            )
+            if actor
+            else None
+        )
+
         with self._lock:
             doomed = [
                 key
@@ -2856,6 +2964,9 @@ class InMemoryStorage:
             ]
             for key in doomed:
                 del self._idps[key]
+            # Only when a row went — see the protocol.
+            if record is not None and doomed:
+                self._append_admin(tenant_id, record)
 
     # --- users ------------------------------------------------------------------
 

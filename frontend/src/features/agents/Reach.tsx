@@ -253,6 +253,13 @@ function Resources({
     );
   }
 
+  // Plan 107, D8. Granted tools that declare no resource sit beside the table rather
+  // than inside it: the table pairs each scope entry with the tools it narrows, and
+  // these are narrowed by nothing. Said as a fact about the tools, not a warning.
+  const unrestricted = known
+    ? granted.filter((entry) => entry.tool !== null && entry.tool.resources.length === 0)
+    : [];
+
   /** Which granted tools touch this resource type at this effect. */
   function usedBy(resource: string, effect: string): string[] {
     return granted
@@ -265,6 +272,7 @@ function Resources({
   }
 
   return (
+    <>
     <table>
       <thead>
         <tr>
@@ -311,5 +319,17 @@ function Resources({
         )}
       </tbody>
     </table>
+    {unrestricted.length > 0 && (
+      <>
+        <h3>Not restricted</h3>
+        <p className="muted">
+          {unrestricted.map((entry) => entry.name).join(", ")}{" "}
+          {unrestricted.length === 1 ? "does" : "do"} not take a resource, so{" "}
+          {unrestricted.length === 1 ? "it is" : "they are"} not restricted to particular
+          items.
+        </p>
+      </>
+    )}
+    </>
   );
 }

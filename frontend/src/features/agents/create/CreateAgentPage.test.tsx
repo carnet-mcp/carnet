@@ -55,7 +55,7 @@ const POST_MESSAGE = {
   description: "Post a message to a team chat channel.",
   note: "",
   effect: "write" as const,
-  resources: [{ type: "chat.channel" }],
+  resources: [{ type: "chat.channel", families: [] }],
   identity: "service" as const,
   max_response_bytes: null,
   vetted_by: "",
@@ -69,7 +69,7 @@ const LIST_ISSUES = {
   description: "List issues in a GitHub repository.",
   note: "Scope it to the repositories a team actually owns.",
   effect: "read" as const,
-  resources: [{ type: "github.repo" }],
+  resources: [{ type: "github.repo", families: [] }],
   max_response_bytes: 262144,
 };
 
@@ -85,7 +85,7 @@ const TRACKER_LIST = {
   description: "List issues in a repository.",
   note: "Authored at vetting time.",
   effect: "read" as const,
-  resources: [{ type: "github.repo" }],
+  resources: [{ type: "github.repo", families: [] }],
 };
 
 const CATALOGUE: ToolGroup[] = [
@@ -331,6 +331,36 @@ describe("what the wizard stopped asking for", () => {
     fireEvent.click(next());
   }
 
+  it("is three steps when no selected tool takes a resource (107 D8)", async () => {
+    // A *whoami* has nothing to narrow, so the Resources step is not in the strip at
+    // all — the pattern 081 removed the Ceilings step for. The tool says so where its
+    // resource tags would be, and the review says it in a sentence.
+    const WHOAMI = {
+      ...LIST_ISSUES,
+      name: "github_mcp_whoami",
+      remote_name: "whoami",
+      description: "Who the token belongs to.",
+      note: "",
+      resources: [],
+    };
+    open([{ origin: "connector", id: "github-mcp", description: "", tools: [WHOAMI] }]);
+    await nameIt();
+
+    const row = (await screen.findByText("github_mcp_whoami")).closest("label")!;
+    expect(within(row).getByText("unrestricted")).toBeInTheDocument();
+    tick("github_mcp_whoami");
+    expect(screen.getByText(/github_mcp_whoami is not restricted to particular items/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Resources/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+
+    fireEvent.click(next());
+
+    expect(
+      await screen.findByRole("heading", { name: "Resource access" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/do not take a resource, so they are not restricted/)).toBeInTheDocument();
+  });
+
   it("is four steps, and the fourth is the review", async () => {
     await toTheEnd();
 
@@ -420,7 +450,8 @@ describe("creating it", () => {
   it("checks the draft with the server before offering the button", async () => {
     open();
     await nameIt();
-    fireEvent.click(next());
+    // One Continue, not two: with no tools ticked there is no resource to choose, and
+    // since 107 D8 the Resources step is not in the strip at all.
     fireEvent.click(next());
 
     expect(await screen.findByRole("heading", { name: "Ready to create" })).toBeInTheDocument();
@@ -440,7 +471,6 @@ describe("creating it", () => {
       ),
     );
     await nameIt();
-    fireEvent.click(next());
     fireEvent.click(next());
 
     expect(await screen.findByRole("heading", { name: "Configuration not accepted" })).toBeInTheDocument();

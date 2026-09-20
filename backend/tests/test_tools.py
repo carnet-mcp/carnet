@@ -301,11 +301,16 @@ def test_the_catalogue_reports_resource_types_and_nothing_else(vetted_github):
 
     Handing `args` and `template` to a client invites it to build a scope out of
     argument names — the coupling the type exists to prevent, invisible until a second
-    connector names the same resource differently."""
+    connector names the same resource differently.
+
+    `families` joined the type in step 110 and is the other kind of fact: what a scope
+    line may *say* about the type, declared by the vetter for exactly that. The argument
+    names are still the thing this test holds out."""
     for group in tools.catalogue(TENANT):
         for tool in group["tools"]:
             for ref in tool["resources"]:
-                assert set(ref) == {"type"}
+                assert set(ref) == {"type", "families"}
+                assert not {"args", "template"} & set(ref)
 
 
 def test_builtins_have_no_review_record_and_do_not_invent_one():

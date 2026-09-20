@@ -44,6 +44,7 @@ import {
   scopeOf,
   slugify,
   toConfig,
+  unrestrictedTools,
 } from "./draft";
 import { UNREAD } from "../features/agents/AgentDetailPage";
 import type { ToolGroup } from "./types";
@@ -84,7 +85,7 @@ function tool(name: string, effect: "read" | "write", resources: string[]) {
     note: "",
     effect,
     identity: "service" as const,
-    resources: resources.map((type) => ({ type })),
+    resources: resources.map((type) => ({ type, families: [] })),
     max_response_bytes: null,
     vetted_by: "",
     vetted_at: "",
@@ -193,6 +194,24 @@ describe("the scope is derived, in both directions", () => {
     ];
     expect(requiredRows(["think"], none)).toEqual([]);
     expect(scopeOf(draft({ tools: ["think"] }), none)).toEqual({});
+  });
+
+  it("names such a tool as unrestricted, and only such a tool (107 D8)", () => {
+    // The complement of `requiredRows`: a ticked tool contributes a row or appears here,
+    // never both — and a name the catalogue does not describe appears in neither.
+    const mixed: ToolGroup[] = [
+      {
+        origin: "builtin",
+        id: "",
+        description: "",
+        tools: [tool("think", "read", []), tool("post_message", "write", ["chat.channel"])],
+      },
+    ];
+    expect(unrestrictedTools(["post_message", "think", "withdrawn"], mixed)).toEqual(["think"]);
+    expect(unrestrictedTools(["think"], null)).toEqual([]);
+    expect(requiredRows(["post_message", "think"], mixed).map((r) => r.resource)).toEqual([
+      "chat.channel",
+    ]);
   });
 });
 

@@ -37,7 +37,7 @@ import {
   Tag,
   brandOf,
 } from "../../../components/ui";
-import type { Draft } from "../../../lib/draft";
+import { type Draft, unrestrictedTools } from "../../../lib/draft";
 import { useAdmin } from "../../../lib/me";
 import type { ToolGroup, ToolSummary } from "../../../lib/types";
 import type { StepProps } from "./CreateAgentPage";
@@ -70,6 +70,7 @@ export default function StepTools({ draft, set, catalogue, catalogueFailed }: St
   const all = catalogue.flatMap((group) => group.tools);
   const chosen = all.filter((tool) => draft.tools.includes(tool.name));
   const writes = chosen.filter((tool) => tool.effect === "write");
+  const unrestricted = unrestrictedTools(draft.tools, catalogue);
 
   /** Ticked names that are **no longer in the catalogue**, and therefore have no tick box.
    *
@@ -163,6 +164,17 @@ export default function StepTools({ draft, set, catalogue, catalogueFailed }: St
         ) : chosen.length > 0 ? (
           <p className="muted">The selected tools only read data.</p>
         ) : null}
+
+        {/* Plan 107, D8: the one fact about a tool the permission model cannot express
+            and a person granting it must know. A tool with no resource mapping is not
+            narrowed by anything on the next step, because there is no next step for it. */}
+        {unrestricted.length > 0 && (
+          <p className="muted">
+            {unrestricted.length === 1
+              ? `${unrestricted[0]} is not restricted to particular items: anyone granted it can use it on anything their account can reach.`
+              : `${unrestricted.length} of the selected tools are not restricted to particular items: anyone granted them can use them on anything their account can reach.`}
+          </p>
+        )}
       </Card>
 
       {withdrawn.length > 0 && (
@@ -258,6 +270,14 @@ function ToolChoice({
               {ref.type}
             </Tag>
           ))}
+          {/* Plan 107, D8. Where the resource tags would be, so the absence is said
+              rather than left as a blank a reader has to notice. The sentence rides on
+              hover; the review step states it in full. */}
+          {tool.resources.length === 0 && (
+            <span title="This tool has no resource mapping. Anyone granted it can use it on anything their account can reach.">
+              <Tag>unrestricted</Tag>
+            </span>
+          )}
         </div>
 
         {tool.description ? (

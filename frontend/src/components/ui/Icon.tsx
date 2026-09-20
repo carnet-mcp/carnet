@@ -25,6 +25,9 @@ export type IconName =
   | "denied"
   | "groups"
   | "connectors"
+  | "identity"
+  | "people"
+  | "roles"
   | "signout"
   | "collapse"
   | "expand"
@@ -89,6 +92,25 @@ const PATHS: Record<IconName, string[]> = {
   denied: [
     "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18",
     "m5.6 5.6 12.8 12.8",
+  ],
+  // 110. A key, because an identity provider is who holds the key that lets a person
+  // in — and not a person, which is `groups` two rows down, or a lock, which is what
+  // `admin` already is. Distinct at 16px from both.
+  identity: [
+    "M15 3a6 6 0 1 1-4.3 10.2L4 20v-4h4v-3h3l.7-.7A6 6 0 0 1 15 3z",
+    "M15 9h.01",
+  ],
+  // 110. One person, where `groups` is two: the people page is about individuals — who
+  // is here, who is cut off — and the group page is about sets of them.
+  people: [
+    "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2",
+    "M12 3a4 4 0 1 1 0 8 4 4 0 0 1 0-8z",
+  ],
+  // 110. A badge with a star: a role is something pinned on a person. `admin` is the
+  // shield-with-tick and stays the audit log's; this is who holds the authority, not
+  // the record of its use.
+  roles: [
+    "M12 3 14.5 8.3 20.3 9l-4.3 4 1 5.8L12 16l-5 2.8 1-5.8-4.3-4 5.8-.7z",
   ],
   groups: [
     "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",

@@ -42,7 +42,7 @@ from carnet.api import create_app, deps  # noqa: E402
 from carnet.api.schemas import AgentDraft  # noqa: E402
 from carnet.tools import mcp  # noqa: E402
 
-from carnet.access import grants
+from carnet.access import connections, grants
 from carnet.core import Principal
 
 from conftest import TEST_TENANT
@@ -2631,6 +2631,9 @@ def test_every_row_carries_every_field_whatever_its_state(client, auth, oauth_ji
                 # connector's consent flow has no prose" looks like, and it is a
                 # different fact from the key being absent.
                 "scope_notes",
+                # 110f (plan 107 D11): which agents act as the caller here. Empty on a
+                # row nothing depends on, like the rest.
+                "used_by",
             }
         )
     }
@@ -2668,6 +2671,7 @@ def test_the_connections_response_declares_every_field_as_required(client, auth,
         "scopes",
         "state",
         "updated_at",
+        "used_by",
     ]
 
 
@@ -2993,6 +2997,7 @@ def test_the_administrative_log_becomes_readable_once_the_role_is_granted(
 
     first = response.json()[0]
     assert set(first) == {
+        "id",
         "v",
         "ts",
         "actor_kind",
@@ -4241,6 +4246,734 @@ def test_an_unauthenticated_caller_on_a_connector_route_is_401(
     assert response.status_code == 401
 
 
+# --- identity providers over HTTP (110) -----------------------------------------------
+#
+# The first thing in an administrator's hour, and until 110 the only one with no browser
+# path at all. What is worth asserting is not that the routes exist: it is that every
+# refusal is the store's own sentence (one statement of a valid provider, read by two
+# doors), that removal cannot lock the tenant out from a browser, and that discovery is
+# a pinned dial whose answer is checked against what was asked for.
+
+# A second Okta org, not the test tenant's own (`ISSUER`), so a refused registration
+# can be asserted to have left nothing behind.
+OKTA_ROW = {
+    "issuer": "https://acme-two.okta.example",
+    "jwks_uri": "https://acme-two.okta.example/oauth2/v1/keys",
+    "audience": "api://default",
+}
+ENTRA_ROW = {
+    "issuer": "https://login.example.com/tenant-1/v2.0",
+    "jwks_uri": "https://login.example.com/tenant-1/discovery/v2.0/keys",
+    "audience": "api://carnet",
+    "email_claim": "preferred_username",
+    "groups_claim": "groups",
+    "allowed_domains": ["acme.com"],
+}
+
+
+def test_the_providers_are_listed_with_every_column(client, auth, admin, registered):
+    (row,) = client.get("/admin/idps", headers=auth).json()
+
+    assert row["issuer"] == ISSUER
+    assert row["jwks_uri"] == registered.jwks_uri
+    assert row["audience"] == AUDIENCE
+    assert row["allowed_domains"] == ["acme.com"]
+    assert (row["subject_claim"], row["email_claim"], row["groups_claim"]) == ("sub", "email", None)
+    assert row["enabled"] is True
+
+
+def test_registering_and_removing_a_provider_is_recorded_with_who_did_it(
+    client, auth, admin, registered
+):
+    """The one gap 110d shipped knowing about, closed in the pass after 110f: who may
+    sign in at all was the last thing in this product a person could change without
+    leaving a trace. Both acts land in the administrative log, with the person, and a
+    re-registration that rotates a key set is a second decision and a second record —
+    `egress.allow`'s rule, because the row is an upsert."""
+    me = logged_in_id(client, auth)
+
+    client.post("/admin/idps", json=ENTRA_ROW, headers=auth)
+    client.post(
+        "/admin/idps",
+        json={**ENTRA_ROW, "jwks_uri": "https://login.example.com/keys/rotated"},
+        headers=auth,
+    )
+    client.delete(
+        "/admin/idps", params={"issuer": ENTRA_ROW["issuer"]}, headers=auth
+    )
+
+    rows = [
+        row
+        for row in storage.active().admin_audit_records(TEST_TENANT)
+        if row["action"].startswith("idp.")
+    ]
+    assert [row["action"] for row in rows] == ["idp.save", "idp.save", "idp.remove"]
+    assert {row["target_kind"] for row in rows} == {"idp"}
+    assert {row["target_id"] for row in rows} == {ENTRA_ROW["issuer"]}
+    assert {(row["actor_kind"], row["actor_id"]) for row in rows} == {("user", me)}
+    # The detail is what the row says, which is where a rotation is visible — and
+    # nothing here is a secret: a provider is URLs and claim names.
+    assert rows[1]["detail"]["jwks_uri"] == "https://login.example.com/keys/rotated"
+    assert rows[0]["detail"]["allowed_domains"] == ["acme.com"]
+
+
+def test_removing_a_provider_that_was_not_there_records_nothing(client, auth, admin, registered):
+    """`connector.unvet`'s rule: an idempotent removal that found nothing to remove took
+    no decision, and a record of one would be a record of something nobody did."""
+    before = len(storage.active().admin_audit_records(TEST_TENANT, action="idp.remove"))
+
+    client.delete("/admin/idps", params={"issuer": "https://nobody.example.com"}, headers=auth)
+
+    assert len(storage.active().admin_audit_records(TEST_TENANT, action="idp.remove")) == before
+
+
+def test_registering_a_provider_is_the_cli_flags_as_a_body(client, auth, admin, registered):
+    """`--add-idp`, over HTTP, for the caller's own tenant. 200 and `replaced: false`
+    the first time; the row comes back as the store holds it."""
+    response = client.post("/admin/idps", json=ENTRA_ROW, headers=auth)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["replaced"] is False
+    assert body["provider"]["email_claim"] == "preferred_username"
+    assert body["provider"]["groups_claim"] == "groups"
+    assert body["provider"]["allowed_domains"] == ["acme.com"]
+
+    issuers = [row["issuer"] for row in client.get("/admin/idps", headers=auth).json()]
+    assert issuers == sorted([ISSUER, ENTRA_ROW["issuer"]])
+    # And the store agrees, keyed the way a token would find it.
+    (found,) = storage.active().find_tenant_idps(ENTRA_ROW["issuer"])
+    assert found["tenant_id"] == TEST_TENANT
+
+
+def test_registering_again_replaces_and_says_so(client, auth, admin, registered):
+    """An upsert, exactly as `--add-idp` is — and the trap `--add-idp`'s own output was
+    written against: re-registering to change one thing resets the claim mappings to
+    their defaults. `replaced` is the screen's cue to show what it overwrote."""
+    client.post("/admin/idps", json=ENTRA_ROW, headers=auth)
+    again = client.post(
+        "/admin/idps", json={**OKTA_ROW, "issuer": ENTRA_ROW["issuer"]}, headers=auth
+    )
+
+    assert again.status_code == 200
+    assert again.json()["replaced"] is True
+    assert again.json()["provider"]["email_claim"] == "email"
+
+
+def test_a_malformed_provider_is_the_normalisers_own_400(client, auth, admin, registered):
+    """One statement of what a valid provider is, and it is `storage.normalize_idp`'s
+    — not a second copy in the schema. The route's refusals are its sentences."""
+    bad_keys = client.post("/admin/idps", json={**OKTA_ROW, "jwks_uri": "keys"}, headers=auth)
+    assert bad_keys.status_code == 400
+    assert "jwks_uri must be an http(s) URL" in bad_keys.json()["detail"]
+
+    pasted = client.post(
+        "/admin/idps", json={**OKTA_ROW, "issuer": "https://acme.okta.example\n"}, headers=auth
+    )
+    assert pasted.status_code == 400
+    assert "whitespace or control characters" in pasted.json()["detail"]
+
+    half = client.post(
+        "/admin/idps", json={**OKTA_ROW, "discriminator_claim": "hd"}, headers=auth
+    )
+    assert half.status_code == 400
+    assert "given together" in half.json()["detail"]
+
+    wildcard = client.post(
+        "/admin/idps", json={**OKTA_ROW, "allowed_domains": ["*"]}, headers=auth
+    )
+    assert wildcard.status_code == 400
+    assert "not an allowed email domain" in wildcard.json()["detail"]
+    assert storage.active().find_tenant_idps(OKTA_ROW["issuer"]) == []
+
+
+def test_a_provider_that_would_make_a_token_ambiguous_is_a_409(client, auth, admin, registered):
+    """`IssuerConflictError` is a `StorageError` by class and was a 503 by handler —
+    which would tell an administrator at a form that the database was down. It is the
+    one storage refusal whose consequence is a cross-tenant read; 409 with the sentence."""
+    # The test tenant already claims the whole issuer; a discriminated row on the same
+    # issuer is the second of `save_tenant_idp`'s three ambiguous shapes.
+    response = client.post(
+        "/admin/idps",
+        json={
+            **OKTA_ROW,
+            "issuer": ISSUER,
+            "discriminator_claim": "hd",
+            "discriminator_value": "acme.com",
+        },
+        headers=auth,
+    )
+
+    assert response.status_code == 409, response.text
+    assert ISSUER in response.json()["detail"]
+
+
+def test_removing_the_provider_you_signed_in_through_is_refused(client, auth, admin, registered):
+    """The tenant-deletion button plan 110 declined, in miniature: a removal that locks
+    the tenant out with the person who pressed it inside. There is no `--delete-idp`, so
+    the refusal is the whole guard."""
+    client.post("/admin/idps", json=ENTRA_ROW, headers=auth)
+
+    response = client.delete("/admin/idps", params={"issuer": ISSUER}, headers=auth)
+
+    assert response.status_code == 400
+    assert "you signed in through" in response.json()["detail"]
+    assert len(client.get("/admin/idps", headers=auth).json()) == 2
+
+
+def test_removing_another_provider_is_idempotent_and_says_whether_it_was_there(
+    client, auth, admin, registered
+):
+    client.post("/admin/idps", json=ENTRA_ROW, headers=auth)
+
+    first = client.delete("/admin/idps", params={"issuer": ENTRA_ROW["issuer"]}, headers=auth)
+    second = client.delete("/admin/idps", params={"issuer": ENTRA_ROW["issuer"]}, headers=auth)
+
+    assert (first.status_code, first.json()["removed"]) == (200, True)
+    assert (second.status_code, second.json()["removed"]) == (200, False)
+    assert [r["issuer"] for r in client.get("/admin/idps", headers=auth).json()] == [ISSUER]
+
+
+def test_discovery_fills_the_jwks_from_the_document(client, auth, admin, registered, monkeypatch):
+    from carnet.api import routes_admin_idps
+
+    asked = []
+
+    def document(issuer):
+        asked.append(issuer)
+        return {
+            "issuer": issuer,
+            "jwks_uri": f"{issuer}/oauth2/v1/keys",
+            "claims_supported": ["sub", "email", "groups", 7],
+        }
+
+    monkeypatch.setattr(routes_admin_idps, "_fetch_discovery", document)
+
+    response = client.post(
+        "/admin/idps/discover", json={"issuer": "https://acme.okta.example"}, headers=auth
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "issuer": "https://acme.okta.example",
+        "jwks_uri": "https://acme.okta.example/oauth2/v1/keys",
+        "claims_supported": ["sub", "email", "groups"],
+    }
+    assert asked == ["https://acme.okta.example"]
+
+
+def test_discovery_refuses_a_document_whose_issuer_is_not_the_one_asked_for(
+    client, auth, admin, registered, monkeypatch
+):
+    """A token's `iss` is compared byte for byte, so a form that registered the
+    document's spelling in place of the typed one would register a provider no token
+    matches — and one that registered the typed spelling would register one the
+    provider never emits. Both spellings in the sentence, nothing corrected."""
+    from carnet.api import routes_admin_idps
+
+    monkeypatch.setattr(
+        routes_admin_idps,
+        "_fetch_discovery",
+        lambda issuer: {"issuer": issuer + "/", "jwks_uri": issuer + "/keys"},
+    )
+
+    response = client.post(
+        "/admin/idps/discover", json={"issuer": "https://acme.okta.example"}, headers=auth
+    )
+
+    assert response.status_code == 400
+    assert "https://acme.okta.example/" in response.json()["detail"]
+    assert "must match" in response.json()["detail"]
+
+
+def test_discovery_that_cannot_reach_the_issuer_is_a_502_naming_the_remedy(
+    client, auth, admin, registered, monkeypatch
+):
+    """The connector discovery route's rule: a third party that did not answer is a
+    502, and the sentence says what to do instead (type the JWKS URL by hand)."""
+    import requests
+
+    from carnet.tools import mcp
+
+    def unreachable(*_args, **_kwargs):
+        raise requests.ConnectionError("no route to host")
+
+    monkeypatch.setattr(mcp.egress, "dial", unreachable)
+
+    response = client.post(
+        "/admin/idps/discover", json={"issuer": "https://idp.acme.example"}, headers=auth
+    )
+
+    assert response.status_code == 502
+    assert "enter its JWKS URL by hand" in response.json()["detail"]
+
+
+def test_discovery_is_a_pinned_dial_that_refuses_the_metadata_service(
+    client, auth, admin, registered
+):
+    """The form is an SSRF primitive with a friendly front, which is the sentence
+    `egress.py` was written around. Operator consent admits loopback and private
+    addresses — an in-network IdP lives there — and never link-local."""
+    response = client.post(
+        "/admin/idps/discover", json={"issuer": "http://169.254.169.254"}, headers=auth
+    )
+
+    assert response.status_code == 400
+    assert "169.254.169.254" in response.json()["detail"]
+
+
+# --- people and platform roles over HTTP (110) --------------------------------------
+#
+# Disabling is here and granting is not, and the tests hold that line: the people routes
+# reach the one offboarding seam, refuse the caller's own row, and say when they changed
+# nothing; the roles route is a read that names people by address and appointers by
+# principal.
+
+
+def _tom_pushed() -> str:
+    """A row written directly, the way a directory push writes one (071): a person the
+    tenant knows about who has never signed in."""
+    storage.active().create_user(
+        TEST_TENANT,
+        {"id": "u-tom", "issuer": ISSUER, "subject": "00u-tom", "email": "tom@acme.com"},
+    )
+    return "u-tom"
+
+
+def test_people_are_listed_with_status_and_whether_they_have_signed_in(client, auth, admin):
+    """The caller has signed in (that is what created their row); tom's row was
+    written directly, the way a directory push writes one, and has never been here."""
+    tom = _tom_pushed()
+    rows = {row["id"]: row for row in client.get("/admin/users", headers=auth).json()}
+
+    assert rows[admin]["signed_in"] is True
+    assert rows[admin]["status"] == "active"
+    assert rows[admin]["last_seen_at"] != ""
+    assert rows[tom] == {
+        "id": "u-tom",
+        "email": "tom@acme.com",
+        "display_name": "",
+        "status": "active",
+        "issuer": ISSUER,
+        "external_id": "",
+        "signed_in": False,
+        "last_seen_at": "",
+    }
+
+
+def test_disabling_and_enabling_go_through_the_seam_and_say_what_changed(client, auth, admin):
+    tom = _tom_pushed()
+    disabled = client.post(f"/admin/users/{tom}/disable", headers=auth)
+    again = client.post(f"/admin/users/{tom}/disable", headers=auth)
+    enabled = client.post(f"/admin/users/{tom}/enable", headers=auth)
+
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json() == {"id": tom, "email": "tom@acme.com", "status": "disabled", "changed": True}
+    assert again.json()["changed"] is False
+    assert enabled.json() == {"id": tom, "email": "tom@acme.com", "status": "active", "changed": True}
+
+    # The seam records it — once per real change, with the route as the cause — which is
+    # what makes this the same act as `--disable-user` and a SCIM push.
+    actions = [
+        (row["action"], row.get("detail", {}).get("cause"))
+        for row in storage.active().admin_audit_records(TEST_TENANT)
+        if row["action"] in ("user.disable", "user.enable")
+    ]
+    assert actions == [
+        ("user.disable", "POST /admin/users/disable"),
+        ("user.enable", "POST /admin/users/enable"),
+    ]
+    assert storage.active().get_user(TEST_TENANT, tom)["status"] == "active"
+
+
+def test_a_disabled_person_is_refused_at_the_door_from_the_next_request(
+    client, auth, admin, registered
+):
+    """The consequence, seen from the disabled person's side: `users.resolve` re-reads
+    the row on every request, so the very next one is a 403 naming the account."""
+    sam = {"Authorization": f"Bearer {registered.token(sub='00u-sam', email='sam@acme.com')}"}
+    assert client.get("/me", headers=sam).status_code == 200
+    sam_id = next(
+        row["id"] for row in storage.active().list_users(TEST_TENANT) if row["email"] == "sam@acme.com"
+    )
+
+    client.post(f"/admin/users/{sam_id}/disable", headers=auth)
+
+    refused = client.get("/me", headers=sam)
+    assert refused.status_code == 403
+    assert "disabled" in refused.json()["detail"]
+
+
+def test_disabling_yourself_is_refused_with_the_way_back(client, auth, admin):
+    response = client.post(f"/admin/users/{admin}/disable", headers=auth)
+
+    assert response.status_code == 400
+    assert "cannot disable yourself" in response.json()["detail"]
+    assert "--disable-user" in response.json()["detail"]
+    assert storage.active().get_user(TEST_TENANT, admin)["status"] == "active"
+
+
+def test_disabling_nobody_is_a_400_that_says_how_people_arrive(client, auth, admin):
+    response = client.post("/admin/users/u-nobody/disable", headers=auth)
+
+    assert response.status_code == 400
+    assert "there is no user 'u-nobody'" in response.json()["detail"]
+
+
+def test_platform_roles_are_listed_by_address_and_appointer(client, auth, admin):
+    """A read, and only a read: the roles page prints the shell command for a change.
+    The row names the person by address and the appointer by principal, because who
+    appointed an administrator is a fact about a principal."""
+    (row,) = client.get("/admin/roles", headers=auth).json()
+
+    assert row["principal"] == f"user:{admin}"
+    assert row["kind"] == "user"
+    assert row["id"] == admin
+    assert row["email"].endswith("@acme.com")
+    assert row["role"] == "admin"
+    assert row["granted_by"] == "system:cli"
+    assert row["granted_at"] != ""
+
+
+def test_there_is_no_way_to_grant_a_role_over_http(client, auth, admin):
+    """12b's refusal, restated by 110 decision 3 and pinned: no route mints an
+    administrator. A 404 or 405 for every spelling somebody might try."""
+    for method, path in (
+        ("PUT", f"/admin/roles/user/{admin}/admin"),
+        ("POST", "/admin/roles"),
+        ("PUT", f"/roles/user/{admin}/admin"),
+        ("DELETE", f"/admin/roles/user/{admin}/admin"),
+    ):
+        response = client.request(method, path, headers=auth, json={"role": "admin"})
+        assert response.status_code in (404, 405), (method, path, response.status_code)
+
+
+# --- discovery's credential, withdrawing an approval, deregistering (107 D5, D7) --------
+
+
+def test_the_discovery_credential_is_said_before_the_click(
+    client, auth, registered_jira, monkeypatch
+):
+    """Plan 107 D5. The owner's first observation: Discover answered a 401 on a fresh
+    OAuth connector and nothing said why. The probe resolves the credential in the same
+    order the dial does, through the same function, without dialling."""
+    monkeypatch.delenv("JIRA_TOKEN", raising=False)
+    none = client.get("/admin/connectors/jira/discovery-credential", headers=auth)
+    assert none.status_code == 200, none.text
+    assert none.json() == {"credential": "none", "shared_via": ""}
+
+    monkeypatch.setenv("JIRA_TOKEN", "secret")
+    shared = client.get("/admin/connectors/jira/discovery-credential", headers=auth).json()
+    assert shared == {"credential": "shared", "shared_via": "JIRA_TOKEN"}
+    # Never the value: the variable's name is not a secret and its value is.
+    assert "secret" not in json.dumps(shared)
+
+
+def test_discovery_says_which_credential_it_dialled_with(
+    client, auth, registered_jira, fake_server, monkeypatch
+):
+    monkeypatch.setenv("JIRA_TOKEN", "secret")
+    seen = client.post("/admin/connectors/jira/discovery", headers=auth)
+    assert seen.status_code == 200, seen.text
+    assert seen.json()["credential"] == "shared"
+
+
+def test_withdrawing_an_approval_removes_that_row_and_records_it(
+    client, auth, registered_jira, fake_server
+):
+    """`vet_tool`'s inverse and its shape: one row, keyed by the remote name, every other
+    approval untouched, and a record only when a row went."""
+    for name in ("search_issues", "create_issue"):
+        body = {"effect": "read"} if name == "search_issues" else {
+            "effect": "write", "resources": [PROJECT_SCOPE],
+        }
+        assert client.put(f"/admin/connectors/jira/tools/{name}", json=body, headers=auth).status_code == 200
+
+    gone = client.delete("/admin/connectors/jira/tools/search_issues", headers=auth)
+    again = client.delete("/admin/connectors/jira/tools/search_issues", headers=auth)
+
+    assert (gone.status_code, gone.json()) == (200, {"remote_name": "search_issues", "removed": True})
+    assert again.json()["removed"] is False
+    remaining = [t["remote_name"] for t in client.get("/admin/connectors/jira", headers=auth).json()["tools"]]
+    assert remaining == ["create_issue"]
+    withdrawn = [
+        row["detail"]["remote_name"]
+        for row in storage.active().admin_audit_records(TEST_TENANT)
+        if row["action"] == "connector.unvet"
+    ]
+    assert withdrawn == ["search_issues"]
+
+
+def test_withdrawing_from_a_connector_nobody_registered_is_a_400(client, auth, admin):
+    response = client.delete("/admin/connectors/nope/tools/x", headers=auth)
+    assert response.status_code == 400
+    assert "nope" in response.json()["detail"]
+
+
+def test_deregistering_removes_the_connector_and_its_approvals(
+    client, auth, registered_jira, fake_server
+):
+    client.put("/admin/connectors/jira/tools/search_issues", json={"effect": "read"}, headers=auth)
+
+    gone = client.delete("/admin/connectors/jira", headers=auth)
+    again = client.delete("/admin/connectors/jira", headers=auth)
+
+    assert (gone.status_code, gone.json()) == (
+        200,
+        {"connector_id": "jira", "removed": True, "disconnected": 0},
+    )
+    assert again.json()["removed"] is False
+    assert client.get("/admin/connectors", headers=auth).json() == []
+    assert storage.active().get_connector(TEST_TENANT, "jira") is None
+
+
+def test_deregistering_a_connector_somebody_is_connected_to_is_a_409(
+    client, auth, registered_jira, monkeypatch
+):
+    """Migration 021's RESTRICT, surfaced: a sealed credential is never deleted as a
+    side effect of an administrative act about configuration, and 409 is the status
+    for a write the state of the world forbids. Plan 107 said the opposite; the
+    migration is the older and better-argued decision."""
+    from carnet import tools as tools_layer  # noqa: PLC0415
+    from carnet.storage.base import CONNECTOR_IN_USE, ConnectorInUseError  # noqa: PLC0415
+
+    def in_use(*_args, **_kwargs):
+        raise ConnectorInUseError(
+            CONNECTOR_IN_USE.format(
+                connector="jira", tenant=TEST_TENANT, accounts="1 connected account"
+            )
+        )
+
+    monkeypatch.setattr(tools_layer, "deregister_connector", in_use)
+
+    response = client.delete("/admin/connectors/jira", headers=auth)
+
+    assert response.status_code == 409
+    assert "jira" in response.json()["detail"]
+    assert client.get("/admin/connectors/jira", headers=auth).status_code == 200
+
+
+def test_deregistering_can_disconnect_everybody_when_asked_to(
+    client, auth, registered_jira, fake_server
+):
+    """The deliberate way past migration 021's RESTRICT. The refusal names the number
+    of people; the opt-in removes them in the same act and says how many, because
+    nothing is revoked at the provider and those are the people who must go and do it."""
+    from conftest import TEST_ACTOR
+
+    priya = logged_in_id(client, auth)
+    connections.connect_account(
+        Principal(kind="user", id=priya, tenant_id=TEST_TENANT), "jira", "tok", actor=TEST_ACTOR
+    )
+
+    refused = client.delete("/admin/connectors/jira", headers=auth)
+    assert refused.status_code == 409
+    assert "1 connected account" in refused.json()["detail"]
+
+    gone = client.delete(
+        "/admin/connectors/jira", params={"disconnect_accounts": "true"}, headers=auth
+    )
+
+    assert gone.status_code == 200, gone.text
+    assert gone.json() == {"connector_id": "jira", "removed": True, "disconnected": 1}
+    assert storage.active().find_connection(TEST_TENANT, "user", priya, "jira") is None
+
+
+# --- the logs read newest first and page by id (110f, plan 107 D10) ---------------------
+
+
+def test_the_admin_log_is_newest_first_and_pages_backwards_by_id(client, auth, admin, admin_host):
+    """The owner's observation: the row somebody came for was at the bottom of a
+    newest-200 window and anything older was unreachable from a browser. Every row now
+    carries the store's own sequence number, the page comes newest first, and
+    `?before=` is *show older* — from the oldest id shown, so a row appended between two
+    requests moves nothing."""
+    for host in ("a.example", "b.example", "c.example"):
+        client.post("/admin/hosts", json={"host": host}, headers=auth)
+
+    page = client.get("/admin-audit?limit=2", headers=auth).json()
+    assert [row["target_id"] for row in page] == ["c.example", "b.example"]
+    assert page[0]["id"] > page[1]["id"]
+
+    older = client.get(f"/admin-audit?limit=2&before={page[-1]['id']}", headers=auth).json()
+    assert [row["target_id"] for row in older][:1] == ["a.example"]
+    assert all(row["id"] < page[-1]["id"] for row in older)
+
+    assert client.get("/admin-audit?before=0", headers=auth).status_code == 422
+
+
+def test_the_denial_and_door_logs_carry_the_cursor_too(client, auth, admin):
+    """Same shape on the other two logs, asserted on their emptiness plus the
+    parameter's acceptance: the rows themselves are driven elsewhere."""
+    assert client.get("/admin/denials?before=5", headers=auth).json() == []
+    assert client.get("/admin/door-calls?before=5", headers=auth).json() == []
+    for route in ("/admin/denials", "/admin/door-calls"):
+        assert client.get(f"{route}?before=0", headers=auth).status_code == 422
+
+
+def test_a_blank_address_is_refused_rather_than_matching_everybody_without_one(
+    client, auth, admin
+):
+    """Found by `scripts/e2e_log_edges.py`. `?email=` fell through to `"" == ""` and
+    answered with every person the directory pushed without an address — a listing
+    wearing a lookup's clothes, and the opposite of *one principal or none*."""
+    storage.active().create_user(
+        TEST_TENANT,
+        {"id": "u-nameless", "issuer": ISSUER, "subject": "00u-none", "email": ""},
+    )
+
+    blank = client.get("/admin/users", params={"email": ""}, headers=auth)
+    spaces = client.get("/admin/users", params={"email": "   "}, headers=auth)
+
+    assert (blank.status_code, spaces.status_code) == (400, 400)
+    assert "whole list" in blank.json()["detail"]
+    # And the person is still in the tenant, which is the other half: the refusal is
+    # about the question, not about them.
+    assert any(row["id"] == "u-nameless" for row in client.get("/admin/users", headers=auth).json())
+
+
+def test_two_people_known_by_one_address_are_both_returned(client, auth, admin):
+    """One tenant may hold two identity providers since 110d, so one address can name
+    two principals. Choosing one here would be the route deciding which of two people a
+    group is about; both come back and the screen asks."""
+    for suffix in ("a", "b"):
+        storage.active().create_user(
+            TEST_TENANT,
+            {
+                "id": f"u-twin-{suffix}",
+                "issuer": f"https://{suffix}.example.com",
+                "subject": f"00u-{suffix}",
+                "email": "twin@acme.com",
+            },
+        )
+
+    found = client.get("/admin/users", params={"email": "twin@acme.com"}, headers=auth).json()
+
+    assert sorted(row["id"] for row in found) == ["u-twin-a", "u-twin-b"]
+
+
+def test_a_person_is_looked_up_by_exact_address(client, auth, admin):
+    """`?email=` on the people listing (plan 107 D10): one principal or none, exactly,
+    so the groups page adds a member by the address a colleague is known by."""
+    storage.active().create_user(
+        TEST_TENANT,
+        {"id": "u-tom", "issuer": ISSUER, "subject": "00u-tom", "email": "tom@acme.com"},
+    )
+
+    found = client.get("/admin/users", params={"email": "Tom@Acme.com"}, headers=auth).json()
+    assert [row["id"] for row in found] == ["u-tom"]
+    assert client.get("/admin/users", params={"email": "tom@"}, headers=auth).json() == []
+
+
+# --- what uses a connection, and testing one (110f, plan 107 D11) -----------------------
+
+
+def test_connections_say_which_agents_use_them(client, auth, oauth_jira, fake_server):
+    """The `ConnectionNotice` on an agent's page, inverted: an agent the caller may use
+    whose granted tool acts as the caller on a connector is listed on that connection —
+    and an agent whose tool there acts as the *service* is not, because disconnecting
+    changes nothing for it."""
+    from conftest import TEST_ACTOR
+
+    tools.vet_tool(TEST_TENANT, "jira", "search_issues", effect="read", identity="user", actor=TEST_ACTOR)
+    tools.vet_tool(TEST_TENANT, "jira", "create_issue", effect="read", identity="service", actor=TEST_ACTOR)
+    for name, tool in (("triage", "jira_search_issues"), ("filer", "jira_create_issue")):
+        agents.save(TEST_TENANT, {**AGENT, "name": name, "permissions": {"tools": [tool]}}, actor=TEST_ACTOR)
+        share_with_caller(client, auth, name)
+    agents.save(TEST_TENANT, {**AGENT, "name": "nobody", "permissions": {"tools": ["jira_search_issues"]}}, actor=TEST_ACTOR)
+
+    rows = {r["connector_id"]: r for r in client.get("/connections", headers=auth).json()}
+
+    assert rows["jira"]["used_by"] == ["triage"]
+
+
+def test_testing_a_connection_needs_the_callers_own_account(client, auth, oauth_jira, monkeypatch):
+    monkeypatch.setenv("JIRA_TOKEN", "shared-secret")
+    response = client.post("/connectors/jira/connection/test", headers=auth)
+
+    assert response.status_code == 400
+    assert "no account connected" in response.json()["detail"]
+    assert client.post("/connectors/nope/connection/test", headers=auth).status_code == 400
+
+
+def test_testing_a_rest_connection_is_refused_rather_than_dialled(client, auth, admin, admin_host):
+    """Found by `scripts/e2e_log_edges.py`: the probe dialled a REST connector as though
+    it spoke MCP and answered **500**. A REST API does not describe itself — the admin
+    discovery route has refused it with a sentence since 045a, and this is the same
+    refusal at the person's own button."""
+    from conftest import TEST_ACTOR
+
+    tools.register_connector(
+        TEST_TENANT, "billing", url=f"https://{admin_host}/api", kind="rest", actor=TEST_ACTOR
+    )
+    priya = logged_in_id(client, auth)
+    connections.connect_account(
+        Principal(kind="user", id=priya, tenant_id=TEST_TENANT),
+        "billing",
+        "a-key",
+        actor=TEST_ACTOR,
+    )
+
+    response = client.post("/connectors/billing/connection/test", headers=auth)
+
+    assert response.status_code == 400, response.text
+    assert "does not describe itself" in response.json()["detail"]
+
+
+def test_testing_a_connection_lists_tools_under_the_callers_account(
+    client, auth, oauth_jira, fake_server
+):
+    """`tools/list` under the caller's sealed connection and nothing else — the count,
+    the server's label, no tool called and nothing written."""
+    from carnet.access import connections
+    from conftest import TEST_ACTOR
+
+    priya = logged_in_id(client, auth)
+    connections.connect_account(
+        Principal(kind="user", id=priya, tenant_id=TEST_TENANT), "jira", "priyas-token", actor=TEST_ACTOR
+    )
+
+    response = client.post("/connectors/jira/connection/test", headers=auth)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "server": "jira-mcp-server v2.3.0",
+        "tools": len(fake_server.tools),
+        # Nothing is approved on this connector yet, so there is nothing to name.
+        "approved": [],
+        "missing": [],
+    }
+
+
+def test_the_probe_names_what_is_approved_and_what_the_server_stopped_offering(
+    client, auth, admin, oauth_jira, fake_server
+):
+    """The count alone cannot tell a working account from one whose approvals have gone
+    stale. `search_issues` is still advertised; `create_issue` was when it was approved
+    and is not now, and an agent granting it meets a refusal at the door that nothing
+    else here would explain."""
+    from carnet.access import connections
+    from conftest import TEST_ACTOR
+
+    tools.vet_tool(TEST_TENANT, "jira", "search_issues", effect="read", actor=TEST_ACTOR)
+    tools.vet_tool(TEST_TENANT, "jira", "create_issue", effect="read", actor=TEST_ACTOR)
+    # And then the server stops offering one of them, which is the whole case: an
+    # approval may only be made against a tool the server advertises, so the stale state
+    # can only be reached by the server moving underneath it.
+    fake_server.tools = [t for t in fake_server.tools if t["name"] != "create_issue"]
+    priya = logged_in_id(client, auth)
+    connections.connect_account(
+        Principal(kind="user", id=priya, tenant_id=TEST_TENANT), "jira", "tok", actor=TEST_ACTOR
+    )
+
+    body = client.post("/connectors/jira/connection/test", headers=auth).json()
+
+    assert body["approved"] == ["jira_search_issues"]
+    assert body["missing"] == ["jira_create_issue"]
+    # And the count is of what the SERVER offers, not of what is approved here.
+    assert body["tools"] == len(fake_server.tools)
+
+
 # --- hosts ---------------------------------------------------------------------------
 
 
@@ -4650,6 +5383,20 @@ def test_a_family_is_structured_on_the_route_too(
     ]
     (ref,) = vetted.resources
     assert ref.families == ("acme",)
+
+    # Step 110, decision 7: the family comes back on the type, on both projections — the
+    # administrator's, so a re-vet from the browser starts from the last review, and the
+    # catalogue's, so somebody writing a scope learns the words it may use. The argument
+    # name still does not, which is `ResourceType`'s first paragraph and unchanged.
+    (tool,) = client.get("/admin/connectors/jira", headers=auth).json()["tools"]
+    assert tool["resources"] == [{"type": "jira.project", "families": ["acme"]}]
+    (listed,) = [
+        t
+        for group in client.get("/tools", headers=auth).json()
+        for t in group["tools"]
+        if t["name"] == "jira_create_issue"
+    ]
+    assert listed["resources"] == [{"type": "jira.project", "families": ["acme"]}]
 
 
 def test_a_family_a_scope_line_could_never_name_is_a_400(
@@ -6387,6 +7134,49 @@ def test_a_session_mints_a_token_it_owns_and_the_secret_works(client, auth):
     assert body["id"] in [t["id"] for t in listed]
 
 
+def test_a_service_token_can_be_granted_an_agent_as_it_is_minted(client, auth, demo_agent):
+    """Plan 107 D9. Mint from the agent's page with `grant`, and the token can use the
+    agent at once — the five-screen loop as one request. Proved by the token's own
+    reach, which is what a client using it would get."""
+    response = client.post(
+        "/me/tokens",
+        headers=auth,
+        json={"name": "ci", "acts_as_owner": False, "grant": {"agent": demo_agent["name"]}},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["acts_as_owner"] is False
+    reach = client.get(f"/me/tokens/{body['id']}/reach", headers=auth).json()
+    named = [a["name"] if isinstance(a, dict) else a for a in reach["agents"]]
+    assert named == [demo_agent["name"]]
+
+
+def test_a_grant_on_a_personal_token_is_refused_before_anything_is_minted(client, auth, demo_agent):
+    response = client.post(
+        "/me/tokens", headers=auth, json={"name": "mine", "grant": {"agent": demo_agent["name"]}}
+    )
+
+    assert response.status_code == 400
+    assert "needs no grant" in response.json()["detail"]
+    assert client.get("/me/tokens", headers=auth).json() == []
+
+
+def test_a_refused_grant_leaves_no_token_behind(client, auth, demo_agent):
+    """The two writes are not one transaction, so the route compensates: a share the
+    seam refuses — here an agent the caller cannot see — revokes the token minted for
+    it, and the refusal is the share's own."""
+    response = client.post(
+        "/me/tokens",
+        headers=auth,
+        json={"name": "ci", "acts_as_owner": False, "grant": {"agent": "no-such-agent"}},
+    )
+
+    assert response.status_code in (400, 404), response.text
+    live = [t for t in client.get("/me/tokens", headers=auth).json() if t["revoked_at"] is None]
+    assert live == []
+
+
 def test_a_token_name_a_column_cannot_hold_is_400_not_503(client, auth):
     """Step 087. `POST /me/tokens` with a NUL in the name reached `api_tokens.name`
     and answered **503 — storage unavailable** on Postgres, while the fake stored it.
@@ -7749,19 +8539,19 @@ def test_vetting_looks_with_the_vault_credential(
     assert looking_with == ["from-the-vault"]
 
 
-def test_a_broken_recipe_file_cannot_fail_a_registration(
+def test_a_broken_recipe_named_in_the_body_is_a_400_and_writes_nothing(
     client, auth, admin, admin_host, tmp_path, monkeypatch
 ):
-    """Rule 1 of 068, at the one place the first draft broke it: `from_recipe` is a log
-    line, and `recipes.load` raising on a malformed shipped file made that log line able
-    to 500 a registration that was complete and correct. The hint is dropped, the row is
-    written, and the audit record says nothing about a recipe."""
+    """Rule 1 of 068 still holds for the *row* — nothing is written — and since 110f
+    the body that named the preset asked for its values, so registering without them
+    would be a silent wrong row. A 400 naming the file, never a 500 and never a hand
+    registration nobody asked for."""
     from carnet.access import recipes  # noqa: PLC0415
 
     (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(recipes, "RECIPES_DIR", tmp_path)
 
-    created = client.post(
+    refused = client.post(
         "/admin/connectors",
         json={
             "connector_id": "jira",
@@ -7772,8 +8562,63 @@ def test_a_broken_recipe_file_cannot_fail_a_registration(
         headers=auth,
     )
 
-    assert created.status_code == 201, created.json()
-    assert client.get("/admin/connectors/jira", headers=auth).status_code == 200
+    assert refused.status_code == 400, refused.text
+    assert "broken" in refused.json()["detail"]
+    assert "leave from_recipe empty" in refused.json()["detail"]
+    assert client.get("/admin/connectors/jira", headers=auth).status_code == 400
+
+
+def test_a_recipe_named_in_the_body_is_applied_on_the_server(
+    client, auth, admin, admin_host, tmp_path, monkeypatch
+):
+    """Plan 110 D6. The route used to record the id and drop every value; the browser
+    compensated with a second implementation of the recipe format. Now a body carrying
+    the id and nothing else gets the preset's values, and a field the body does fill
+    wins over the preset — one rule, `recipes.connector_defaults`, for both doors."""
+    from carnet.access import recipes  # noqa: PLC0415
+
+    (tmp_path / "tracker.json").write_text(
+        json.dumps(
+            {
+                "id": "tracker",
+                "name": "Tracker",
+                "hosts": [{"host": admin_host, "why": "the test host"}],
+                "connector": {
+                    "connector_id": "tracker",
+                    "url": f"https://{admin_host}/api",
+                    "kind": "rest",
+                    "credential_env": "TRACKER_TOKEN",
+                    "credential_header": "x-api-key",
+                    "credential_prefix": "",
+                    "description": "Acme's tracker, from the preset.",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(recipes, "RECIPES_DIR", tmp_path)
+
+    created = client.post(
+        "/admin/connectors",
+        json={"connector_id": "trk", "from_recipe": "tracker", "description": "Ours."},
+        headers=auth,
+    )
+
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["transport"] == "rest"
+    assert body["url"] == f"https://{admin_host}/api"
+    assert body["credential_env"] == "TRACKER_TOKEN"
+    assert body["description"] == "Ours."
+    assert body["from_recipe"] == "tracker"
+    launch = storage.active().get_connector(TEST_TENANT, "trk")["launch"]
+    assert (launch["credential_header"], launch["credential_prefix"]) == ("x-api-key", "")
+
+    unknown = client.post(
+        "/admin/connectors", json={"connector_id": "x", "from_recipe": "nope"}, headers=auth
+    )
+    assert unknown.status_code == 400
+    assert "no recipe 'nope'" in unknown.json()["detail"]
 
 
 def test_a_malformed_reference_is_a_400_naming_the_syntax(client, auth, admin, admin_host):
@@ -7828,10 +8673,11 @@ def test_the_door_log_names_the_person_behind_a_personal_token(client, auth, adm
         )
 
     rows = client.get("/admin/door-calls", headers=auth).json()
-    assert [(r["tool"], r["owner"]) for r in rows] == [("a", email), ("b", email), ("c", "")]
+    # Newest first since 110f (plan 107 D10): `c` was appended last.
+    assert [(r["tool"], r["owner"]) for r in rows] == [("c", ""), ("b", email), ("a", email)]
 
     theirs = client.get("/admin/door-calls", headers=auth, params={"owner": email}).json()
-    assert [r["tool"] for r in theirs] == ["a", "b"]
+    assert [r["tool"] for r in theirs] == ["b", "a"]
 
 
 def test_every_open_route_is_listed_and_argued():

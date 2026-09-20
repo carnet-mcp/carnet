@@ -168,6 +168,11 @@ function ConnectionRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  // What *Test* found, on this row, until the next action clears it. Plan 107 D11.
+  const [tested, setTested] = useState("");
+  // Approved here and no longer offered by the server. Its own state because it is a
+  // different kind of sentence: the connection worked and something else is wrong.
+  const [stale, setStale] = useState<string[]>([]);
   const { admin } = useAdmin();
 
   // Abandon any flow in progress when this row goes away. Without it, navigating off the
@@ -203,9 +208,45 @@ function ConnectionRow({
       });
   };
 
+  // *Test* — plan 107 D11. `tools/list` under this person's own connected account, and
+  // the count: a connected row said *connected as* and nothing else, and the only way
+  // to learn whether the account still worked was to make a real call through an agent
+  // and read the refusal. Nothing is written and no tool is called; the server's own
+  // sentence is the answer when it did not work, verbatim, for the reason every failure
+  // sentence on this page is.
+  const test = () => {
+    setBusy(true);
+    setNote("");
+    setTested("");
+    setStale([]);
+    api
+      .testConnection(row.connector_id)
+      .then((outcome) => {
+        const who = row.account_label ? `Connected as ${row.account_label}. ` : "Connected. ";
+        // The count is the server's whole offering; the names are what this workspace
+        // approved. Both, because "14 tools available" answers *is my account working*
+        // and not *what can I reach*, and the second is the question somebody presses
+        // this button with.
+        const reach = outcome.approved.length
+          ? ` You can reach ${outcome.approved.join(", ")}.`
+          : " None of them is approved for use here yet.";
+        setTested(
+          `${who}${outcome.server} offers ${outcome.tools} ` +
+            `${outcome.tools === 1 ? "tool" : "tools"}.${reach}`,
+        );
+        setStale(outcome.missing);
+      })
+      .catch((cause: unknown) =>
+        setNote(cause instanceof Error ? cause.message : String(cause)),
+      )
+      .finally(() => setBusy(false));
+  };
+
   const disconnect = () => {
     setBusy(true);
     setNote("");
+    setTested("");
+    setStale([]);
     api
       .disconnect(row.connector_id)
       .then((outcome) => {
@@ -262,18 +303,32 @@ function ConnectionRow({
         )}
         {row.description && <p className="muted">{row.description}</p>}
         <p className="sentence">{describe(row)}</p>
-        {row.state === "unavailable" &&
-          (admin ? (
-            <p className="muted">
-              <Link to={`/admin/connectors/${encodeURIComponent(row.connector_id)}`}>
-                Set up OAuth app
+        {row.state === "unavailable" && admin && (
+          // The remedy, for the person who can act on it: the connector's page, where
+          // the OAuth form is (plan 107 D11). Everyone else gets `describe`'s sentence
+          // naming who has the task. Which administrator cannot be said here — the
+          // roles page lists them, but only to administrators (110 D4).
+          <p className="muted">
+            <Link to={`/admin/connectors/${encodeURIComponent(row.connector_id)}`}>
+              Set up sign-in for {row.connector_id}
+            </Link>
+          </p>
+        )}
+
+        {/* Which agents depend on this row — the `ConnectionNotice` on an agent's page,
+            inverted (plan 107 D11). A row that nothing uses says nothing: an empty
+            "Used by" would be a label for an absence, and the honest reading of an
+            absence is that disconnecting costs nothing. */}
+        {row.used_by.length > 0 && (
+          <p className="muted used-by">
+            Used by{" "}
+            {row.used_by.map((name) => (
+              <Link key={name} to={`/agents/${encodeURIComponent(name)}`}>
+                {name}
               </Link>
-            </p>
-          ) : (
-            // The remedy for everyone else. Who the administrator is cannot be said
-            // here — there is no route listing people with a role (DEFERRED, 107).
-            <p className="muted">Ask an administrator to set it up.</p>
-          ))}
+            ))}
+          </p>
+        )}
 
         {/* A full sentence rather than a muted note, because on the row it appears on it
             *corrects* the one above it: `describe` says "Connected as priya@acme.com" for
@@ -324,6 +379,27 @@ function ConnectionRow({
           <p className="tiny muted">Last changed {day(row.updated_at)}.</p>
         )}
 
+        {tested && (
+          <Notice tone="info">
+            <p className="sentence">{tested}</p>
+          </Notice>
+        )}
+
+        {stale.length > 0 && (
+          // Not a failure of the connection — which is why it is not the sentence above
+          // — and not silence either: an agent granting one of these is refused at the
+          // door, and this is the only screen that will ever say why.
+          <Notice tone="warn" title="Approved here, but no longer offered">
+            <p className="sentence">
+              {stale.join(", ")} {stale.length === 1 ? "is" : "are"} approved on{" "}
+              {row.connector_id} and the server no longer offers{" "}
+              {stale.length === 1 ? "it" : "them"}. An agent granting{" "}
+              {stale.length === 1 ? "it" : "them"} will be refused. Ask an administrator
+              to approve the server's current tools.
+            </p>
+          </Notice>
+        )}
+
         {note && (
           <Notice tone="warn">
             <p className="sentence">{note}</p>
@@ -338,9 +414,14 @@ function ConnectionRow({
           </Button>
         )}
         {row.state === "connected" && (
-          <Button busy={busy} onClick={disconnect}>
-            Disconnect
-          </Button>
+          <>
+            <Button busy={busy} onClick={test}>
+              Test
+            </Button>
+            <Button busy={busy} onClick={disconnect}>
+              Disconnect
+            </Button>
+          </>
         )}
         {/* `unavailable` renders no control at all, deliberately. See the page docstring. */}
       </div>
@@ -509,6 +590,8 @@ function describe(row: ConnectionSummary): string {
     case "connectable":
       return "Not connected. Agents use the shared account set up by your administrator, if there is one.";
     case "unavailable":
-      return `Sign-in for ${row.connector_id} has not been set up.`;
+      // Names who has the task (plan 107 D11), because "has not been set up" left the
+      // reader wondering whether it was theirs to do.
+      return `Your administrator has not set up sign-in for ${row.connector_id}.`;
   }
 }

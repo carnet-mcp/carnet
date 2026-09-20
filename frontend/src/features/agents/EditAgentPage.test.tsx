@@ -35,7 +35,7 @@ function tool(name: string, effect: "read" | "write", resources: string[]) {
     description: "",
     note: "",
     effect,
-    resources: resources.map((type) => ({ type })),
+    resources: resources.map((type) => ({ type, families: [] })),
     identity: "service" as const,
     max_response_bytes: null,
     vetted_by: "",

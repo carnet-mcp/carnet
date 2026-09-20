@@ -64,7 +64,7 @@ rediscovered — do not refactor a `storage.active()` call into the middle of it
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from .. import storage, tools
 from ..access import oauth, recipes
@@ -75,6 +75,9 @@ from ..tools.base import Resource
 from .deps import admin_from_request
 from .routes_connections import _redirect_uri
 from .schemas import (
+    ConnectorDeregistered,
+    DiscoveryCredential,
+    ToolWithdrawn,
     AssertedIdentityRequest,
     ConnectorDetail,
     ConnectorRequest,
@@ -267,24 +270,6 @@ def list_connectors(principal: Principal = Depends(admin_from_request)):
 
 
 
-def _recipe_hint(recipe_id: str | None) -> str:
-    """The `from_recipe` line for `admin_audit.detail`, or `""` when it cannot be earned.
-
-    Rule 1 of step 068: nothing in the database may depend on a recipe, and that includes
-    the *registration* depending on the recipe file being well-formed. `recipes.load`
-    raises `RecipeRefused` for a file this build shipped broken — a defect of the build,
-    not of the registration in hand — and the first draft let that propagate, which made
-    a provenance hint able to fail the write it was annotating. Unknown and malformed
-    are treated alike here: the hint is dropped and the row is written, because a log
-    line is not allowed to be load-bearing.
-    """
-    if not recipe_id:
-        return ""
-    try:
-        return recipe_id if recipes.load(recipe_id) else ""
-    except recipes.RecipeRefused:
-        return ""
-
 @router.post("/admin/connectors", response_model=ConnectorSummary, status_code=201)
 def register_connector(
     request: ConnectorRequest, principal: Principal = Depends(admin_from_request)
@@ -321,24 +306,60 @@ def register_connector(
         except vault.VaultError as exc:
             raise ValueRefused(str(exc)) from exc
 
+    # Plan 110 D6: the recipe is **applied** here, not merely recorded. Until 110 this
+    # route wrote the id into the log and dropped every value, and the browser
+    # compensated with a second implementation of the recipe format in TypeScript — one
+    # idea, two implementations, one of which the server never ran. Now the one merge
+    # rule (`recipes.connector_defaults`) serves both doors, and a body naming a preset
+    # may carry only the id and what the person changed. An unknown id is refused with
+    # the sentence rather than dropped: a caller who named a preset meant it.
+    supplied = {
+        "url": request.url,
+        "kind": request.kind,
+        "credential_env": request.credential_env or "",
+        "credential_ref": request.credential_ref or "",
+        "credential_header": request.credential_header,
+        "credential_prefix": request.credential_prefix,
+        "headers": request.headers,
+        "description": request.description or "",
+    }
+    from_recipe = ""
+    if request.from_recipe:
+        try:
+            recipe = recipes.load(request.from_recipe)
+        except recipes.RecipeRefused as exc:
+            # Step 068's rule 1 was that a recipe is never load-bearing for a *row*, and
+            # it still is not: nothing is written. But a body that named a preset asked
+            # for its values, and registering without them — a connector missing the
+            # credential header the preset carries — is a silent wrong row, which is
+            # worse than a sentence. The refusal names the file; the person registers
+            # by hand or somebody fixes the build.
+            raise ValueRefused(
+                f"{exc} Register by hand (leave from_recipe empty), or fix the recipe "
+                "file this build ships."
+            ) from exc
+        if recipe is None:
+            raise ValueRefused(
+                f"there is no recipe '{request.from_recipe}' in this build. "
+                "GET /admin/recipes lists the presets it ships; leave from_recipe empty "
+                "to register by hand."
+            )
+        supplied = recipes.connector_defaults(recipe, supplied)
+        from_recipe = recipe["id"]
+
     tools.register_connector(
         principal.tenant_id,
         request.connector_id,
-        url=request.url,
-        kind=request.kind,
-        credential_env=request.credential_env or "",
-        credential_ref=request.credential_ref or "",
-        credential_header=request.credential_header,
-        credential_prefix=request.credential_prefix,
-        headers=dict(request.headers) or None,
-        description=request.description or "",
+        url=supplied.get("url") or "",
+        kind=supplied.get("kind") or "http",
+        credential_env=supplied.get("credential_env") or "",
+        credential_ref=supplied.get("credential_ref") or "",
+        credential_header=supplied.get("credential_header"),
+        credential_prefix=supplied.get("credential_prefix"),
+        headers=supplied.get("headers") or None,
+        description=supplied.get("description") or "",
         allow_asserted_identity=request.allow_asserted_identity,
-        # Checked against this build's catalogue before it is recorded — see
-        # `ConnectorRequest.from_recipe`. An unknown id is **dropped rather than
-        # refused**: the registration itself is correct and complete, and failing it over
-        # a provenance hint would make a log line load-bearing, which is exactly what
-        # rule 1 says a recipe must never become.
-        from_recipe=_recipe_hint(request.from_recipe),
+        from_recipe=from_recipe,
         actor=str(principal),
     )
 
@@ -459,7 +480,7 @@ def discover(connector_id: str, principal: Principal = Depends(admin_from_reques
     # connector registered with a vault reference discovered and vetted *unauthenticated*
     # from this screen while the CLI resolved the pointer — the same connector, two
     # answers, and the browser's was the wrong one.
-    credential = credentials.for_discovery(
+    credential, source = credentials.discovery_source(
         connector.id,
         principal,
         getattr(connector.launch, "credential_env", None),
@@ -487,6 +508,110 @@ def discover(connector_id: str, principal: Principal = Depends(admin_from_reques
             DiscoveryFinding(severity=f["severity"], message=f["message"])
             for f in findings
         ],
+        # Plan 107 D5: which credential this dial used, so the page's sentence about
+        # the *next* click is the truth about the last one.
+        credential=source,
+    )
+
+
+@router.get(
+    "/admin/connectors/{connector_id}/discovery-credential",
+    response_model=DiscoveryCredential,
+)
+def discovery_credential(
+    connector_id: str, principal: Principal = Depends(admin_from_request)
+):
+    """Which credential a Discover would use, **before** the click and without dialling.
+    Plan 107 D5.
+
+    The owner's first observation in plan 107: `Discover` on a fresh OAuth connector
+    answered a 401 and nothing said why. The credential resolves in the same order the
+    dial resolves it — the caller's own connected account, else the connector's shared
+    credential, else nothing — through the same function, so the sentence the page
+    shows above the button cannot disagree with what pressing it does. A broken
+    connection raises here as it would there (a 400 with the sentence), rather than
+    reading as "none".
+
+    A REST connector has nothing to discover and this answers for it anyway: the
+    question *which credential would be used* is also the vetting screen's, and the
+    refusal about discovery belongs to the discovery route.
+    """
+    connector = _connector_or_refuse(principal.tenant_id, connector_id)
+    env_var = getattr(connector.launch, "credential_env", None)
+    ref = getattr(connector.launch, "credential_ref", None)
+    _credential, source = credentials.discovery_source(connector.id, principal, env_var, ref)
+    return DiscoveryCredential(
+        credential=source,
+        shared_via=(env_var or ref or "") if source == "shared" else "",
+    )
+
+
+@router.delete(
+    "/admin/connectors/{connector_id}/tools/{remote_name}", response_model=ToolWithdrawn
+)
+def withdraw_tool(
+    connector_id: str, remote_name: str, principal: Principal = Depends(admin_from_request)
+):
+    """Withdraw one approval. Plan 107 D7 — the row action the approved-tools table
+    never had, so re-approving from inside the discovery card (which needs a successful
+    Discover, which is the call that failed) was the only way to change an approval.
+
+    Keyed by the remote name, as the approval is. Idempotent, and says whether a row
+    went. Any agent granting the tool becomes invalid at its next read with the sentence
+    the product already has for a withdrawn connector; nothing here cascades to it,
+    because an agent is somebody else's record of a decision.
+    """
+    _connector_or_refuse(principal.tenant_id, connector_id)
+    removed = tools.withdraw_tool(
+        principal.tenant_id, connector_id, remote_name, actor=str(principal)
+    )
+    return ToolWithdrawn(remote_name=remote_name, removed=removed)
+
+
+@router.delete("/admin/connectors/{connector_id}", response_model=ConnectorDeregistered)
+def deregister_connector(
+    connector_id: str,
+    # **Off unless asked for, and a query parameter rather than a body**, because a
+    # DELETE with a body is a request several clients drop on the floor. Its absence is
+    # the safe answer, which is the shape every destructive opt-in here has.
+    disconnect_accounts: bool = Query(default=False),
+    principal: Principal = Depends(admin_from_request),
+):
+    """Remove a connector and every approval on it. Plan 107 D7.
+
+    **Refused, with a 409, while anybody has an account connected to it** — unless the
+    caller asks for those accounts to be disconnected in the same act. Plan 107 wrote
+    *"connections people hold to it are deleted with it"*; migration 021 says the
+    opposite, on purpose — `connections` RESTRICTs, so a sealed credential is never
+    destroyed as a *side effect* of an administrative act about configuration — and the
+    migration is the older and the better-argued decision.
+
+    What the migration asks for is that the disconnection be **deliberate**, not that it
+    be impossible, and the first shape of this route confused the two: the only way
+    through was to ask every person to visit a page, so a decommissioned connector
+    stayed registered instead, which is the state the RESTRICT was meant to prevent.
+    `?disconnect_accounts=true` is the deliberate act, in one transaction, counted in
+    the administrative record and in the answer.
+
+    **Nothing is revoked at the provider.** This deployment holds a sealed copy of a
+    token; the grant lives at the vendor, and no request here can end it. The answer
+    says how many people were disconnected so an administrator can tell them to revoke
+    it there — the same honesty `DELETE /connectors/{id}/connection` already owes a
+    person about their own row.
+
+    Idempotent otherwise: a connector that is not there answers `removed: false`
+    rather than a 404, because the screen that offered the button has already shown it
+    and the honest answer to "remove this" about something gone is that it is gone.
+    """
+    existed = mcp.get_connector(principal.tenant_id, connector_id) is not None
+    disconnected = tools.deregister_connector(
+        principal.tenant_id,
+        connector_id,
+        actor=str(principal),
+        disconnect_accounts=disconnect_accounts,
+    )
+    return ConnectorDeregistered(
+        connector_id=connector_id, removed=existed, disconnected=disconnected
     )
 
 
@@ -729,6 +854,7 @@ def _summary(tenant_id: str, connector) -> dict:
         "host_allowed": bool(host) and host in approved,
         "oauth": _oauth_app(configured) if configured else None,
         "allow_asserted_identity": connector.allow_asserted_identity,
+        "from_recipe": storage.active().connector_recipe(tenant_id, connector.id),
     }
 
 
@@ -762,13 +888,15 @@ def _vetted_tool(connector, vetted, review: dict) -> VettedTool:
     of argument names, and that indirection is exactly what lets one `github.repo` grant
     cover every tool touching a repo. The vetting *form* is told argument names, by
     discovery, which is a different question asked at a different moment.
+
+    Types **and their families**, since step 110 (decision 7) — `ResourceType` says why a
+    family is the vocabulary a scope needs rather than the coupling above — and the
+    binding's **price**, alone out of the binding: a fact to read back, where the request
+    mapping is a thing to re-author, and `AuthorTool` says why the second is not returned.
     """
     record = review.get((connector.id, vetted.remote_name), {})
-    seen, types = set(), []
-    for ref in vetted.resources:
-        if ref.type not in seen:
-            seen.add(ref.type)
-            types.append(ResourceType(type=ref.type))
+    types = [ResourceType(**entry) for entry in tools._resource_types(vetted.resources)]
+    binding = vetted.binding or {}
 
     return VettedTool(
         name=connector.local_name(vetted),
@@ -783,6 +911,7 @@ def _vetted_tool(connector, vetted, review: dict) -> VettedTool:
         vetted_at=str(record.get("vetted_at", "") or ""),
         server_name=record.get("server_name", "") or "",
         server_version=record.get("server_version", "") or "",
+        pricing=binding.get("pricing") or None,
     )
 
 

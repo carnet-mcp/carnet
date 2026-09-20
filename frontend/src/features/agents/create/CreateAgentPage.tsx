@@ -44,6 +44,7 @@ import {
   type Draft,
   clearDraft,
   loadDraft,
+  requiredRows,
   saveDraft,
   toConfig,
 } from "../../../lib/draft";
@@ -80,21 +81,38 @@ export interface StepProps {
  *  *Name · What it may do · What it may reach · Review*, two of which are sentences. A
  *  step strip is a map, glanced at; the heading inside the step is where the question
  *  belongs, and both cards still ask theirs in exactly the words they always did. */
-const STEPS: {
+interface Step {
+  key: "name" | "tools" | "resources" | "review";
   title: string;
   blocker: (draft: Draft, catalogue: ToolGroup[] | null) => string;
-}[] = [
-  { title: "Name", blocker: nameBlocker },
-  { title: "Tools", blocker: toolsBlocker },
-  { title: "Resources", blocker: reachBlocker },
-  // **Four since 081, and the fourth used to be *Ceilings*.** It asked for a `limits`
-  // block, a `max_tokens` and a `private_runs` flag, none of which anything in this tree
-  // reads — so every one of its controls stored a number under a sentence promising an
-  // enforcement that does not happen here. A step that exists only to say *nothing to set*
-  // is a click that teaches nothing, so what bounds an agent is said on Review instead,
-  // where somebody is deciding.
-  { title: "Review", blocker: () => "" },
-];
+}
+
+/** The steps, **computed from what there is to ask** (plan 107, D8).
+ *
+ *  *Resources* is present only while a ticked tool declares a resource. An agent of
+ *  unrestricted tools — a *whoami*, a search — used to be walked through a step that
+ *  said *nothing to choose* and had to be clicked past, which is the same pattern 081
+ *  removed the *Ceilings* step for: a step that exists only to say *nothing to set* is a
+ *  click that teaches nothing. The strip shows three steps in that case, not four with
+ *  one empty.
+ *
+ *  **Four since 081, and the fourth used to be *Ceilings*.** It asked for a `limits`
+ *  block, a `max_tokens` and a `private_runs` flag, none of which anything in this tree
+ *  reads, so what bounds an agent is said on Review instead, where somebody is deciding. */
+function stepsFor(draft: Draft, catalogue: ToolGroup[] | null): Step[] {
+  const steps: Step[] = [
+    { key: "name", title: "Name", blocker: nameBlocker },
+    { key: "tools", title: "Tools", blocker: toolsBlocker },
+  ];
+  // Asked while the catalogue is unknown too: the tools step cannot be left until it
+  // has loaded, so this only decides the strip's length during that wait — and a strip
+  // that shrank when the catalogue arrived would move the step somebody is on.
+  if (catalogue === null || requiredRows(draft.tools, catalogue).length > 0) {
+    steps.push({ key: "resources", title: "Resources", blocker: reachBlocker });
+  }
+  steps.push({ key: "review", title: "Review", blocker: () => "" });
+  return steps;
+}
 
 export default function CreateAgentPage() {
   const navigate = useNavigate();
@@ -121,8 +139,14 @@ export default function CreateAgentPage() {
     catalogue: catalogue.data,
     catalogueFailed: catalogue.error,
   };
-  const blocker = STEPS[step].blocker(draft, catalogue.data);
-  const last = step === STEPS.length - 1;
+  const steps = stepsFor(draft, catalogue.data);
+  // Never past the end: unticking the last resource-taking tool on step 2 removes a
+  // step from under nobody, since step 2 is where they are, but a restored draft could
+  // in principle put `step` beyond a shorter strip.
+  const at = Math.min(step, steps.length - 1);
+  const current = steps[at];
+  const blocker = current.blocker(draft, catalogue.data);
+  const last = at === steps.length - 1;
 
   function create() {
     setCreating(true);
@@ -156,14 +180,14 @@ export default function CreateAgentPage() {
       />
 
       <ol className="steps">
-        {STEPS.map((s, i) => (
-          <li key={s.title} className={i === step ? "on" : i < step ? "done" : ""}>
+        {steps.map((s, i) => (
+          <li key={s.key} className={i === at ? "on" : i < at ? "done" : ""}>
             <button
               type="button"
               // Backwards only. Skipping ahead past an unanswered step is how somebody
               // arrives at Review with a scope row they never filled in, and the review
               // step's job is to be the last honest look rather than the first.
-              disabled={i > step}
+              disabled={i > at}
               onClick={() => setStep(i)}
             >
               {/* A step you have been through is ticked rather than numbered. The number
@@ -171,7 +195,7 @@ export default function CreateAgentPage() {
                   it is answered — and the tick is not the only thing saying so, since the
                   row is also lit and the step is clickable. */}
               <span className="n">
-                {i < step ? <Icon name="check" size={12} /> : i + 1}
+                {i < at ? <Icon name="check" size={12} /> : i + 1}
               </span>
               {s.title}
             </button>
@@ -181,15 +205,15 @@ export default function CreateAgentPage() {
 
       {catalogue.loading && <Spinner label="Loading tools" />}
 
-      {step === 0 && <StepName {...props} />}
-      {step === 1 && <StepTools {...props} />}
-      {step === 2 && <StepReach {...props} />}
-      {step === 3 && <StepReview {...props} />}
+      {current.key === "name" && <StepName {...props} />}
+      {current.key === "tools" && <StepTools {...props} />}
+      {current.key === "resources" && <StepReach {...props} />}
+      {current.key === "review" && <StepReview {...props} />}
 
       {failure ? <Failure error={failure} /> : null}
 
       <div className="spread wizard-nav">
-        <Button disabled={step === 0 || creating} onClick={() => setStep(step - 1)}>
+        <Button disabled={at === 0 || creating} onClick={() => setStep(at - 1)}>
           Back
         </Button>
         {last ? (
@@ -200,7 +224,7 @@ export default function CreateAgentPage() {
           <Button
             kind="primary"
             disabled={blocker !== ""}
-            onClick={() => setStep(step + 1)}
+            onClick={() => setStep(at + 1)}
           >
             Continue
           </Button>

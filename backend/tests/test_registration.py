@@ -206,7 +206,7 @@ def test_a_registered_connector_reaches_the_agent_form(registered):
 
     entry = jira["tools"][0]
     assert entry["effect"] == "write"
-    assert entry["resources"] == [{"type": "jira.project"}]
+    assert entry["resources"] == [{"type": "jira.project", "families": []}]
     # The vendor's words, copied at vetting time rather than restated by us.
     assert entry["description"] == "Create an issue in a Jira project."
 

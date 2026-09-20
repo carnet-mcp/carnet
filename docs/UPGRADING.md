@@ -729,6 +729,26 @@ audit_outcome_check`. Lock time is a catalogue update.
 
 ---
 
+### Migration 056 adds `from_recipe` to `connectors`, and costs nothing
+
+Plan 107 decision 6, funded by 110:
+
+```sql
+ALTER TABLE connectors ADD COLUMN from_recipe TEXT NOT NULL DEFAULT '';
+```
+
+Tens of rows at most, a constant default, no rewrite — 051's shape exactly. What it
+changes is where a screen can find the preset a connector was registered from: until
+this the id lived only in `admin_audit.detail`, which is right for *which connectors came
+from the recipe that just broke* and useless for the OAuth form a week later, which seeds
+from the preset's consent-flow block when the connector has none of its own. Every
+existing row and every hand-registered connector reads `''`, and nothing indexes or joins
+the column: a recipe file deleted from a later build leaves a stale id that a screen
+reads as *a preset this build no longer ships*, never as an error. `--seed` neither reads
+nor writes it.
+
+---
+
 ## What `--seed` will and will not touch
 
 `carnet --seed` writes the shipped example agent and connector into a tenant. It

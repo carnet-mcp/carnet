@@ -90,9 +90,12 @@ follow the prefix unchanged, which is where Docker Hub's official images live in
 mirror that proxies it. The unmodified default is `docker.io`, and a build with nothing
 set is byte-for-byte what it was.
 
-The published image, `ghcr.io/carnet-mcp/carnet`, is the `api` target of the same
-Dockerfile, and a mirror that proxies GHCR can serve it too; the compose stack builds
-from the checkout by default and does not need it.
+The published pair, `ghcr.io/carnet-mcp/carnet` and `ghcr.io/carnet-mcp/carnet-front`,
+are the `api` and `front` targets of the same Dockerfile, and a mirror that proxies
+GHCR can serve them too — `CARNET_API_IMAGE` and `CARNET_FRONT_IMAGE` in `.env` name
+them through the mirror, and `docker compose pull` replaces the build (`deploy/README.md`,
+*Pulling rather than building*). The compose stack builds from the checkout by default
+and does not need them.
 
 ### Building behind the proxy
 
@@ -115,8 +118,11 @@ built image and neither registry is ever contacted again. Everything below is th
 From a checkout, on a machine with Docker and an internet connection:
 
 ```bash
-backend/scripts/offline_bundle.sh --platform linux/amd64
+backend/scripts/offline_bundle.sh --platform linux/amd64 --sign-key ~/carnet-release.key
 ```
+
+`--sign-key` signs it — *Signing the bundle*, below, is the key and what the signature
+is worth. Without it the bundle is checksummed only, and says so.
 
 `--platform` is not optional in practice. `docker save` writes the image this daemon
 holds, for this daemon's architecture; a laptop is arm64 and the servers it is bound for
@@ -137,12 +143,72 @@ Postgres image `compose.yaml` pins, and writes one tarball,
 | `LICENSE`, `NOTICE` | the licence, because the far side has no link to click |
 | `MANIFEST` | version, commit, date, platform, and each image's layer digests |
 | `SHA256SUMS` | over every other file |
+| `SHA256SUMS.sig`, `carnet-release.pub` | with `--sign-key`: a detached signature over `SHA256SUMS`, and the public half of the key that made it |
 | `verify.sh` | the far side's check, twice |
 
 It prints the tarball's own sha256. **Record that where the far side can read it** — a
-ticket, a signed message — and carry the tarball in. Verify the published image's
-signature on this side, while you can (`cosign verify`, in the README); the far side
-cannot, and the next section says what it can do instead.
+ticket, a signed message — and, if you signed, the key's fingerprint from `MANIFEST`
+beside it: the public key travels inside the bundle for convenience, and a fingerprint
+that travels only inside the bundle proves nothing. Then carry the tarball in.
+
+### Signing the bundle
+
+`--sign-key` writes `SHA256SUMS.sig`, an ECDSA P-256 signature over `SHA256SUMS`, and
+copies the key's public half in as `carnet-release.pub`. The far side's `verify.sh`
+checks it with `openssl dgst -verify` and prints the key's fingerprint. **OpenSSL, not
+cosign**, on purpose: the machine this is carried into is the one nobody can install
+anything on, openssl is on all of them, and the signature is a plain DER ECDSA signature
+that cosign can also verify if somebody prefers it (`base64` the `.sig` and pass it as
+`--signature`). Keyless signing — what the published image uses — is exactly wrong here,
+because its verifier reaches Fulcio and Rekor.
+
+**The key is a person's, and the ceremony is short.** On a machine you trust, not in CI —
+a signing key in a repository secret is a signing key a repository compromise yields, and
+cutting a bundle is already a human act on a connected laptop:
+
+```bash
+deploy/mint-release-key.sh ~/carnet-release.key      # prompts for a passphrase
+```
+
+which is these three commands, and prints what to do with what they made:
+
+```bash
+openssl ecparam -genkey -name prime256v1 -noout | \
+  openssl pkcs8 -topk8 -v2 aes-256-cbc -out ~/carnet-release.key     # prompts for a passphrase
+openssl pkey -in ~/carnet-release.key -pubout -out deploy/carnet-release.pub
+openssl pkey -pubin -in deploy/carnet-release.pub -outform DER | openssl dgst -sha256   # the fingerprint
+```
+
+It refuses to overwrite either half: a second key is a **rotation**, which is a thing to
+announce rather than a file to replace, because the far side compares the fingerprint it
+was told with the one `verify.sh` prints.
+
+Commit `deploy/carnet-release.pub` and put the fingerprint in this section, so the far
+side has a place outside the bundle to compare against. Keep the private key where you
+keep the encryption key's backup, and nowhere else. `offline_bundle.sh` refuses to sign
+under any key whose public half is not the committed one, so a bundle cannot leave under
+a key nobody was told to trust; the passphrase is openssl's own prompt, or
+`CARNET_SIGN_PASSIN=file:…` for a ceremony that is not at a terminal.
+
+**The published fingerprint:** *not yet — the ceremony has not been performed.* Until it
+is, `deploy/carnet-release.pub` does not exist, and a bundle signed under a key of your
+own is verifiable only against a fingerprint you carried in yourself, which is still
+strictly more than a checksum.
+
+What *has* been done, in the pass after 110f, is a full rehearsal with a throwaway key:
+the script above mints an encrypted PKCS#8 key and prints a fingerprint; `openssl dgst
+-sign` and `-verify` round-trip a `SHA256SUMS`; a bent signature and an edited
+`SHA256SUMS` both fail to verify; `offline_bundle.sh` refuses a key whose public half is
+not the committed one, and refuses a wrong passphrase as a passphrase rather than as a
+bad key. So what is left is not *does this work* but **who holds the key** — which is
+the part that was never ours to do.
+
+**What it is worth, and what it is not.** A good signature says the holder of the key
+checked these bytes. It does not say the key is still in the right hands: a person loses
+keys, and the recovery — a second key, a published revocation of the first — is not
+written yet and should be before the first bundle ships to somebody who checks. Until
+then, a fingerprint that changes between two bundles is a question to ask, not a
+rotation to accept.
 
 ### On the far side
 
@@ -157,7 +223,8 @@ and says so in those words.
 sha256sum carnet-offline-*.tar          # first, against the value that was recorded
 tar -xf carnet-offline-*.tar
 cd carnet-offline-*/
-./verify.sh                             # every file matches SHA256SUMS
+./verify.sh                             # every file matches SHA256SUMS, and the signature holds
+                                        # — compare the fingerprint it prints with the recorded one
 docker load -i images.tar.gz
 ./verify.sh --loaded                    # the images, the architecture, and the mounts
 
@@ -228,13 +295,14 @@ release added stands: read its section 5 before the `up`.
 The useful half of this page.
 
 - **`cosign verify`.** Keyless signing verifies against Fulcio and Rekor, which are on the
-  internet. What you have instead is weaker and should be described as such: the
-  tarball's sha256, recorded on the connected side, says the tarball was not altered on
-  the way; `SHA256SUMS` says each file inside is the file that was checked; `MANIFEST`
-  says which commit built it and which layers each image has. Together they prove *these
-  are the bytes that were carried in*. They do not prove who built them. Only the
-  signature says that, and it has to be checked on the connected side, by the person
-  who then records the sha256.
+  internet. What you have instead: the tarball's sha256, recorded on the connected side,
+  says the tarball was not altered on the way; `SHA256SUMS` says each file inside is the
+  file that was checked; `MANIFEST` says which commit built it and which layers each
+  image has; and `SHA256SUMS.sig`, when the bundle was signed, says the holder of the
+  release key checked them — verified here with openssl, against a fingerprint you
+  compared with one from outside the bundle. Together they prove *these are the bytes
+  that were carried in, and who checked them*. An unsigned bundle proves only the first
+  half, and `verify.sh` says so in one line rather than passing.
 - **`acme`.** Let's Encrypt cannot reach you and you cannot reach it. `files` or
   `internal`.
 - **The README's four-line quickstart.** `curl raw.githubusercontent.com` and `docker run
@@ -260,10 +328,13 @@ The useful half of this page.
   reproduced; the seams above were found by reading the install path against what a
   sealed network does. That is a good method and not the same as an install. The first
   real one will find another.
-- **The manifest is not a signature**, and this page has tried not to dress it up as
-  one. A signed bundle — a detached signature over `SHA256SUMS` under a key the far side
-  already trusts — is the honest next step, and it waits for the first customer who asks
-  for it in words.
+- **The signature is only as good as where the key is held.** Step 110 put it on a
+  person rather than in CI because CI is the weaker of the two, and a person loses
+  keys. The recovery story — a second key, a published revocation — is not written, and
+  the ceremony itself has not been performed, so there is no published fingerprint yet
+  and `deploy/carnet-release.pub` does not exist. The mechanism is proven end to end by
+  `e2e_deploy.py` under a throwaway key on every pull request; the trust is not, and
+  cannot be, by a test.
 - **DNS has no deadline.** `socket.getaddrinfo` takes no timeout, so a stalled internal
   resolver holds a door call for the OS resolver's timeout. An on-premises estate has
   more internal resolvers than a cloud one, so this gets more likely rather than less.

@@ -36,6 +36,15 @@
  *  not have worked; and *where to paste it* is shown only for a dialect tried against
  *  the real client, because a wrong path here is worse than no card.
  *
+ *  ## The frameworks (step 111)
+ *
+ *  A second group in the same picker: LangChain, CrewAI, the OpenAI Agents SDK and
+ *  AutoGen, each of which ships an MCP adapter that speaks the door's transport. The
+ *  snippet is code rather than a file, so the unverified caveat is about the library's
+ *  API rather than a path — but the rule is the same one: *where it goes* is shown only
+ *  for an entry somebody has run against the real library and a real door. The point of
+ *  the group is that the four lines were true before it existed and written nowhere.
+ *
  *  ## The refusal (step 074)
  *
  *  `calls` counts what reached the broker. A call the door turns away at its own
@@ -63,13 +72,14 @@
 import { useContext, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { Badge, Card, Tabs } from "../../components/ui";
+import { Badge, Button, Card, CopyButton, Notice, Tabs } from "../../components/ui";
 import { api } from "../../lib/api";
 import { on } from "../../lib/format";
 import { MeContext } from "../../lib/me";
-import type { DoorActivity, DoorRefusal } from "../../lib/types";
+import type { DoorActivity, DoorRefusal, MintedToken } from "../../lib/types";
 import { useResource } from "../../lib/useResource";
-import { DEFAULT_DIALECT, DIALECTS, unreachable } from "./dialects";
+import MintForm from "../tokens/MintForm";
+import { type Dialect, defaultDialect, frameworks, ordered, unreachable } from "./dialects";
 
 const POLL_MS = 5000;
 
@@ -80,21 +90,33 @@ const POLL_MS = 5000;
  *  the file it goes in and the spelling. A client that cannot reach this door gets the
  *  reason in place of a snippet, and the *where to paste it* sentence appears only for
  *  a dialect somebody has tried against the real client. */
-function Dialects({ url }: { url: string }) {
-  const [client, setClient] = useState(DEFAULT_DIALECT);
-  const tabs = DIALECTS.map((entry) => {
+function Dialects({ url, secret }: { url: string; secret: string }) {
+  const [client, setClient] = useState(defaultDialect(url));
+  const { primary, more } = ordered(url);
+  const [moreChoice, setMoreChoice] = useState(more[0]?.id ?? "");
+  const libraries = frameworks();
+  const [frameworkChoice, setFrameworkChoice] = useState(libraries[0]?.id ?? "");
+
+  /** The snippet with the secret in it, for the reveal's lifetime (107 D9). The two
+   *  things a person has to paste are on one screen for the only moment the secret
+   *  exists; after **Done** the placeholder is back. */
+  const shown = (entry: Dialect) =>
+    secret ? entry.snippet(url).replaceAll("<your token>", secret) : entry.snippet(url);
+
+  const panel = (entry: Dialect) => {
     const reason = unreachable(entry, url);
-    return {
-      id: entry.id,
-      label: entry.label,
-      panel: reason ? (
+    if (reason) {
+      return (
         <p className="sentence">
           <Badge tone="warn">cannot connect</Badge> {reason}
         </p>
-      ) : entry.auth === "oauth" ? (
-        // Step 083. Nothing to paste but the address above: the client reads the door's
-        // OAuth documents, sends the person to this deployment's consent page, and holds
-        // a token it minted for itself — no header, no secret, nothing this page sees.
+      );
+    }
+    if (entry.auth === "oauth") {
+      // Step 083. Nothing to paste but the address above: the client reads the door's
+      // OAuth documents, sends the person to this deployment's consent page, and holds
+      // a token it minted for itself — no header, no secret, nothing this page sees.
+      return (
         <>
           <p className="sentence">
             Add the URL above to {entry.label}. It sends you here to sign in and approve,
@@ -102,21 +124,167 @@ function Dialects({ url }: { url: string }) {
           </p>
           <p className="muted">{entry.where}</p>
         </>
-      ) : (
+      );
+    }
+    return (
+      <>
+        <div className="spread">
+          <pre className="block">{shown(entry)}</pre>
+          <CopyButton value={shown(entry)} label="the config" />
+        </div>
+        <p className="muted">
+          {entry.verified ? (
+            entry.where
+          ) : entry.group === "framework" ? (
+            <>
+              From {entry.label}&rsquo;s own documentation, not yet run from here. If the
+              library&rsquo;s MCP API has moved, its documentation is right and this is
+              behind.
+            </>
+          ) : (
+            <>Untested from here. Check the client&rsquo;s documentation for the file location.</>
+          )}
+        </p>
+      </>
+    );
+  };
+
+  const tabs = primary.map((entry) => ({ id: entry.id, label: entry.label, panel: panel(entry) }));
+  if (libraries.length > 0) {
+    // The frameworks (step 111), one tab with a picker, before *More*: a person wiring
+    // a library is not looking for a file, and should not have to look under the
+    // clients' overflow to find that the library already speaks this door.
+    const chosen = libraries.find((entry) => entry.id === frameworkChoice) ?? libraries[0];
+    tabs.push({
+      id: "frameworks",
+      label: "Frameworks",
+      panel: (
         <>
-          <pre className="block">{entry.snippet(url)}</pre>
-          <p className="muted">
-            {entry.verified ? (
-              entry.where
-            ) : (
-              <>Untested from here. Check the client&rsquo;s documentation for the file location.</>
-            )}
+          <p className="sentence">
+            An agent you build in a framework connects the same way: its MCP adapter
+            takes the URL above and the header. Nothing from Carnet to install.
           </p>
+          <label className="field">
+            <span className="label">Framework</span>
+            <select
+              aria-label="Framework"
+              value={chosen.id}
+              onChange={(event) => setFrameworkChoice(event.target.value)}
+            >
+              {libraries.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {panel(chosen)}
         </>
       ),
-    };
-  });
+    });
+  }
+  if (more.length > 0) {
+    // The rest, under one tab with a picker: seven tabs in a strip is a strip nobody
+    // reads, and the four in front are where nearly everybody starts.
+    const chosen = more.find((entry) => entry.id === moreChoice) ?? more[0];
+    tabs.push({
+      id: "more",
+      label: "More",
+      panel: (
+        <>
+          <label className="field">
+            <span className="label">Client</span>
+            <select
+              aria-label="Other clients"
+              value={chosen.id}
+              onChange={(event) => setMoreChoice(event.target.value)}
+            >
+              {more.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {panel(chosen)}
+        </>
+      ),
+    });
+  }
   return <Tabs tabs={tabs} active={client} onSelect={setClient} label="Client" />;
+}
+
+/** Generate a token here, for this agent (107 D9). A service token is granted the agent
+ *  in the same request when the viewer may share it; the secret is substituted into the
+ *  snippet above for as long as the reveal is open, and **Done** puts the placeholder
+ *  back. The tokens page has the same form; this is the one place the two things a
+ *  person has to paste are on one screen. */
+function GenerateHere({
+  agent,
+  canGrant,
+  onMinted,
+  onDone,
+  minted,
+}: {
+  agent: string;
+  canGrant: boolean;
+  onMinted: (made: MintedToken) => void;
+  onDone: () => void;
+  minted: MintedToken | null;
+}) {
+  const [open, setOpen] = useState(false);
+
+  if (minted) {
+    return (
+      <Notice tone="warn" title="Token created">
+        <p>
+          <strong>Copy the token and store it somewhere safe.</strong> You can&rsquo;t
+          view it again. The config above has it filled in until you press Done.
+        </p>
+        <div className="reveal">
+          <span className="label">Token</span>
+          <div className="spread">
+            <code tabIndex={0} aria-label="Token">
+              {minted.token}
+            </code>
+            <CopyButton value={minted.token} label="token" />
+          </div>
+        </div>
+        {!minted.acts_as_owner && !canGrant && (
+          <p className="muted">
+            This token has no agents yet. An editor can grant it this agent from the{" "}
+            <strong>Share</strong> dialog, as <code>machine:{minted.id}</code>.
+          </p>
+        )}
+        <div className="spread">
+          <Button onClick={onDone}>Done</Button>
+        </div>
+      </Notice>
+    );
+  }
+
+  if (!open) {
+    return (
+      <div className="spread">
+        <Button onClick={() => setOpen(true)}>Generate a token</Button>
+        <span className="muted">
+          Or use one from <Link to="/tokens">Access tokens</Link>.
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <MintForm
+      grantAgent={agent}
+      canGrant={canGrant}
+      onCancel={() => setOpen(false)}
+      onMinted={(made) => {
+        setOpen(false);
+        onMinted(made);
+      }}
+    />
+  );
 }
 
 /** The door's own sentence for a refusal, by the denial's `required`. Two values
@@ -150,12 +318,15 @@ function newsworthy(activity: DoorActivity): DoorRefusal | null {
   return refusal.at > activity.last_call_at ? refusal : null;
 }
 
-export default function ConnectCard({ name }: { name?: string }) {
+export default function ConnectCard({ name, role = "" }: { name?: string; role?: string }) {
   // `name` optional since 062: the agent-scoped part of this card is exactly one
   // thing — the activity poll that flips "waiting" to "connected" — while the
   // address, the snippet and the token prose are deployment facts. Without a name
-  // (the tokens page) the card renders the facts and polls nothing.
+  // (the tokens page) the card renders the facts and polls nothing. `role` is the
+  // viewer's on the agent (107 D9): an editor or owner may grant a service token the
+  // agent as it is generated here; anybody may generate a personal one.
   const { me } = useContext(MeContext);
+  const [minted, setMinted] = useState<MintedToken | null>(null);
   const activity = useResource(
     () => (name ? api.doorActivity(name) : Promise.resolve(null)),
     [name],
@@ -179,20 +350,23 @@ export default function ConnectCard({ name }: { name?: string }) {
   return (
     <Card title="Connect a client">
       <p className="sentence">
-        Add this server to Claude, Cursor, VS Code or any MCP client. The client
-        authenticates with an access token and can use the tools of the agents that token
-        is granted.
+        Add this server to Claude, Cursor, VS Code, an agent framework or any MCP
+        client. The client authenticates with an access token and can use the tools of
+        the agents that token is granted.
       </p>
 
       {url ? (
         <>
           <div className="reveal">
             <span className="label">MCP server URL</span>
-            <code tabIndex={0} aria-label="MCP server URL">
-              {url}
-            </code>
+            <div className="spread">
+              <code tabIndex={0} aria-label="MCP server URL">
+                {url}
+              </code>
+              <CopyButton value={url} label="the MCP server URL" />
+            </div>
           </div>
-          <Dialects url={url} />
+          <Dialects url={url} secret={minted?.token ?? ""} />
         </>
       ) : (
         <p className="muted">
@@ -202,16 +376,26 @@ export default function ConnectCard({ name }: { name?: string }) {
         </p>
       )}
 
+      {name && url ? (
+        <GenerateHere
+          agent={name}
+          canGrant={role === "owner" || role === "editor"}
+          minted={minted}
+          onMinted={setMinted}
+          onDone={() => setMinted(null)}
+        />
+      ) : null}
+
       <p className="muted">
-        Replace <code>&lt;your token&gt;</code> with an access token
-        {name ? (
+        {minted ? (
+          <>The config above has the new token in it. </>
+        ) : (
           <>
-            {" "}
-            from <Link to="/tokens">Access tokens</Link>
+            Replace <code>&lt;your token&gt;</code> with an access token.{" "}
           </>
-        ) : null}
-        . A personal token can use everything shared with you. A service token can use
-        only the agents granted to it.
+        )}
+        A personal token can use everything shared with you. A service token can use only
+        the agents granted to it.
       </p>
 
       {/* The waiting line. Errors render as silence rather than a warning — this is a

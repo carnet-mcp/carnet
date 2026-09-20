@@ -375,7 +375,9 @@ describe("the MCP endpoint, on the page that generates its key (062)", () => {
     expect(
       await screen.findByText("https://acme.example/api/mcp"),
     ).toBeInTheDocument();
-    // Scoped to the visible pane: 075's dialect tabs mount every snippet, hidden.
+    // On https the first tab is Claude, which pastes no config (107 D9); the snippet is
+    // one tab over. Scoped to the visible pane: the tabs mount every snippet, hidden.
+    fireEvent.click(screen.getByRole("tab", { name: "Claude Code" }));
     expect(within(screen.getByRole("tabpanel")).getByText(/mcpServers/)).toBeInTheDocument();
     // The token prose names the token kinds without linking to this page from itself.
     expect(

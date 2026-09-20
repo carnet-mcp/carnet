@@ -7,10 +7,15 @@
 #
 # What the first proves: the bytes on this disk are the bytes SHA256SUMS was written over
 # on the connected side. Pair it with the tarball's own sha256, recorded there and
-# carried in separately, and you know the tarball was not altered on the way. What it
-# does NOT prove is who built them — that is the cosign signature on the published
-# image, which needs Fulcio and Rekor and cannot be checked here. docs/OFFLINE.md says
-# how much this is worth, and it is less than a signature.
+# carried in separately, and you know the tarball was not altered on the way. Who
+# checked them is the signature (step 110, decision 10): when SHA256SUMS.sig is beside
+# this script it is verified against carnet-release.pub with `openssl dgst -verify` —
+# openssl, because it is on the machine nobody can install anything on, and a plain
+# ECDSA signature, because the keyless cosign signature on the published image needs
+# Fulcio and Rekor and cannot be checked here. The public key in the bundle is a
+# convenience; the trust is the fingerprint this prints, compared with the one recorded
+# outside the bundle. A bundle with no signature, or a machine with no openssl, gets a
+# sentence saying the signature was not checked — never a silent pass.
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -43,6 +48,27 @@ if [ "${1:-}" != "--loaded" ]; then
   for f in images.tar.gz MANIFEST deploy/compose.yaml deploy/.env.example docs/OFFLINE.md; do
     if [ -f "$f" ]; then echo "ok    $f"; else echo "FAIL  $f is missing" >&2; fail=1; fi
   done
+
+  # The signature, over SHA256SUMS, which is why it comes after the sums: a good
+  # signature over a file that does not describe these bytes proves nothing about them.
+  if [ -f SHA256SUMS.sig ]; then
+    if [ ! -f carnet-release.pub ]; then
+      echo "FAIL  SHA256SUMS.sig is here but carnet-release.pub is not, so it cannot be checked" >&2
+      fail=1
+    elif ! command -v openssl >/dev/null 2>&1; then
+      echo "warn  SHA256SUMS.sig is here but openssl is not on this machine, so the signature was NOT checked"
+    elif openssl dgst -sha256 -verify carnet-release.pub -signature SHA256SUMS.sig SHA256SUMS >/dev/null 2>&1; then
+      fingerprint="$(openssl pkey -pubin -in carnet-release.pub -outform DER 2>/dev/null | openssl dgst -sha256 | sed 's/^.*= //')"
+      echo "ok    SHA256SUMS is signed by the key in carnet-release.pub"
+      echo "      key fingerprint (sha256 of the DER public key): $fingerprint"
+      echo "      compare it with the fingerprint recorded outside this bundle — the trust is there, not here"
+    else
+      echo "FAIL  SHA256SUMS.sig does not verify against carnet-release.pub — do not load this bundle" >&2
+      fail=1
+    fi
+  else
+    echo "warn  this bundle is not signed: SHA256SUMS proves the bytes, not who checked them"
+  fi
   exit $fail
 fi
 

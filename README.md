@@ -61,6 +61,11 @@ touching anybody's machine.
 vendor's cloud. Carnet only handles the tool calls they make, which is why it works the
 same for a coding assistant you did not build and an agent you did.
 
+**An agent you build in LangChain, CrewAI, the OpenAI Agents SDK or AutoGen connects with
+its framework's own MCP adapter, the URL and one header** — nothing from Carnet to
+install — or with `carnet-mcp`, the three-line client in [`client/`](client/README.md).
+The snippets are in [docs/GUIDE.md](docs/GUIDE.md#connect-your-framework).
+
 ## What happens on a single call
 
 Every call takes the same path, and every one of them is written down.
@@ -226,6 +231,10 @@ cosign verify ghcr.io/carnet-mcp/carnet:latest \
   --certificate-identity-regexp '^https://github.com/carnet-mcp/carnet/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+The same command verifies `ghcr.io/carnet-mcp/carnet-front`, the front door the
+deployment in `deploy/` runs beside this image — `deploy/README.md` says how to run the
+published pair without building either.
 
 Or build it from a checkout:
 

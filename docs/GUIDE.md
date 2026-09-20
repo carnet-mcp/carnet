@@ -1,7 +1,8 @@
 # Guide
 
 What you do after Carnet is running: reach a server of your own, hand it a credential
-without holding one, ask what a token can do before it does it, and broker a model call.
+without holding one, connect an agent you built in a framework, ask what a token can do
+before it does it, and broker a model call.
 
 The two ways to start it are in the [README](../README.md). Everything here assumes one
 of them is already up.
@@ -224,6 +225,130 @@ connector and approving a tool needed an administrator role to sit behind, and u
 role existed there was nowhere safe to put a route. The role exists now and so does the
 vetting screen — see [the administration routes](CAPABILITIES.md#administration). The commands stay
 because some people would rather script it than click it.
+
+### Connect your framework
+
+An agent you build in LangChain, CrewAI, the OpenAI Agents SDK or AutoGen connects the
+same way a coding assistant does, because each of those ships an MCP adapter that speaks
+Streamable HTTP with a bearer header — which is exactly what `/mcp` is. There is nothing
+from Carnet to install: the adapter takes the door's URL and the header, and what comes
+back from `tools/list` is what the token is granted. The agent detail page's connect card
+prints the same four snippets with your deployment's URL filled in.
+
+Two things are true of all four and are the reason to route a framework's agent through
+the door at all. **The credential never reaches the agent's process** — the tool runs
+under the credential the broker holds, and the agent's environment holds one revocable
+token. And **a call outside the token's scope comes back as the broker's refusal in the
+tool result**, not as an exception: the model reads *denied: 'OTHER' is outside this
+agent's 'read' scope. Allowed: ACME* and can say so, which is the outcome the permission
+model exists to produce.
+
+The tool list is fetched once, when the agent is built, because that is what every
+framework's API does. It is safe, and it looks like it should not be: **visibility goes
+stale, enforcement does not.** A grant revoked while a long-running agent is up may leave
+the tool in its list; the door refuses the call, uncached, as it always did, and the
+refusal is on the audit trail.
+
+#### The short way: `carnet-mcp`
+
+The client package in [`client/`](../client/README.md) makes the four snippets below
+into three lines each, and puts the two rules above into code: a refusal reaches the
+model on the framework's tool-error channel in the door's words with the audit row's id
+appended, and the package makes HTTP requests to exactly one host, the URL it was given.
+It depends on `httpx` and nothing else; each framework is an extra.
+
+```bash
+pip install "carnet-mcp[langchain]"     # or [crewai], [autogen], [openai-agents]
+```
+
+```python
+from carnet_mcp.langchain import tools           # carnet_mcp.crewai, .autogen, .openai_agents
+tools = tools("https://carnet.example.com/api/mcp", "<your token>")
+```
+
+The LangChain adapter is run end to end by `backend/scripts/e2e_client_langchain.py`
+against a real door, including a grant revoked mid-session; the other three adapters were
+run from here against a real door for list, call and refusal. It is published to PyPI on
+a `client-v*` tag; until the first one, install it from the checkout with
+`pip install -e "client[langchain]"`.
+
+#### The four adapters, without anything from Carnet
+
+Each was run from here against a real door — LangChain on 2026-09-19, the other three on
+2026-09-20, library versions in the connect card's own table (`dialects.ts`): the list
+arrived, an in-scope call ran under the broker's credential, an out-of-scope call came
+back as the refusal above, and a wrong token failed at the handshake. Two of the four had
+a snag, and it is in the install line rather than left for you to find.
+
+**LangChain**
+
+```python
+# pip install langchain-mcp-adapters
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+client = MultiServerMCPClient({
+    "carnet": {
+        "transport": "streamable_http",
+        "url": "https://carnet.example.com/api/mcp",
+        "headers": {"Authorization": "Bearer <your token>"},
+    }
+})
+tools = await client.get_tools()  # hand these to create_agent or your graph
+```
+
+**CrewAI** — the `[mcp]` extra is required. Without it the adapter stops at an
+interactive *would you like to install it?* prompt, which in a service is a hang.
+
+```python
+# pip install "crewai-tools[mcp]"
+from crewai_tools import MCPServerAdapter
+
+with MCPServerAdapter({
+    "url": "https://carnet.example.com/api/mcp",
+    "transport": "streamable-http",
+    "headers": {"Authorization": "Bearer <your token>"},
+}) as tools:
+    ...  # Agent(role=..., goal=..., tools=tools)
+```
+
+**OpenAI Agents SDK**
+
+```python
+# pip install openai-agents
+from agents import Agent
+from agents.mcp import MCPServerStreamableHttp
+
+async with MCPServerStreamableHttp(
+    name="carnet",
+    params={"url": "https://carnet.example.com/api/mcp", "headers": {"Authorization": "Bearer <your token>"}},
+) as server:
+    agent = Agent(name="triage", instructions="...", mcp_servers=[server])
+```
+
+**AutoGen** — `autogen-ext` 0.7 does not import against `mcp` 2.x, which its own extra
+pulls in; pin `mcp<2` beside it. AutoGen's adapter also *raises* on a call outside the
+token's scope rather than handing the model the sentence; `carnet-mcp`'s adapter returns
+it.
+
+```python
+# pip install "autogen-ext[mcp]" "mcp<2"
+from autogen_ext.tools.mcp import StreamableHttpServerParams, mcp_server_tools
+
+params = StreamableHttpServerParams(
+    url="https://carnet.example.com/api/mcp",
+    headers={"Authorization": "Bearer <your token>"},
+)
+tools = await mcp_server_tools(params)  # AssistantAgent(..., tools=tools)
+```
+
+`<your token>` is an access token from the Access tokens page, or from
+`carnet --mint-token`, or — on a fileborne door — the `${VARIABLE}` a `tokens:` entry
+names. A service token reaches only the agents granted to it, which is the right shape
+for a process: grant it one agent, and the agent's scope is the process's reach.
+
+What this does not do is make the wider sentence true: an agent that imports one of these
+adapters can still call a vendor directly on the next line. *Governed means routed*
+([PREMISE.md](PREMISE.md)) — the door governs what is sent through it.
 
 ### Asking what a token reaches, before it reaches it
 
@@ -624,6 +749,12 @@ machine they hold — and read the refusals on the door log.
 for the same models. When yours differ — a reservation, a region, next quarter — set
 `CARNET_MODEL_RATES` or re-vet with `--pricing`; the overview says *estimated, priced at
 read time*, so a corrected table reprices the history.
+
+**Or none of step 3 in a terminal.** Everything `--vet` takes here — the binding, the
+schema, the usage map, the redaction, the cap, the prices and the deployment families —
+is on the connector's own screen under *Author a tool*, and each approval shows the
+families and the priced models it recorded. Step 1 is still the command line until the
+identity-provider page lands.
 
 #### What it looks like from each seat
 

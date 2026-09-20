@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import Failure from "../../components/Failure";
 import { Button, Card, Empty, PageHead, Spinner } from "../../components/ui";
-import { api } from "../../lib/api";
+import { api, LOG_PAGE } from "../../lib/api";
 import { on } from "../../lib/format";
 import { DENIAL_RESOURCE_KINDS } from "../../lib/types";
 import type { DenialRecord } from "../../lib/types";
-import { useResource } from "../../lib/useResource";
+import { usePagedLog } from "../../lib/usePagedLog";
+import { LogId } from "./logIds";
 
 /** The access-denial log, rendered — *who tried, and was refused*.
  *
@@ -46,48 +47,63 @@ import { useResource } from "../../lib/useResource";
  * ## Filtering is the server's job
  *
  * Every filter here is a query parameter, never a `.filter()` on what arrived. The list
- * is the most recent 200 records, so a client narrowing that page would be answering
- * *"which of these came from the door"* with *"which of the last two hundred"* — which
- * is the same lie as silent truncation, and the reason the route caps `limit` in its
- * signature rather than in a branch.
+ * is a page of the most recent records, so a client narrowing that page would be
+ * answering *"which of these came from the door"* with *"which of the last hundred"* —
+ * which is the same lie as silent truncation, and the reason the route caps `limit` in
+ * its signature rather than in a branch.
  *
- * The filter state is React state and deliberately **not** in the URL, which is a break
- * from `ConnectionsPage` and from this codebase's usual argument that an administrator
- * sends a link to a colleague. One concrete fact overrules it: `Failure` renders every
- * 422 as *"This agent's configuration is not valid"*, and a filter in the URL is one
- * keystroke from `?kind=banana` — a screen answering a typo with a sentence about a
- * different noun is worth less than the deep link is worth. Recorded in `DEFERRED.md`
- * with the fix, which is `Failure`'s and not this page's.
+ * The filters were React state and deliberately **not** in the URL until 110f, for one
+ * concrete reason: `Failure` rendered every 422 as *"This agent's configuration is not
+ * valid"*, and a filter in the URL is one keystroke from `?kind=banana`. 066 retitled
+ * the 422 and put the request log's filters in its URL; plan 107 D10 brought this page
+ * into line, so a filtered view is a link an administrator can send — the argument this
+ * codebase makes everywhere else, and the one thing that fact had been overruling.
+ * Read straight from `useSearchParams` with no local mirror, for `DoorTrafficPage`'s
+ * reason: two values free to disagree, silently.
+ *
+ * Newest first, a page at a time, keyed on the oldest id shown — `usePagedLog`. An id
+ * in a cell links to its page where one exists and narrows the log otherwise
+ * (`logIds`), so this page and the request log agree about which ids go somewhere.
  *
  * No polling. The log is a record of what happened, not a thing in flight.
  */
 export default function DenialsPage() {
-  const [kind, setKind] = useState("");
-  const [principalId, setPrincipalId] = useState("");
-  const [resourceId, setResourceId] = useState("");
+  const [params, setParams] = useSearchParams();
+  const kind = params.get("kind") ?? "";
+  const principalId = params.get("principal_id") ?? "";
+  const resourceId = params.get("resource_id") ?? "";
 
-  const { data, error, loading } = useResource(
-    () =>
+  const set = (key: string, value: string) => {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setParams(next, { replace: true });
+  };
+  const setKind = (value: string) => set("kind", value);
+  const setPrincipalId = (value: string) => set("principal_id", value);
+  const setResourceId = (value: string) => set("resource_id", value);
+
+  const { rows: data, error, loading, more, fetching, older } = usePagedLog(
+    (before, limit) =>
       api.adminDenials({
+        before,
+        limit,
         resourceKind: kind || undefined,
         principalId: principalId || undefined,
         resourceId: resourceId || undefined,
       }),
-    [kind, principalId, resourceId],
+    LOG_PAGE,
+    [params.toString()],
   );
 
   const filtered = Boolean(kind || principalId || resourceId);
-  const clear = () => {
-    setKind("");
-    setPrincipalId("");
-    setResourceId("");
-  };
+  const clear = () => setParams(new URLSearchParams(), { replace: true });
 
   return (
     <>
       <PageHead
         title="Access denied"
-        lede="Requests that were denied: an agent the user cannot see, an admin page they cannot open, or a tool their token is not granted. Oldest first."
+        lede="Requests that were denied: an agent the user cannot see, an admin page they cannot open, or a tool their token is not granted. Newest first."
       />
 
       <div className="log-filters">
@@ -169,17 +185,16 @@ export default function DenialsPage() {
               </tr>
             </thead>
             <tbody>
-              {data.map((record, index) => (
-                // Indexed, for `AdminPage`'s reason: the log is append-only and has no id
-                // a client can see, and two records genuinely can be identical in every
-                // visible field — the same person probing the same name twice in one
-                // second. The position is the identity here.
-                <tr key={index}>
+              {data.map((record) => (
+                // Keyed by the store's sequence number since 110f; the index was right
+                // only while a page was never appended to.
+                <tr key={record.id}>
                   <td className="mono">{on(record.ts)}</td>
                   <td className="mono">
                     {record.principal_kind}:
-                    <FilterValue
-                      value={record.principal_id}
+                    <LogId
+                      kind={record.principal_kind}
+                      id={record.principal_id}
                       onPick={setPrincipalId}
                       title="Show only requests by this actor"
                     />
@@ -189,8 +204,9 @@ export default function DenialsPage() {
                     {record.resource_id ? (
                       <>
                         {": "}
-                        <FilterValue
-                          value={record.resource_id}
+                        <LogId
+                          kind={record.resource_kind}
+                          id={record.resource_id}
                           onPick={setResourceId}
                           title="Show only requests for this target"
                         />
@@ -205,6 +221,13 @@ export default function DenialsPage() {
               ))}
             </tbody>
           </table>
+          {more && (
+            <p className="log-more">
+              <Button kind="quiet" busy={fetching} onClick={older}>
+                Show older
+              </Button>
+            </p>
+          )}
         </Card>
       )}
     </>
@@ -234,29 +257,6 @@ function Narrowed({
         {clearLabel}
       </button>
     </span>
-  );
-}
-
-/** A value in a cell that is also the filter for it — *what else did this person probe?*
- *  and *who probed payroll-bot?*, which are the two questions migration 028 built its
- *  second and third indexes for and which nothing in a browser could ask until now.
- *
- *  A button rather than a link, because the filter is not in the URL (see the page's
- *  note), and the value is taken from the row rather than from a list this file keeps —
- *  so this half of the filtering cannot go stale against the server at all. */
-function FilterValue({
-  value,
-  onPick,
-  title,
-}: {
-  value: string;
-  onPick: (value: string) => void;
-  title: string;
-}) {
-  return (
-    <button type="button" className="filter-value" title={title} onClick={() => onPick(value)}>
-      {value}
-    </button>
   );
 }
 

@@ -1,5 +1,5 @@
-import { Fragment, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Fragment, useEffect, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import Failure from "../../components/Failure";
 import {
@@ -12,13 +12,16 @@ import {
   Spinner,
   Tag,
 } from "../../components/ui";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
+import { runConsent } from "../../lib/consentWindow";
 import { bytes } from "../../lib/format";
 import type {
   ConnectorDetail,
   DiscoveredTool,
   DiscoveryResult,
+  Recipe,
   ResourceSpec,
+  ResourceType,
   ScopeNote,
   VettedTool,
 } from "../../lib/types";
@@ -63,6 +66,10 @@ export default function ConnectorDetailPage() {
   const { connectorId = "" } = useParams();
   const connector = useResource(() => api.getConnector(connectorId), [connectorId]);
   const [seen, setSeen] = useState<DiscoveryResult | null>(null);
+  /** The remote name whose approval is being edited from the approved-tools table (107
+   *  D7), or null. For an MCP connector it makes Discovery run and open that tool's form;
+   *  for a REST one it prefills the authoring form's name. */
+  const [editing, setEditing] = useState<string | null>(null);
 
   return (
     <>
@@ -80,9 +87,17 @@ export default function ConnectorDetailPage() {
 
       {connector.data && (
         <>
+          {/* **The order the backend needs them in** (107 D4): what it is, the credentials
+              discovery will need, what is approved, what the server offers, and last the
+              one control that is a security posture rather than setup. The OAuth app used
+              to be the last card on the page and discovery depended on it. */}
           <Registration connector={connector.data} />
-          <AssertedIdentity connector={connector.data} onChange={connector.reload} />
-          <Vetted connector={connector.data} />
+          <ConsentFlow connector={connector.data} onChange={connector.reload} />
+          <Vetted
+            connector={connector.data}
+            onEdit={(remoteName) => setEditing(remoteName)}
+            onChange={connector.reload}
+          />
           {/* **The branch, and REST gets no Discover button** — step 047. There is
               nothing to dial: `Discovery`'s whole subject is what the server advertises
               right now and what has drifted since, and an API that advertises nothing
@@ -90,9 +105,14 @@ export default function ConnectorDetailPage() {
               merely unavailable. */}
           {connector.data.transport === "rest" ? (
             <AuthorTool
+              // Remounted on Edit, so the tool's name becomes the form's initial state
+              // rather than being copied in by an effect (the registration form's rule).
+              key={editing ?? "new"}
               connectorId={connectorId}
               vetted={connector.data.tools}
+              initialName={editing ?? ""}
               onVetted={() => {
+                setEditing(null);
                 connector.reload();
               }}
             />
@@ -100,17 +120,113 @@ export default function ConnectorDetailPage() {
             <Discovery
               connectorId={connectorId}
               vetted={connector.data.tools}
+              oauth={connector.data.oauth !== null}
               seen={seen}
               onSeen={setSeen}
+              openTool={editing}
               onVetted={() => {
+                setEditing(null);
                 connector.reload();
               }}
             />
           )}
-          <ConsentFlow connector={connector.data} onChange={connector.reload} />
+          <AssertedIdentity connector={connector.data} onChange={connector.reload} />
+          <Deregister connector={connector.data} />
         </>
       )}
     </>
+  );
+}
+
+/** Removing the connector itself (107 D7). A sentence and a second button in place, on
+ *  the groups page's precedent: what goes is every approval on it and the agents that
+ *  granted them stop working until edited; what does not go is anybody's connected
+ *  account, which the server declines to delete as a side effect — so a connector people
+ *  are connected to cannot be removed until they disconnect, and the server's sentence
+ *  says so. */
+function Deregister({ connector }: { connector: ConnectorDetail }) {
+  const navigate = useNavigate();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState("");
+  // Set only after the server has refused because people are connected. The second
+  // button is not offered before that: *disconnect everybody* is not a decision to put
+  // in front of somebody who has not been told it is needed.
+  const [inUse, setInUse] = useState(false);
+
+  const remove = (disconnectAccounts = false) => {
+    setBusy(true);
+    setFailure("");
+    api
+      .deregisterConnector(connector.connector_id, disconnectAccounts)
+      .then(() => navigate("/admin/connectors"))
+      .catch((cause: unknown) => {
+        const sentence = cause instanceof Error ? cause.message : String(cause);
+        // The refusal names the accounts it is protecting, and it is the only refusal
+        // here with a way through. Read off the status rather than the words.
+        setInUse(cause instanceof ApiError && cause.status === 409);
+        setConfirming(false);
+        setFailure(sentence);
+      })
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Card title="Deregister">
+      {!confirming && (
+        <div className="spread">
+          <p className="sentence">
+            Remove this connector and every tool approved on it.
+          </p>
+          <Button
+            kind="quiet"
+            onClick={() => {
+              setFailure("");
+              setConfirming(true);
+            }}
+          >
+            Deregister…
+          </Button>
+        </div>
+      )}
+      {confirming && (
+        <Notice tone="warn" title={`Deregister ${connector.connector_id}?`}>
+          <p className="sentence">
+            {connector.vetted === 0
+              ? "No tools are approved on it, so no agent is affected."
+              : `Its ${connector.vetted} approved ${connector.vetted === 1 ? "tool is" : "tools are"} withdrawn. Agents that grant them cannot be used until they are edited.`}{" "}
+            Accounts people have connected to it are not deleted: if anybody has one,
+            the removal is declined and says how many.
+          </p>
+          <div className="spread">
+            <Button kind="primary" busy={busy} onClick={() => remove()}>
+              Deregister
+            </Button>
+            <Button onClick={() => setConfirming(false)}>Cancel</Button>
+          </div>
+        </Notice>
+      )}
+      {failure && (
+        <Notice tone="bad">
+          <p className="sentence">{failure}</p>
+          {inUse && (
+            <>
+              {/* The way through the one refusal that has one. Offered only after the
+                  server has refused, with what it costs said first: the connections go
+                  here and the tokens do not die at the vendor, which is a thing those
+                  people have to be told rather than a footnote. */}
+              <p className="sentence">
+                Disconnecting them here does not revoke anything at the provider. Tell
+                them to revoke it in their own {connector.connector_id} account.
+              </p>
+              <Button kind="primary" busy={busy} onClick={() => remove(true)}>
+                Disconnect everybody and deregister
+              </Button>
+            </>
+          )}
+        </Notice>
+      )}
+    </Card>
   );
 }
 
@@ -122,6 +238,12 @@ function Registration({ connector }: { connector: ConnectorDetail }) {
         <dd className="mono">{connector.url}</dd>
         <dt>Transport</dt>
         <dd className="mono">{connector.transport}</dd>
+        {connector.from_recipe && (
+          <>
+            <dt>Preset</dt>
+            <dd className="mono">{connector.from_recipe}</dd>
+          </>
+        )}
         <dt>Shared credential</dt>
         {/* 070. Three states, and the third is the one worth a sentence: a reference is
             not just "a different variable name", it is the platform not holding the
@@ -206,7 +328,19 @@ function AssertedIdentity({
   );
 }
 
-function Vetted({ connector }: { connector: ConnectorDetail }) {
+function Vetted({
+  connector,
+  onEdit,
+  onChange,
+}: {
+  connector: ConnectorDetail;
+  /** Opens the approval for editing (107 D7): for an MCP connector that runs Discovery
+   *  and opens the tool's form, since a re-vet needs the server's argument names and
+   *  the wire deliberately does not return them; for a REST one it prefills the
+   *  authoring form. */
+  onEdit: (remoteName: string) => void;
+  onChange: () => void;
+}) {
   if (connector.tools.length === 0) {
     return (
       <Card title="Approved tools">
@@ -231,6 +365,7 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
             <th>Acts as</th>
             <th>Resources</th>
             <th>Approved by</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -249,9 +384,20 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
                   {tool.identity === "user" ? "the caller" : "the service"}
                 </td>
                 <td className="mono">
-                  {tool.resources.map((r) => r.type).join(", ") || "none"}
+                  {/* The families in brackets after the type (110): they are the words a
+                      scope on this tool may say, and this row is where somebody learns
+                      them before writing one. */}
+                  {tool.resources.map(typeWithFamilies).join(", ") || "none"}
                 </td>
                 <td className="row-sub">{provenance(tool)}</td>
+                <td>
+                  <ToolActions
+                    connectorId={connector.connector_id}
+                    tool={tool}
+                    onEdit={onEdit}
+                    onChange={onChange}
+                  />
+                </td>
               </tr>
               {/* **A sub-row, not a seventh and eighth column** — `provenance` above is the
                   precedent for answering an extra question inside the row rather than by
@@ -270,9 +416,9 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
 
                   Nothing at all when there is neither. A line saying *no note* on every row
                   would bury the rows that have one. */}
-              {(tool.note.trim() || tool.max_response_bytes !== null) && (
+              {(tool.note.trim() || tool.max_response_bytes !== null || tool.pricing) && (
                 <tr>
-                  <td colSpan={6}>
+                  <td colSpan={7}>
                     {/* Trimmed before it decides anything, because a note of three spaces
                         is not a note — the form trims what it sends and `--note "   "`
                         does not, and a blank paragraph reads as a rendering fault. */}
@@ -281,6 +427,18 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
                       <p className="row-sub">
                         Responses over {bytes(tool.max_response_bytes)} are denied, not
                         truncated.
+                      </p>
+                    )}
+                    {/* The price is the one half of a REST binding that comes back (110):
+                        which models this approval priced, not the figures — the overview
+                        prices spend and says which table it used. Interesting for the
+                        same reason the ceiling is: nearly every row has none, and the one
+                        that does is the one whose re-vet would otherwise drop to list
+                        price without anybody noticing. */}
+                    {tool.pricing && (
+                      <p className="row-sub">
+                        Priced on this approval: {Object.keys(tool.pricing).join(", ")} (USD
+                        per million tokens).
                       </p>
                     )}
                   </td>
@@ -292,6 +450,107 @@ function Vetted({ connector }: { connector: ConnectorDetail }) {
       </table>
     </Card>
   );
+}
+
+/** Edit and Remove on an approved row (107 D7). Remove is a sentence and a second
+ *  button, in place: what goes is this approval and the agents granting it stop working
+ *  until edited; nothing else is touched, and the refusal — none today — would be the
+ *  server's sentence. */
+function ToolActions({
+  connectorId,
+  tool,
+  onEdit,
+  onChange,
+}: {
+  connectorId: string;
+  tool: VettedTool;
+  onEdit: (remoteName: string) => void;
+  onChange: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState("");
+
+  const remove = () => {
+    setBusy(true);
+    setFailure("");
+    api
+      .withdrawTool(connectorId, tool.remote_name)
+      .then(() => {
+        setConfirming(false);
+        onChange();
+      })
+      .catch((cause: unknown) => {
+        setConfirming(false);
+        setFailure(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => setBusy(false));
+  };
+
+  if (confirming) {
+    return (
+      <Notice tone="warn" title={`Remove ${tool.name}?`}>
+        <p className="sentence">
+          Agents that grant it cannot be used until they are edited. Nothing else changes.
+        </p>
+        <div className="spread">
+          <Button kind="primary" busy={busy} onClick={remove}>
+            Remove
+          </Button>
+          <Button onClick={() => setConfirming(false)}>Cancel</Button>
+        </div>
+      </Notice>
+    );
+  }
+  return (
+    <div className="spread">
+      <Button kind="quiet" onClick={() => onEdit(tool.remote_name)}>
+        Edit
+      </Button>
+      <Button kind="quiet" onClick={() => setConfirming(true)}>
+        Remove…
+      </Button>
+      {failure && <span className="muted">{failure}</span>}
+    </div>
+  );
+}
+
+/** A type, and in brackets the families a scope on it may name — `anthropic.model
+ *  (opus, sonnet, haiku)`. Bare when there are none, which is nearly every type. */
+function typeWithFamilies(resource: ResourceType): string {
+  return resource.families.length > 0
+    ? `${resource.type} (${resource.families.join(", ")})`
+    : resource.type;
+}
+
+/** A resource as the form holds it: the wire's `ResourceSpec` with `families` as the
+ *  text being typed rather than the list it becomes. A controlled input over a list would
+ *  have to split on every keystroke and eat the comma somebody just typed; the split
+ *  happens once, at submit, in `toSpec`. */
+interface ResourceRow {
+  type: string;
+  args: string[];
+  families: string;
+}
+
+/** `"opus, sonnet,,haiku "` → `["opus", "sonnet", "haiku"]`. Empty names are dropped
+ *  here because the server refuses one — `min_length=1` on the member — with a 422 that
+ *  names no field, and a stray comma is not an approval anybody meant. */
+function parseFamilies(text: string): string[] {
+  return text
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+}
+
+/** The row, as the wire wants it. `families` is **omitted** when empty rather than sent
+ *  as `[]`: the server defaults it, an empty list means the same thing, and a body that
+ *  says nothing about families on a Jira project is the honest one. */
+function toSpec(row: ResourceRow): ResourceSpec {
+  const families = parseFamilies(row.families);
+  return families.length > 0
+    ? { type: row.type, args: row.args, families }
+    : { type: row.type, args: row.args };
 }
 
 /** Who approved a tool, and **against which version of the server**.
@@ -309,11 +568,13 @@ export function provenance(tool: VettedTool): string {
   return `${who}, against ${tool.server_name} ${tool.server_version}`.trim();
 }
 
-function Discovery({
+export function Discovery({
   connectorId,
   vetted,
+  oauth,
   seen,
   onSeen,
+  openTool,
   onVetted,
 }: {
   connectorId: string;
@@ -321,19 +582,33 @@ function Discovery({
    *  than from an empty form — see `ToolForm`. Keyed by the **remote** name, which is what
    *  a discovered tool is called and what the write is keyed by. */
   vetted: VettedTool[];
+  /** Whether an OAuth app is configured, which is what *Connect your account* needs. */
+  oauth: boolean;
   seen: DiscoveryResult | null;
   onSeen: (result: DiscoveryResult) => void;
+  /** A remote name to discover for and open the form of — Edit on the approved row. */
+  openTool: string | null;
   onVetted: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
+  const [connecting, setConnecting] = useState(false);
+
+  /** Which credential the next click will use (107 D5). The owner's first observation:
+   *  Discover answered a 401 on a fresh OAuth connector and nothing said why. Asked of
+   *  the server before the click, through the same lookup the dial makes, so the sentence
+   *  cannot disagree with the button. */
+  const credential = useResource(() => api.discoveryCredential(connectorId), [connectorId]);
 
   const look = () => {
     setBusy(true);
     setFailure("");
     api
       .discover(connectorId)
-      .then(onSeen)
+      .then((result) => {
+        onSeen(result);
+        credential.reload();
+      })
       // A 502 is the customer's own server not answering — neither our outage nor their
       // mistake — and the transport's sentence names the host. Rendered rather than
       // paraphrased, because "could not connect" loses which of the two it was.
@@ -343,18 +618,73 @@ function Discovery({
       .finally(() => setBusy(false));
   };
 
+  // Edit on an approved row: a re-vet needs the server's argument names, which the wire
+  // deliberately does not return, so the click runs Discovery first and the form opens
+  // when the list arrives.
+  useEffect(() => {
+    if (openTool && !seen && !busy) look();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTool]);
+
+  /** The consent flow, from here, coming back here (107 D5). The same popup the
+   *  Connections page uses and for its reason — a full-page navigation costs the
+   *  session — with `return_to` pointing at this connector, so the blocked-popup
+   *  fallback lands the browser back on this page rather than on Connections. */
+  const connect = () => {
+    setConnecting(true);
+    setFailure("");
+    runConsent(
+      () =>
+        api
+          .startConnect(connectorId, `/admin/connectors/${connectorId}`)
+          .then((started) => started.authorize_url),
+      { fallback: (url) => window.location.assign(url) },
+    )
+      .then(() => credential.reload())
+      .catch((cause: unknown) =>
+        setFailure(cause instanceof Error ? cause.message : String(cause)),
+      )
+      .finally(() => setConnecting(false));
+  };
+
   const blocking = (seen?.findings ?? []).filter((f) => f.severity === "refuse");
   const reports = (seen?.findings ?? []).filter((f) => f.severity === "report");
 
   return (
     <Card title="Available tools" hint={seen ? seen.server : undefined}>
       <p className="sentence">
-        Discovery connects to the server and lists the tools it offers. It uses your
-        connected account if you have one.
+        Discovery connects to the server and lists the tools it offers.
       </p>
-      <Button kind="primary" busy={busy} onClick={look}>
-        {seen ? "Discover again" : "Discover"}
-      </Button>
+      {/* Three sentences, one true (107 D5). The third carries the way out: connect
+          from here, or set up the OAuth app above first. */}
+      {credential.data?.credential === "connection" && (
+        <p className="sentence">Discovery will use your connected account.</p>
+      )}
+      {credential.data?.credential === "shared" && (
+        <p className="sentence">
+          Discovery will use the shared credential in{" "}
+          <span className="mono">{credential.data.shared_via}</span>.
+        </p>
+      )}
+      {credential.data?.credential === "none" && (
+        <p className="sentence">
+          This connector has no credential yet.{" "}
+          {oauth
+            ? "Connect your account, and discovery will use it."
+            : "Set up the OAuth app above and connect your account, or register it again with a shared credential."}
+        </p>
+      )}
+      {credential.error ? <Failure error={credential.error} /> : null}
+      <div className="spread">
+        <Button kind="primary" busy={busy} onClick={look}>
+          {seen ? "Discover again" : "Discover"}
+        </Button>
+        {credential.data?.credential === "none" && oauth && (
+          <Button busy={connecting} onClick={connect}>
+            Connect your account
+          </Button>
+        )}
+      </div>
 
       {failure && (
         <Notice tone="bad" title="The server did not answer">
@@ -394,6 +724,7 @@ function Discovery({
             connectorId={connectorId}
             tool={tool}
             approved={vetted.find((v) => v.remote_name === tool.name) ?? null}
+            openInitially={tool.name === openTool}
             onVetted={onVetted}
           />
         ))}
@@ -413,6 +744,7 @@ function ToolForm({
   connectorId,
   tool,
   approved,
+  openInitially = false,
   onVetted,
 }: {
   connectorId: string;
@@ -420,12 +752,14 @@ function ToolForm({
   /** The row this tool already has, or null. See `start` — **a re-vet replaces the whole
    *  row**, so an empty form on *Approve again* is a form that silently un-scopes a write. */
   approved: VettedTool | null;
+  /** Edit from the approved-tools table: open on the last review as soon as this renders. */
+  openInitially?: boolean;
   onVetted: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [effect, setEffect] = useState<"read" | "write">("read");
   const [identity, setIdentity] = useState<"service" | "user">("service");
-  const [resources, setResources] = useState<ResourceSpec[]>([]);
+  const [resources, setResources] = useState<ResourceRow[]>([]);
   const [note, setNote] = useState("");
   const [localName, setLocalName] = useState("");
   const [ceiling, setCeiling] = useState("");
@@ -449,12 +783,20 @@ function ToolForm({
     setEffect((approved?.effect as "read" | "write") ?? "read");
     setIdentity((approved?.identity as "service" | "user") ?? "service");
     // **The types come back and the argument names deliberately do not.** `ResourceType`
-    // is `{type}` alone, and its own comment says why: *"a client that was handed the
-    // argument names would be invited to build a scope out of them, which is the coupling
-    // the type exists to prevent."* So a re-vet can restore what this tool touches and not
-    // which argument names it — the row is seeded with the type and an empty picker, and
-    // `submit` refuses rather than dropping it.
-    setResources((approved?.resources ?? []).map((r) => ({ type: r.type, args: [] })));
+    // is the type and its families, and its own comment says why not the rest: *"a client
+    // that was handed the argument names would be invited to build a scope out of them,
+    // which is the coupling the type exists to prevent."* So a re-vet can restore what
+    // this tool touches and not which argument names it — the row is seeded with the type
+    // and an empty picker, and `submit` refuses rather than dropping it. The families come
+    // back too (110): they are the scope's vocabulary, not the server's argument names,
+    // and a re-vet that silently dropped them would break every scope line naming one.
+    setResources(
+      (approved?.resources ?? []).map((r) => ({
+        type: r.type,
+        args: [],
+        families: r.families.join(", "),
+      })),
+    );
     setNote(approved?.note ?? "");
     setLocalName(approved && approved.name !== tool.local_name ? approved.name : "");
     setCeiling(
@@ -464,6 +806,11 @@ function ToolForm({
     setDone("");
     setOpen(true);
   };
+
+  useEffect(() => {
+    if (openInitially) start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openInitially]);
 
   const submit = () => {
     // **Refused here rather than by the server, and this is the one place on this page
@@ -515,7 +862,7 @@ function ToolForm({
       .vetTool(connectorId, tool.name, {
         effect,
         identity,
-        resources: resources.filter((r) => r.type.trim() && r.args.length > 0),
+        resources: resources.filter((r) => r.type.trim() && r.args.length > 0).map(toSpec),
         note: note.trim(),
         local_name: localName.trim() || null,
         // Blank is `null`, and null is the **correct** value rather than an omission being
@@ -600,6 +947,22 @@ function ToolForm({
             {effect === "write" && resources.length === 0 && (
               <p className="muted">A write tool with no resource cannot be approved.</p>
             )}
+
+            {/* Plan 107, D8. A read tool that takes arguments and maps none of them is
+                allowed — a *whoami*, a search — and it is the one approval whose
+                consequence the form used to leave in a field hint. Said above the button
+                as a fact, not a refusal: a read is not a write. */}
+            {effect === "read" &&
+              tool.arguments.length > 0 &&
+              resources.every((r) => !r.type.trim()) && (
+                <Notice tone="info" title="No resource mapping">
+                  <p className="sentence">
+                    Anyone granted this tool can use it on anything their account can
+                    reach. To restrict it per agent, map the argument that names the
+                    resource.
+                  </p>
+                </Notice>
+              )}
 
             <Field label="Name" hint={`Optional. Defaults to ${tool.local_name}.`}>
               <input
@@ -729,16 +1092,21 @@ function pathArguments(path: string): string[] {
  * would silently replace a working request mapping with a blank — `ToolForm.start`'s trap
  * at a new address, where the missing half is bigger.
  */
-function AuthorTool({
+export function AuthorTool({
   connectorId,
   vetted,
+  initialName = "",
   onVetted,
 }: {
   connectorId: string;
   vetted: VettedTool[];
+  /** Edit from the approved-tools table: the tool's name as the form's initial state, so
+   *  the *already approved* notice shows at once. The binding is still re-entered — it is
+   *  not readable back, and the notice says so. */
+  initialName?: string;
   onVetted: () => void;
 }) {
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initialName);
   const [description, setDescription] = useState("");
   const [method, setMethod] = useState<"GET" | "POST" | "PUT" | "PATCH" | "DELETE">("GET");
   const [path, setPath] = useState("");
@@ -746,9 +1114,10 @@ function AuthorTool({
   const [mapping, setMapping] = useState<Record<string, "query" | "body">>({});
   const [effect, setEffect] = useState<"read" | "write">("read");
   const [identity, setIdentity] = useState<"service" | "user">("service");
-  const [resources, setResources] = useState<ResourceSpec[]>([]);
+  const [resources, setResources] = useState<ResourceRow[]>([]);
   const [redact, setRedact] = useState<string[]>([]);
   const [usageMap, setUsageMap] = useState("");
+  const [pricingText, setPricingText] = useState("");
   const [localName, setLocalName] = useState("");
   const [ceiling, setCeiling] = useState("");
   const [note, setNote] = useState("");
@@ -811,6 +1180,29 @@ function AuthorTool({
       }
     }
 
+    // Only the shape the request model would refuse with a 422 is pre-empted here — a
+    // rate table is an object — because a 422 names no field (`readProblem`'s one
+    // sentence). Everything past that, the four rates per key and their signs, is
+    // `check_rate_table`'s and arrives as a 400 with a sentence written for this form.
+    let pricing: Record<string, Record<string, number>> | null = null;
+    if (pricingText.trim()) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(pricingText);
+      } catch {
+        setFailure("The prices are not valid JSON.");
+        return;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setFailure(
+          "Prices are a JSON object keyed by model id, each with its four rates: " +
+            '{"gpt-5": {"input": 1.25, "output": 10.0, "cache_read": 0.125, "cache_write": 0.0}}',
+        );
+        return;
+      }
+      pricing = parsed as Record<string, Record<string, number>>;
+    }
+
     const size = ceiling.trim() === "" ? null : Number(ceiling);
     if (size !== null && (!Number.isSafeInteger(size) || size <= 0)) {
       setFailure(
@@ -824,7 +1216,7 @@ function AuthorTool({
       .vetTool(connectorId, name.trim(), {
         effect,
         identity,
-        resources: resources.filter((r) => r.type.trim() && r.args.length > 0),
+        resources: resources.filter((r) => r.type.trim() && r.args.length > 0).map(toSpec),
         note: note.trim(),
         local_name: localName.trim() || null,
         max_response_bytes: size,
@@ -837,6 +1229,7 @@ function AuthorTool({
           body: names.filter((n) => mapping[n] === "body"),
           input_schema: schema,
           usage_map: usage,
+          pricing,
         },
       })
       .then((outcome) => {
@@ -873,7 +1266,7 @@ function AuthorTool({
           <Notice tone="warn" title={`${already.remote_name} is already approved`}>
             <p className="sentence">
               Submitting replaces the whole tool. The request mapping cannot be read
-              back, so enter the method, path and schema again.
+              back, so enter the method, path, schema and prices again.
             </p>
           </Notice>
         )}
@@ -993,6 +1386,15 @@ function AuthorTool({
 
         <ResourceRows args={names} resources={resources} onChange={setResources} />
 
+        {effect === "read" && names.length > 0 && resources.every((r) => !r.type.trim()) && (
+          <Notice tone="info" title="No resource mapping">
+            <p className="sentence">
+              Anyone granted this tool can use it on anything their account can reach. To
+              restrict it per agent, map the argument that names the resource.
+            </p>
+          </Notice>
+        )}
+
         {names.length > 0 && (
           <FieldGroup
             label="Redacted arguments"
@@ -1030,6 +1432,27 @@ function AuthorTool({
               '"output_tokens":"usage.output_tokens"}'
             }
             onChange={(e) => setUsageMap(e.target.value)}
+          />
+        </Field>
+
+        {/* Beside the usage map because it is the same kind of fact about the same
+            vendor — that one says where the counters are, this one says what they
+            cost — written here by the person who registered the key and knows what
+            the contract says, rather than in a file on the server by whoever can reach
+            the filesystem (086). A price here outranks the built-in list for the models
+            it names and is outranked by the deployment's own rate file. */}
+        <Field
+          label="Prices"
+          hint="Optional, for a model API. USD per million tokens by model id, all four rates per model: input, output, cache_read, cache_write. Spend on the overview is priced from this."
+        >
+          <textarea
+            className="mono"
+            rows={3}
+            value={pricingText}
+            placeholder={
+              '{"gpt-5": {"input": 1.25, "output": 10.0, "cache_read": 0.125, "cache_write": 0.0}}'
+            }
+            onChange={(e) => setPricingText(e.target.value)}
           />
         </Field>
 
@@ -1091,16 +1514,16 @@ function ResourceRows({
   onChange,
 }: {
   args: string[];
-  resources: ResourceSpec[];
-  onChange: (next: ResourceSpec[]) => void;
+  resources: ResourceRow[];
+  onChange: (next: ResourceRow[]) => void;
 }) {
-  const update = (index: number, patch: Partial<ResourceSpec>) =>
+  const update = (index: number, patch: Partial<ResourceRow>) =>
     onChange(resources.map((r, i) => (i === index ? { ...r, ...patch } : r)));
 
   return (
     <FieldGroup
       label="Resources"
-      hint="The argument that names the resource this tool acts on, for example repo. Agents restrict access per resource. Without one, the tool is unrestricted."
+      hint="The argument that names the resource this tool acts on, for example repo. Agents restrict access per resource. Without one, the tool is unrestricted. Families are optional: the names this type's ids divide into, comma-separated, so an agent's scope can say haiku rather than a dated model id."
     >
       {resources.map((resource, index) => (
         <div className="spread" key={index}>
@@ -1120,6 +1543,16 @@ function ResourceRows({
               </option>
             ))}
           </select>
+          {/* Free text and comma-separated, the CLI's `--resource-family TYPE=A,B,C`
+              as a box. A list control would need to know the vendor's families, which
+              is exactly the thing only the person typing them knows (086's row on why
+              a family is supervision, not proof). */}
+          <input
+            value={resource.families}
+            aria-label="Families"
+            placeholder="families, e.g. opus, sonnet"
+            onChange={(e) => update(index, { families: e.target.value })}
+          />
           <Button
             kind="quiet"
             onClick={() => onChange(resources.filter((_, i) => i !== index))}
@@ -1131,7 +1564,7 @@ function ResourceRows({
       <Button
         kind="quiet"
         disabled={args.length === 0}
-        onClick={() => onChange([...resources, { type: "", args: [] }])}
+        onClick={() => onChange([...resources, { type: "", args: [], families: "" }])}
       >
         Add a resource
       </Button>
@@ -1281,6 +1714,19 @@ function ConsentFlow({
     null,
   );
 
+  /** The preset this connector came from, when it came from one and has no consent flow
+   *  of its own yet (107 D6). The owner found this form blank; the endpoints and scopes
+   *  the preset knew were thrown away at registration, because nothing on the row said
+   *  which preset that was. Migration 056 put it on the row, and the form seeds from
+   *  the preset's block until a flow is configured — client id and secret excepted,
+   *  which a checked-in file never carries. */
+  const presets = useResource(
+    () => (connector.from_recipe && !connector.oauth ? api.listRecipes() : Promise.resolve([])),
+    [connector.from_recipe, connector.oauth],
+  );
+  const preset: Recipe | null =
+    (presets.data ?? []).find((recipe) => recipe.id === connector.from_recipe) ?? null;
+
   /** Open the form with what is already configured in it. **The `PUT` is a wholesale
    *  replace** — `authorize_params = EXCLUDED.authorize_params`, deliberately, because that
    *  is how a rotated client secret is installed — so a blank form is a data-loss control:
@@ -1298,15 +1744,18 @@ function ConsentFlow({
    *  submit button. */
   const openForm = () => {
     const app = connector.oauth;
-    setAuthorize(app?.authorize_endpoint ?? "");
-    setToken(app?.token_endpoint ?? "");
-    setRevoke(app?.revoke_endpoint ?? "");
+    // The stored flow when there is one; the preset's block when there is not (107
+    // D6); blank otherwise. The preset never supplies a client id.
+    const seed = app ?? preset?.oauth ?? null;
+    setAuthorize(seed?.authorize_endpoint ?? "");
+    setToken(seed?.token_endpoint ?? "");
+    setRevoke(seed?.revoke_endpoint ?? "");
     setClientId(app?.client_id ?? "");
-    setScopes((app?.scopes ?? []).join(" "));
+    setScopes((seed?.scopes ?? []).join(" "));
     setParams(
-      Object.entries(app?.authorize_params ?? {}).map(([name, value]) => ({ name, value })),
+      Object.entries(seed?.authorize_params ?? {}).map(([name, value]) => ({ name, value })),
     );
-    setNotes(app?.scope_notes ?? {});
+    setNotes(seed?.scope_notes ?? {});
     setSecret("");
     setOpen(true);
   };
@@ -1446,6 +1895,22 @@ function ConsentFlow({
             <p className="sentence">
               This replaces the whole OAuth app. Enter the client secret again. The stored
               one cannot be read back.
+            </p>
+          )}
+          {!connector.oauth && preset?.oauth && (
+            <Notice tone="info" title={`From the ${preset.name} preset`}>
+              <p className="sentence">
+                Endpoints and scopes are from the {preset.name} preset
+                {preset.verified_on ? `, verified on ${preset.verified_on}` : ", not yet verified"}
+                . Enter the client ID and secret from your OAuth app.
+              </p>
+            </Notice>
+          )}
+          {!connector.oauth && connector.from_recipe && presets.data && !preset && (
+            <p className="muted">
+              This connector was registered from the {connector.from_recipe} preset, which
+              this version no longer ships. Enter the endpoints from the provider&rsquo;s
+              documentation.
             </p>
           )}
           <Field label="Authorize endpoint">

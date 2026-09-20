@@ -253,6 +253,29 @@ ADMIN_SURFACE = frozenset(
         ("GET", "/admin/hosts"),
         ("POST", "/admin/hosts"),
         ("DELETE", "/admin/hosts/{host}"),
+        # 110 — identity providers. The first thing in an administrator's hour, and
+        # until 110 the only one with no browser path. The dependency is the only
+        # guard: `save_tenant_idp` checks no role, having been written for `--add-idp`.
+        # Discovery dials an address the caller typed (with the operator's consent
+        # presumed, as the JWKS fetch does), which is one more reason it is not a
+        # route any signed-in person may reach.
+        ("GET", "/admin/idps"),
+        ("POST", "/admin/idps"),
+        ("DELETE", "/admin/idps"),
+        ("POST", "/admin/idps/discover"),
+        # 110 — people and platform roles. Disabling reduces authority and is here;
+        # granting reproduces it and is not (12b's refusal, restated in 110 D3). The
+        # roles route is a read.
+        # 110f (plan 107 D5, D7) — which credential a Discover would use, said before
+        # the click; withdrawing one approval; deregistering a connector. All three
+        # are the dependency alone: nothing below the route checks a role.
+        ("GET", "/admin/connectors/{connector_id}/discovery-credential"),
+        ("DELETE", "/admin/connectors/{connector_id}/tools/{remote_name}"),
+        ("DELETE", "/admin/connectors/{connector_id}"),
+        ("GET", "/admin/users"),
+        ("POST", "/admin/users/{user_id}/disable"),
+        ("POST", "/admin/users/{user_id}/enable"),
+        ("GET", "/admin/roles"),
         ("GET", "/admin/connectors"),
         ("POST", "/admin/connectors"),
         # 068 — the connector recipes this build ships. Identical for every tenant and

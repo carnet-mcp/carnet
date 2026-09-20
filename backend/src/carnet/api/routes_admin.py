@@ -42,7 +42,7 @@ from fastapi.responses import PlainTextResponse
 
 from .. import __version__, config, door, metrics, storage
 from ..tools import mcp
-from ..access import roles, tokens, users
+from ..access import grants, roles, tokens, users
 from ..core import Principal
 from ..core import credentials
 from ..core.usage import metered as usage_metered, price_buckets
@@ -268,6 +268,17 @@ def mint_my_token(
             "page show somebody deciding what to revoke.",
         )
 
+    # Plan 107 D9. Checked before anything is minted: a personal token uses its owner's
+    # access and a grant on it would be a row the door never reads.
+    if body.grant is not None and body.acts_as_owner:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "a personal token uses your access and needs no grant — it can already "
+                "use every agent shared with you. Grant an agent to a service token, or "
+                "leave the grant out."
+            ),
+        )
     # `ValueRefused` (a duplicate live name) and `StorageError` fall through to their
     # registered handlers — 400 with the CLI's own sentence, and 503, respectively.
     row, presented = tokens.mint(
@@ -278,6 +289,21 @@ def mint_my_token(
         expires_at=expires_at,
         acts_as_owner=body.acts_as_owner,
     )
+    if body.grant is not None:
+        # The grant, through the one seam that decides who may share what. Not one
+        # transaction with the mint — the two are different tables behind different
+        # storage methods — so a refused grant revokes the token it was minted for
+        # rather than leaving a credential nobody asked for standing under a name the
+        # caller will type again. The refusal is the share's own sentence.
+        try:
+            grants.share(
+                principal, body.grant.agent, "machine", row["id"], role=body.grant.role
+            )
+        except Exception:
+            storage.active().revoke_api_token(
+                principal.tenant_id, row["id"], actor=str(principal)
+            )
+            raise
 
     return MintedToken(
         token=presented,
@@ -963,10 +989,12 @@ def overview(
 
 @router.get("/admin-audit", response_model=list[AdminRecord])
 def admin_audit(
+    # 110f (plan 107 D10). Rows older than this id — *show older* on the page.
+    before: int | None = Query(default=None, ge=1),
     limit: int = Query(default=DEFAULT_ADMIN_LOG_LIMIT, ge=1, le=MAX_ADMIN_LOG_LIMIT),
     principal: Principal = Depends(admin_from_request),
 ):
-    """The administrative log, **oldest first**, most recent `limit` records.
+    """The administrative log, **newest first** (since 110f), most recent `limit` records.
 
     Ordered by insertion rather than by `ts`, matching `--admin-log` and `audit_records`:
     two records written in the same millisecond are ambiguous by timestamp and exact by
@@ -981,14 +1009,19 @@ def admin_audit(
     """
     return [
         AdminRecord(**{k: v for k, v in row.items() if k != "tenant_id"})
-        for row in storage.active().admin_audit_records(
-            principal.tenant_id, limit=limit
-        )
+        # Newest first since 110f (plan 107 D10): the row somebody came for is at the
+        # top, and *show older* pages backwards from the oldest id shown. The store's
+        # own order stays ascending, which is what `--admin-log` prints.
+        for row in reversed(storage.active().admin_audit_records(
+            principal.tenant_id, limit=limit, before=before
+        ))
     ]
 
 
 @router.get("/admin/denials", response_model=list[DenialRecord])
 def denials(
+    # 110f (plan 107 D10). Rows older than this id — *show older* on the page.
+    before: int | None = Query(default=None, ge=1),
     limit: int = Query(default=DEFAULT_ADMIN_LOG_LIMIT, ge=1, le=MAX_ADMIN_LOG_LIMIT),
     principal_id: str | None = Query(default=None),
     resource_id: str | None = Query(default=None),
@@ -1004,7 +1037,7 @@ def denials(
     ),
     principal: Principal = Depends(admin_from_request),
 ):
-    """The access-denial log, **oldest first**, most recent `limit` records.
+    """The access-denial log, **newest first** (since 110f), most recent `limit` records.
 
     Step 015's read surface, on `/admin-audit`'s exact pattern: `admin_from_request`
     first — and a non-admin's attempt on this route lands in this very log, one row,
@@ -1036,18 +1069,21 @@ def denials(
     """
     return [
         DenialRecord(**{k: v for k, v in row.items() if k != "tenant_id"})
-        for row in storage.active().denial_records(
+        for row in reversed(storage.active().denial_records(
             principal.tenant_id,
             principal_id=principal_id,
             resource_id=resource_id,
             resource_kind=resource_kind,
             limit=limit,
-        )
+            before=before,
+        ))
     ]
 
 
 @router.get("/admin/door-calls", response_model=list[DoorCallRecord])
 def door_calls(
+    # 110f (plan 107 D10). Rows older than this id — *show older* on the page.
+    before: int | None = Query(default=None, ge=1),
     limit: int = Query(default=DEFAULT_ADMIN_LOG_LIMIT, ge=1, le=MAX_ADMIN_LOG_LIMIT),
     # The window, inclusive UTC dates — the same day boundary `/admin/overview` groups on
     # and `door.budget_window()` charges against, so a link from a chart column lands on
@@ -1089,7 +1125,7 @@ def door_calls(
     ),
     principal: Principal = Depends(admin_from_request),
 ):
-    """The MCP door's traffic, **oldest first**, most recent `limit` records.
+    """The MCP door's traffic, **newest first** (since 110f), most recent `limit` records.
 
     Step 035a, on `/admin/denials`' exact pattern — and the debt four chunks of plan 033
     each deferred with the same sentence. Door calls have always written a full audit
@@ -1141,9 +1177,10 @@ def door_calls(
     """
     return [
         DoorCallRecord(**{k: v for k, v in row.items() if k != "tenant_id"})
-        for row in storage.active().door_call_records(
+        for row in reversed(storage.active().door_call_records(
             principal.tenant_id,
             limit=limit,
+            before=before,
             since=since,
             until=until,
             tool=tool,
@@ -1156,7 +1193,7 @@ def door_calls(
             effect=effect,
             identity_source=identity_source,
             owner=owner,
-        )
+        ))
     ]
 
 

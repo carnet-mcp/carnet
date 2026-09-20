@@ -1816,6 +1816,53 @@ def test_the_review_record_follows_the_allowlist(store, tenant):
     assert store.load_vetting_record(tenant) == []
 
 
+def test_a_connectors_recipe_is_read_beside_the_row_and_survives_a_seed(store, tenant):
+    """Migration 056 (plan 107 D6). The preset a connector came from is a fact a screen
+    reads a week later — and it is beside the manifest, not on it, so `--seed`'s
+    wholesale write cannot erase what it never knew."""
+    store.create_connector(
+        tenant, "jira", launch=_HTTP_LAUNCH, from_recipe="atlassian-jira", actor="user:u-1"
+    )
+    store.create_connector(tenant, "by-hand", launch=_HTTP_LAUNCH, actor="user:u-1")
+
+    assert store.connector_recipe(tenant, "jira") == "atlassian-jira"
+    assert store.connector_recipe(tenant, "by-hand") == ""
+    assert store.connector_recipe(tenant, "never") == ""
+    assert "from_recipe" not in store.get_connector(tenant, "jira")
+
+    manifest = dict(store.get_connector(tenant, "jira"))
+    store.save_connector(tenant, manifest, actor=TEST_ACTOR)
+    assert store.connector_recipe(tenant, "jira") == "atlassian-jira"
+
+    store.delete_connector(tenant, "jira", actor=TEST_ACTOR)
+    assert store.connector_recipe(tenant, "jira") == ""
+
+
+def test_withdrawing_one_approval_leaves_the_others_and_records_once(store, tenant):
+    """`vet_tool`'s inverse (plan 107 D7): one row on the remote name, every other
+    approval untouched, a record only when a row went, and a connector nobody
+    registered is a refusal rather than a no-op."""
+    store.save_connector(tenant, MANIFEST, actor=TEST_ACTOR)
+    store.vet_tool(
+        tenant, "github-mcp", {"remote_name": "create_issue", "effect": "read"}, actor=TEST_ACTOR
+    )
+    assert len(store.get_connector(tenant, "github-mcp")["vetted"]) == 2
+
+    assert store.delete_vetted_tool(tenant, "github-mcp", "list_issues", actor=TEST_ACTOR) is True
+    assert store.delete_vetted_tool(tenant, "github-mcp", "list_issues", actor=TEST_ACTOR) is False
+    remaining = [v["remote_name"] for v in store.get_connector(tenant, "github-mcp")["vetted"]]
+    assert remaining == ["create_issue"]
+    assert [r["remote_name"] for r in store.load_vetting_record(tenant)] == ["create_issue"]
+
+    records = [
+        row for row in store.admin_audit_records(tenant) if row["action"] == "connector.unvet"
+    ]
+    assert [r["detail"] for r in records] == [{"remote_name": "list_issues"}]
+
+    with pytest.raises(NoSuchConnectorError):
+        store.delete_vetted_tool(tenant, "never", "x", actor=TEST_ACTOR)
+
+
 def test_the_review_record_is_invisible_across_tenants(store, tenant, other):
     store.save_connector(tenant, MANIFEST, actor=TEST_ACTOR)
     assert store.load_vetting_record(other) == []
@@ -2345,10 +2392,12 @@ def test_a_record_written_without_the_optional_fields_reads_alike(store, tenant)
     assert row["owner"] == ""
 
     # The shape, whole: every column, from both stores, for a writer that named eight —
-    # plus `owner`, which is the listing's and not the column's.
+    # plus `owner`, which is the listing's and not the column's, and `id`, the store's
+    # sequence number (110f), which a read carries and a write never names.
     from carnet.storage.postgres import PostgresStorage
 
-    assert set(row) == {"tenant_id", "owner", *PostgresStorage._AUDIT_COLUMNS}
+    assert set(row) == {"tenant_id", "owner", *PostgresStorage._AUDIT_READ}
+    assert isinstance(row["id"], int)
 
 
 def test_a_partial_record_still_builds_the_response_model(store, tenant):
@@ -3671,10 +3720,45 @@ def _scim_for(store, tenant, suffix=""):
 # Each entry is (action, a callable that performs the write). The callable does the
 # whole thing, because several of these are only interesting once something exists to
 # remove.
+def _idp_for(tenant: str) -> dict:
+    """An identity provider whose issuer belongs to this tenant alone.
+
+    **An issuer is unique across the whole table**, not per tenant — that is the rule
+    `save_tenant_idp` exists to keep, because a token's `iss` is how a request finds its
+    customer. So two cases in this list sharing one issuer is a conflict against
+    Postgres, where the database outlives a case, and invisible against the fake, where
+    it does not. Found exactly that way.
+    """
+    host = re.sub(r"[^a-z0-9]+", "-", tenant.lower())[:48].strip("-")
+    issuer = f"https://{host}.idp.example.com"
+    return {
+        "issuer": issuer,
+        "jwks_uri": f"{issuer}/v1/keys",
+        "audience": "carnet",
+        "subject_claim": "sub",
+        "email_claim": "email",
+        "allowed_domains": ("example.com",),
+    }
+
+
 IN_SCOPE = (
     (
         "agent.create",
         lambda s, t: s.create_agent(t, AGENT, "user", "u-1"),
+    ),
+    # The two identity-provider acts, from the pass after 110f. An upsert that rotates a
+    # key set is a second decision and writes a second record; a removal writes one only
+    # when a row went.
+    (
+        "idp.save",
+        lambda s, t: s.save_tenant_idp(t, _idp_for(t), actor="user:u-1"),
+    ),
+    (
+        "idp.remove",
+        lambda s, t: (
+            s.save_tenant_idp(t, _idp_for(t), actor="user:u-1"),
+            s.delete_tenant_idp(t, _idp_for(t)["issuer"], actor="user:u-1"),
+        ),
     ),
     (
         "agent.save",
@@ -3827,6 +3911,14 @@ IN_SCOPE = (
         lambda s, t: (
             s.save_connector(t, MANIFEST, actor="user:u-1"),
             s.delete_connector(t, "github-mcp", actor="user:u-1"),
+        ),
+    ),
+    # Step 110f (plan 107 D7): one approval withdrawn.
+    (
+        "connector.unvet",
+        lambda s, t: (
+            s.save_connector(t, MANIFEST, actor="user:u-1"),
+            s.delete_vetted_tool(t, "github-mcp", "list_issues", actor="user:u-1"),
         ),
     ),
     # Step 033c. Trust in a caller being switched — its own action, so a reader never
@@ -4185,7 +4277,9 @@ def test_a_record_carries_every_field_through_both_stores(store, tenant):
     store.create_agent(tenant, AGENT, "user", "u-priya")
 
     (row,) = store.admin_audit_records(tenant)
-    assert set(row) == set(ADMIN_AUDIT_FIELDS)
+    # Plus `id` since 110f: the sequence number both stores number rows with, read
+    # back as the cursor a log page turns.
+    assert set(row) == set(ADMIN_AUDIT_FIELDS) | {"id"}
     assert row["v"] == ADMIN_AUDIT_V
     assert (row["actor_kind"], row["actor_id"]) == ("user", "u-priya")
     assert (row["target_kind"], row["target_id"]) == ("agent", "issue-reporter")
@@ -4449,7 +4543,7 @@ def test_a_denial_round_trips_with_exactly_its_fields(store, tenant):
     store.record_denial(tenant, _denial(held="user", required="editor"))
 
     (row,) = store.denial_records(tenant)
-    assert set(row) == set(DENIAL_FIELDS)
+    assert set(row) == set(DENIAL_FIELDS) | {"id"}
     assert row["v"] == DENIAL_V
     assert (row["principal_kind"], row["principal_id"]) == ("user", "u-sam")
     assert (row["resource_kind"], row["resource_id"]) == ("agent", "payroll-bot")
@@ -7414,6 +7508,11 @@ def test_every_audit_field_survives_a_round_trip(store, tenant):
         f"{sorted(missing)} was written and did not come back. A field added to "
         "core/audit.py needs a column and a place in PostgresStorage._AUDIT_COLUMNS."
     )
+    # `id` is the store's, not the writer's (110f): both stores number the row at
+    # append and read it back, and a writer that named it would be naming a column
+    # the identity generates. Dropped before the comparison rather than added to the
+    # expectation, so this test keeps asserting exactly what a writer wrote.
+    assert isinstance(read_back.pop("id"), int)
     assert read_back == written
 
 
@@ -7833,12 +7932,99 @@ def test_a_connector_with_connected_accounts_cannot_be_deleted(store, tenant, co
         actor=TEST_ACTOR,
     )
 
-    with pytest.raises(ConnectorInUseError, match="still holds connected accounts"):
+    with pytest.raises(ConnectorInUseError, match="still holds 1 connected account"):
         store.delete_connector(tenant, "github-mcp", actor=TEST_ACTOR)
 
-    # The refusal leaves everything as it was, rather than half-deleting.
+    # The refusal leaves everything as it was, rather than half-deleting. The recipe is
+    # in this list because the fake dropped it *before* the check and Postgres could
+    # not — it is a column on the row the refusal protects — so a refused deletion made
+    # the two stores disagree about which preset a connector came from.
     assert store.get_connector(tenant, "github-mcp") is not None
     assert store.find_connection(tenant, "user", "u_priya", "github-mcp") is not None
+    assert store.connector_recipe(tenant, "github-mcp") == ""
+
+
+def test_the_refusal_counts_the_accounts_it_is_protecting(store, tenant, connectors):
+    """The number is in the sentence an administrator reads, and it is the number they
+    have to tell that many people about."""
+    for who in ("u_priya", "u_sam", "u_bala"):
+        store.save_connection(
+            tenant, "user", who, "github-mcp", ciphertext=SEALED, key_id="k1",
+            actor=TEST_ACTOR,
+        )
+
+    with pytest.raises(ConnectorInUseError, match="still holds 3 connected accounts"):
+        store.delete_connector(tenant, "github-mcp", actor=TEST_ACTOR)
+
+
+def test_asking_to_disconnect_the_accounts_deletes_them_with_the_connector(
+    store, tenant, connectors
+):
+    """Migration 021 asks for the disconnection to be **deliberate**, not impossible.
+    The flag is that deliberateness, it happens in the same transaction, and the record
+    counts the people it affected — because nothing is revoked at the provider and
+    those are the people who have to go and do it."""
+    for who in ("u_priya", "u_sam"):
+        store.save_connection(
+            tenant, "user", who, "github-mcp", ciphertext=SEALED, key_id="k1",
+            actor=TEST_ACTOR,
+        )
+
+    disconnected = store.delete_connector(
+        tenant, "github-mcp", actor=TEST_ACTOR, disconnect_accounts=True
+    )
+
+    assert disconnected == 2
+    assert store.get_connector(tenant, "github-mcp") is None
+    assert store.find_connection(tenant, "user", "u_priya", "github-mcp") is None
+    assert store.find_connection(tenant, "user", "u_sam", "github-mcp") is None
+    (record,) = [
+        row
+        for row in store.admin_audit_records(tenant, action="connector.delete")
+        if row["target_id"] == "github-mcp"
+    ]
+    assert record["detail"]["disconnected"] == 2
+
+
+def test_disconnecting_accounts_is_scoped_to_the_connector_and_the_tenant(
+    store, tenant, other, connectors
+):
+    """The blast radius, pinned: one connector in one customer. A `DELETE FROM
+    connections WHERE connector_id = ...` missing its tenant clause would pass every
+    other test in this file."""
+    store.save_connector(other, {"id": "github-mcp", "launch": {}, "vetted": []}, actor=TEST_ACTOR)
+    store.save_connector(tenant, {"id": "other-mcp", "launch": {}, "vetted": []}, actor=TEST_ACTOR)
+    for where, connector in ((tenant, "github-mcp"), (tenant, "other-mcp"), (other, "github-mcp")):
+        store.save_connection(
+            where, "user", "u_priya", connector, ciphertext=SEALED, key_id="k1",
+            actor=TEST_ACTOR,
+        )
+
+    assert store.delete_connector(
+        tenant, "github-mcp", actor=TEST_ACTOR, disconnect_accounts=True
+    ) == 1
+
+    assert store.find_connection(tenant, "user", "u_priya", "other-mcp") is not None
+    assert store.find_connection(other, "user", "u_priya", "github-mcp") is not None
+
+
+def test_asking_to_disconnect_when_nobody_is_connected_changes_nothing(
+    store, tenant, connectors
+):
+    """The flag is an opt-in to a consequence, not an instruction to find one. With no
+    connections it removes the connector exactly as the plain call does, and the record
+    carries no `disconnected` key to imply somebody was."""
+    disconnected = store.delete_connector(
+        tenant, "github-mcp", actor=TEST_ACTOR, disconnect_accounts=True
+    )
+
+    assert disconnected == 0
+    (record,) = [
+        row
+        for row in store.admin_audit_records(tenant, action="connector.delete")
+        if row["target_id"] == "github-mcp"
+    ]
+    assert "disconnected" not in (record["detail"] or {})
 
 
 def test_a_connector_can_be_deleted_once_its_accounts_are_disconnected(

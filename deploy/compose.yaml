@@ -60,7 +60,13 @@ services:
       # edit. Same value on all three builds — they are one Dockerfile.
       args: &base-registry
         BASE_REGISTRY: ${CARNET_BASE_REGISTRY:-docker.io}
-    image: carnet-api
+    # The image is a setting (step 110, decision 11), for the team whose policy forbids
+    # building: name the published one — `CARNET_API_IMAGE=ghcr.io/carnet-mcp/carnet:0.11.0`
+    # in .env — then `docker compose pull` and `up -d` with no `--build`. Unset, this
+    # is the name `docker build` and the offline bundle tag the checkout's own build
+    # with, and nothing changes. `build:` stays beside it on purpose: compose builds
+    # only when the named image is absent, so a pulled image is never rebuilt over.
+    image: ${CARNET_API_IMAGE:-carnet-api}
     command: ["carnet", "--migrate"]
     restart: "no"
     environment: &app-env
@@ -210,7 +216,7 @@ services:
       dockerfile: deploy/Dockerfile
       target: api
       args: *base-registry
-    image: carnet-api
+    image: ${CARNET_API_IMAGE:-carnet-api}
     # The image's default command, restated so the compose file reads whole. What the
     # flags mean — and why there is no --workers and no --proxy-headers — is argued in
     # the Dockerfile.
@@ -250,7 +256,10 @@ services:
       dockerfile: deploy/Dockerfile
       target: front
       args: *base-registry
-    image: carnet-front
+    # The published pair's other half, `ghcr.io/carnet-mcp/carnet-front`, on the same
+    # terms as CARNET_API_IMAGE above. Pin both to the same version: the front door
+    # serves the bundle the API of that version expects.
+    image: ${CARNET_FRONT_IMAGE:-carnet-front}
     environment:
       CARNET_DOMAIN: ${CARNET_DOMAIN}
       # The identity provider the BROWSER talks to (plan 031). One declaration, and

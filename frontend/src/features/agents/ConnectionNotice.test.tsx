@@ -94,6 +94,7 @@ function connection(overrides: Partial<ConnectionSummary> = {}): ConnectionSumma
     reconsent_reason: "",
     scopes: [],
     scope_notes: {},
+    used_by: [],
     ...overrides,
   };
 }

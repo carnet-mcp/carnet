@@ -46,7 +46,10 @@ class Provider:
 
     @property
     def jwks_uri(self) -> str:
-        return f"{self.issuer}/v1/keys"
+        # An address a dial could go to, since 110's normaliser refuses one it could
+        # not: the local provider's issuer is a bare name, not a URL.
+        base = self.issuer if "://" in self.issuer else f"http://{self.issuer}"
+        return f"{base}/v1/keys"
 
     def jwk(self) -> dict:
         entry = jwt.algorithms.RSAAlgorithm.to_jwk(self.key.public_key(), as_dict=True)

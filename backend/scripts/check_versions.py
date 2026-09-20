@@ -41,6 +41,14 @@ Not sources, and why:
 - `CHANGELOG.md`'s older headings quote versions as history, which is what they are for.
   Only the newest released heading is a source.
 - Migrations carry no version; the schema's own head is `storage/migrations/`.
+- `client/pyproject.toml` and `client/src/carnet_mcp/_version.py` — the `carnet-mcp`
+  client package (plan 111) is **separately versioned on purpose**. A client must speak
+  to a range of self-hosted doors, so pinning it to the server's number would promise
+  something false; its own promise is one sentence in its README (*any door from
+  0.11.0 onward*). It is released on a `client-v*` tag, which `release-client.yml`
+  checks against `_version.py` the way this script checks `v*` against the package.
+  Named here so the difference between an exemption and an omission stays a sentence
+  somebody can find.
 
 ## Tags
 

@@ -947,8 +947,11 @@ def the_knobs() -> None:
     # does, at build and at `up` — so the census above cannot see them either, and
     # they are held to the rule by hand: the mirror the base images come from, and
     # the whole database reference for an image that arrived in a tarball.
-    check("the registry prefix and the database image are reachable from .env",
-          [name for name in ("CARNET_BASE_REGISTRY", "CARNET_DB_IMAGE")
+    # Step 110, decision 11 added two more of the same kind: the built images by name,
+    # for the team that pulls the published pair rather than building.
+    check("the registry prefix, the database image and the two built images are reachable from .env",
+          [name for name in ("CARNET_BASE_REGISTRY", "CARNET_DB_IMAGE",
+                             "CARNET_API_IMAGE", "CARNET_FRONT_IMAGE")
            if name not in compose_text], [])
 
     # And the path works end to end, proven on the setting whose absence made key
@@ -1103,11 +1106,21 @@ def the_carried_artefact() -> None:
 
     out = SCRATCH / "e2e_deploy_offline"
     shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    # Step 110, decision 10: signed, under a key made for this run and thrown away. The
+    # real key is a person's and never sees a runner; what this proves is the mechanism
+    # — that the far side's `openssl dgst -verify` accepts what the connected side's
+    # `--sign-key` wrote, and rejects one altered byte in either the sums or the
+    # signature — not who holds the key.
+    key = out / "throwaway.key"
+    subprocess.run(["openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout",
+                    "-out", str(key)], check=True, capture_output=True)
     made = subprocess.run(
-        [str(REPO / "backend" / "scripts" / "offline_bundle.sh"), "--out", str(out)],
+        [str(REPO / "backend" / "scripts" / "offline_bundle.sh"), "--out", str(out),
+         "--sign-key", str(key)],
         capture_output=True, text=True,
     )
-    check("offline_bundle.sh runs to the end", made.returncode, 0)
+    check("offline_bundle.sh runs to the end, signing as it goes", made.returncode, 0)
     if made.returncode != 0:
         print(made.stderr[-2000:])
         return
@@ -1120,7 +1133,8 @@ def the_carried_artefact() -> None:
         with tarfile.open(tarball) as archive:
             archive.extractall(out, filter="data")
         inside = out / tarball.stem
-        promised = ["images.tar.gz", "MANIFEST", "SHA256SUMS", "verify.sh",
+        promised = ["images.tar.gz", "MANIFEST", "SHA256SUMS", "SHA256SUMS.sig",
+                    "carnet-release.pub", "verify.sh",
                     "carnet.example.yaml", "LICENSE", "deploy/compose.yaml",
                     "deploy/.env.example", "deploy/initdb/01-app-role.sh",
                     "deploy/Caddyfile", "docs/OFFLINE.md", "docs/UPGRADING.md",
@@ -1135,19 +1149,70 @@ def the_carried_artefact() -> None:
                                 capture_output=True, text=True).stdout.strip()
         check("MANIFEST names this version", f"version:  {__version__}" in manifest, True)
         check("...and this commit", f"commit:   {commit}" in manifest, True)
-        check("...and says what the checksums do and do not prove",
-              "does not say who built them" in manifest, True)
+        check("...and says what the signature does and does not prove",
+              "signed:   SHA256SUMS.sig" in manifest
+              and "does not say the key is still in the right hands" in manifest, True)
+        fingerprint = subprocess.run(
+            "openssl pkey -pubin -in carnet-release.pub -outform DER | openssl dgst -sha256",
+            shell=True, cwd=inside, capture_output=True, text=True,
+        ).stdout.strip().split("= ")[-1]
+        check("...and names the key's fingerprint, for the far side to compare",
+              fingerprint in manifest, True)
 
         before = subprocess.run(["sh", "verify.sh"], cwd=inside,
                                 capture_output=True, text=True)
         check("verify.sh: every file matches SHA256SUMS",
               before.returncode == 0 and "every file matches" in before.stdout, True)
+        check("...and SHA256SUMS is signed by the key in the bundle, fingerprint printed",
+              "is signed by the key in carnet-release.pub" in before.stdout
+              and fingerprint in before.stdout, True)
         (inside / "MANIFEST").write_text(manifest + "\n")
         tampered = subprocess.run(["sh", "verify.sh"], cwd=inside,
                                   capture_output=True, text=True)
         check("...and one altered byte fails it, saying not to load",
               tampered.returncode != 0 and "do not load" in tampered.stderr, True)
         (inside / "MANIFEST").write_text(manifest)
+
+        # The signature's own two failures: the sums re-written by somebody without the
+        # key (a whole consistent bundle, every file matching — and no signature that
+        # matches it), and the signature file itself altered.
+        sums = (inside / "SHA256SUMS").read_bytes()
+        (inside / "SHA256SUMS").write_bytes(sums + b"# one more line\n")
+        resigned = subprocess.run(["sh", "verify.sh"], cwd=inside,
+                                  capture_output=True, text=True)
+        check("...and a SHA256SUMS the key did not sign fails, saying not to load",
+              resigned.returncode != 0 and "does not verify" in resigned.stderr, True)
+        (inside / "SHA256SUMS").write_bytes(sums)
+        sig = (inside / "SHA256SUMS.sig").read_bytes()
+        (inside / "SHA256SUMS.sig").write_bytes(sig[:-1] + bytes([sig[-1] ^ 0x01]))
+        bent = subprocess.run(["sh", "verify.sh"], cwd=inside,
+                              capture_output=True, text=True)
+        check("...and one altered byte in the signature fails it",
+              bent.returncode != 0 and "does not verify" in bent.stderr, True)
+        (inside / "SHA256SUMS.sig").write_bytes(sig)
+        # An unsigned bundle is not a failure; it is said, in one line, never passed
+        # over — the checksums still stand and the reader is told what they are worth.
+        (inside / "SHA256SUMS.sig").rename(inside / "SHA256SUMS.sig.aside")
+        unsigned = subprocess.run(["sh", "verify.sh"], cwd=inside,
+                                  capture_output=True, text=True)
+        check("...and with no signature at all it passes the sums and says it is unsigned",
+              unsigned.returncode == 0 and "not signed" in unsigned.stdout, True)
+        (inside / "SHA256SUMS.sig.aside").rename(inside / "SHA256SUMS.sig")
+        # A machine with no openssl: the sentence, not a silent pass. PATH emptied of
+        # everything but a directory holding `sh`'s needs — the script uses sha256sum
+        # or shasum, so one of those must remain reachable.
+        bare = out / "bare-path"
+        bare.mkdir(exist_ok=True)
+        for name in ("sh", "dirname", "sha256sum", "shasum", "sed", "wc", "tr", "grep",
+                     "cat", "awk"):
+            found = shutil.which(name)
+            if found and not (bare / name).exists():
+                (bare / name).symlink_to(found)
+        without = subprocess.run(["sh", "verify.sh"], cwd=inside, capture_output=True,
+                                 text=True, env={**os.environ, "PATH": str(bare)})
+        check("...and with no openssl it says the signature was NOT checked",
+              without.returncode == 0 and "openssl is not on this machine" in without.stdout,
+              True)
 
         loaded = subprocess.run(["docker", "load", "-i", str(inside / "images.tar.gz")],
                                 capture_output=True, text=True)

@@ -283,13 +283,22 @@ def _resource_types(resources) -> list[dict]:
     Deduplicated, in declaration order: a tool may declare two resources of the same
     type (`copy_issue(from_repo, to_repo)`), and both are checked, but a catalogue
     listing `github.repo` twice says nothing a reader can act on.
+
+    `families` rides beside the type since step 110 (decision 7), and it is not the
+    argument-name coupling above: a family is the word a scope line may *say* about
+    this type — declared by the vetter in 086 for exactly that — so a client choosing
+    a tool learns the vocabulary a grant on it can use. Unioned across two resources
+    of one type, declaration order kept.
     """
-    seen, types = set(), []
+    seen: dict[str, dict] = {}
     for ref in resources:
-        if ref.type in seen:
-            continue
-        seen.add(ref.type)
-        types.append({"type": ref.type})
+        entry = seen.get(ref.type)
+        if entry is None:
+            entry = seen[ref.type] = {"type": ref.type, "families": []}
+        for family in getattr(ref, "families", ()):
+            if family not in entry["families"]:
+                entry["families"].append(family)
+    types = list(seen.values())
     return types
 
 
@@ -587,6 +596,36 @@ def register_connector(
         allow_asserted_identity=allow_asserted_identity,
         from_recipe=from_recipe,
         actor=actor,
+    )
+
+
+def withdraw_tool(tenant_id: str, connector_id: str, remote_name: str, *, actor: str) -> bool:
+    """Withdraw one tool's approval. Plan 107 D7; `vet_tool`'s inverse.
+
+    Returns whether a row went. Nothing dials and nothing about the agents that grant
+    the tool is touched — `storage.delete_vetted_tool` says why. The local name is not
+    an input: an approval is keyed by what the server calls the tool, as `vet_tool` is.
+    """
+    return storage.active().delete_vetted_tool(
+        tenant_id, connector_id, remote_name, actor=actor
+    )
+
+
+def deregister_connector(
+    tenant_id: str, connector_id: str, *, actor: str, disconnect_accounts: bool = False
+) -> int:
+    """Remove a connector and every approval on it. Plan 107 D7. Returns how many
+    connected accounts went with it.
+
+    Idempotent, and it raises `ConnectorInUseError` for a connector somebody has
+    connected an account to: migration 021 made that a RESTRICT on purpose, so a sealed
+    credential is never deleted as a side effect of an administrative act about
+    configuration. `disconnect_accounts` is the deliberate way through that — the same
+    act, asked for on purpose — and the refusal names it. Nothing is revoked at the
+    provider; see the storage contract.
+    """
+    return storage.active().delete_connector(
+        tenant_id, connector_id, actor=actor, disconnect_accounts=disconnect_accounts
     )
 
 

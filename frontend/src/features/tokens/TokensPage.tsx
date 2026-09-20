@@ -5,8 +5,8 @@ import Failure from "../../components/Failure";
 import {
   Button,
   Card,
+  CopyButton,
   Empty,
-  Field,
   Notice,
   PageHead,
   Spinner,
@@ -14,6 +14,7 @@ import {
 import { api } from "../../lib/api";
 import { on } from "../../lib/format";
 import ConnectCard from "../agents/ConnectCard";
+import MintForm from "./MintForm";
 import type { MintedToken } from "../../lib/types";
 import { useResource } from "../../lib/useResource";
 import { Kind, Moment, State } from "./TokenMarks";
@@ -72,12 +73,24 @@ import { Kind, Moment, State } from "./TokenMarks";
  */
 export default function TokensPage() {
   const { data, error, loading, reload } = useResource(() => api.myTokens(), []);
+  // The form's open state lives here since 107 D9, because the button that opens it is
+  // in the page head — where the agents page keeps its equivalent — rather than the last
+  // thing under the table. Hidden while the form is open, so the page has one control
+  // by that name at a time.
+  const [generating, setGenerating] = useState(false);
 
   return (
     <>
       <PageHead
         title="Access tokens"
         lede="Access tokens let a client connect to the MCP server as you. Revoked and expired tokens stay listed."
+        actions={
+          !loading && !generating ? (
+            <Button kind="primary" onClick={() => setGenerating(true)}>
+              Generate token
+            </Button>
+          ) : null
+        }
       />
 
       {loading && <Spinner label="Loading tokens…" />}
@@ -153,7 +166,13 @@ export default function TokensPage() {
       {/* After the listing, whatever the listing said: the form belongs on this page in
           all three of its states, and rendering it under a `Failure` is deliberate —
           not being able to list what exists does not prevent minting something new. */}
-      {!loading && <MintBox onMinted={reload} />}
+      {!loading && (
+        <MintBox
+          open={generating}
+          onClose={() => setGenerating(false)}
+          onMinted={reload}
+        />
+      )}
 
       {/* The door, on the page that mints its key (062). Until now the endpoint and
           the client snippet lived only on an agent's detail page — unreachable for a
@@ -165,21 +184,19 @@ export default function TokensPage() {
   );
 }
 
-/** The mint form, closed by default, and the one-time reveal it turns into.
- *
- *  A button, then an `.inline-form`, then the thing that was made. The reveal is
- *  rendered from the
- *  create response held in component state, never re-fetched, no copy button (this app
- *  has no clipboard idiom; selectable text with a keyboard tab stop is the affordance),
- *  and dismissed on purpose rather than by navigation so nobody loses the secret to a
- *  stray click. */
-function MintBox({ onMinted }: { onMinted: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [personal, setPersonal] = useState(true);
-  const [expiresDays, setExpiresDays] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<unknown>(null);
+/** The one-time reveal, and the form that produces it (shared with the connect card
+ *  since 107 D9). The reveal is rendered from the create response held in component
+ *  state, never re-fetched, dismissed on purpose rather than by navigation so nobody
+ *  loses the secret to a stray click — and, since 107, with a copy button beside it. */
+function MintBox({
+  open,
+  onClose,
+  onMinted,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onMinted: () => void;
+}) {
   const [minted, setMinted] = useState<MintedToken | null>(null);
 
   if (minted) {
@@ -189,14 +206,14 @@ function MintBox({ onMinted }: { onMinted: () => void }) {
           <strong>Copy the token and store it somewhere safe.</strong> You can&rsquo;t
           view it again.
         </p>
-        {/* `tabIndex` for a keyboard finding:
-            `<code>` is not focusable, and the only other tab stop here destroys the
-            value. */}
         <div className="reveal">
           <span className="label">Token</span>
-          <code tabIndex={0} aria-label="Token">
-            {minted.token}
-          </code>
+          <div className="spread">
+            <code tabIndex={0} aria-label="Token">
+              {minted.token}
+            </code>
+            <CopyButton value={minted.token} label="token" />
+          </div>
         </div>
         {minted.acts_as_owner ? (
           <p className="muted">
@@ -216,112 +233,16 @@ function MintBox({ onMinted }: { onMinted: () => void }) {
     );
   }
 
-  if (!open) {
-    return (
-      <div className="spread">
-        <Button onClick={() => setOpen(true)}>Generate token</Button>
-      </div>
-    );
-  }
-
-  async function mint() {
-    setBusy(true);
-    setFailure(null);
-    try {
-      const made = await api.mintToken({
-        name: name.trim(),
-        acts_as_owner: personal,
-        // Omitted when blank — "no expiry" is spelled by omission, the server's rule.
-        ...(expiresDays.trim() === ""
-          ? {}
-          : { expires_days: Number(expiresDays) }),
-      });
-      setMinted(made);
-      setOpen(false);
-      setName("");
-      setExpiresDays("");
-      onMinted();
-    } catch (cause: unknown) {
-      setFailure(cause);
-    } finally {
-      setBusy(false);
-    }
-  }
+  if (!open) return null;
 
   return (
-    <div className="inline-form">
-      <Field label="Name" hint="Shown in the list. One active token per name.">
-        <input
-          value={name}
-          placeholder="my-client"
-          onChange={(event) => setName(event.target.value)}
-        />
-      </Field>
-
-      <div className="choices stacked">
-        <label className={`choice big${personal ? " on" : ""}`}>
-          <input
-            type="radio"
-            name="token-kind"
-            checked={personal}
-            onChange={() => setPersonal(true)}
-          />
-          <span>
-            <strong>Personal</strong>
-            <span className="muted">
-              {" "}
-              — Uses your access. Can use every agent shared with you. Revoked when your
-              account is disabled.
-            </span>
-          </span>
-        </label>
-        <label className={`choice big${personal ? "" : " on"}`}>
-          <input
-            type="radio"
-            name="token-kind"
-            checked={!personal}
-            onChange={() => setPersonal(false)}
-          />
-          <span>
-            <strong>Service</strong>
-            <span className="muted">
-              {" "}
-              — Has its own access. Can use only the agents granted to it. For CI and
-              shared machines.
-            </span>
-          </span>
-        </label>
-      </div>
-
-      <Field label="Expires after (days)" hint="Blank means never.">
-        <input
-          value={expiresDays}
-          inputMode="numeric"
-          placeholder="never"
-          onChange={(event) => {
-            // Digits or nothing — the rule the wizard's ceilings step set, and the last
-            // place it survives now that 081 has deleted that step: a field that cannot
-            // hold a bad value needs no sentence about one.
-            if (/^\d*$/.test(event.target.value)) setExpiresDays(event.target.value);
-          }}
-        />
-      </Field>
-
-      {failure ? <Failure error={failure} /> : null}
-
-      <div className="spread">
-        <Button onClick={() => setOpen(false)} disabled={busy}>
-          Cancel
-        </Button>
-        <Button
-          kind="primary"
-          busy={busy}
-          disabled={name.trim() === ""}
-          onClick={mint}
-        >
-          {busy ? "Generating" : "Generate token"}
-        </Button>
-      </div>
-    </div>
+    <MintForm
+      onCancel={onClose}
+      onMinted={(made) => {
+        setMinted(made);
+        onClose();
+        onMinted();
+      }}
+    />
   );
 }

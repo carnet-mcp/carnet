@@ -30,8 +30,13 @@ import DenialsPage from "./DenialsPage";
 import { api, ApiError } from "../../lib/api";
 import type { DenialRecord } from "../../lib/types";
 
+// Each fixture row gets its own sequence number, as the store gives one: the key a
+// row is rendered by and the cursor a page turns (110f).
+let seq = 0;
+
 function record(overrides: Partial<DenialRecord> = {}): DenialRecord {
   return {
+    id: ++seq,
     v: 1,
     ts: "2026-08-09T10:15:00+00:00",
     principal_kind: "user",
@@ -44,10 +49,10 @@ function record(overrides: Partial<DenialRecord> = {}): DenialRecord {
   };
 }
 
-function show(rows: DenialRecord[]) {
+function show(rows: DenialRecord[], at = "/admin/denials") {
   vi.mocked(api.adminDenials).mockResolvedValue(rows);
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[at]}>
       <DenialsPage />
     </MemoryRouter>,
   );
@@ -173,13 +178,53 @@ describe("the two incident questions", () => {
   });
 
   it("asks who probed this resource, from the row itself", async () => {
-    show([record({ resource_id: "payroll-bot" })]);
-    await screen.findByText("payroll-bot");
+    // A tool has no page of its own, so its name narrows the log (110f, `logIds`).
+    show([record({ resource_kind: "tool", resource_id: "acme_list_issues" })]);
+    await screen.findByText("acme_list_issues");
 
-    await userEvent.click(screen.getByRole("button", { name: "payroll-bot" }));
+    await userEvent.click(screen.getByRole("button", { name: "acme_list_issues" }));
 
     expect(api.adminDenials).toHaveBeenLastCalledWith(
-      expect.objectContaining({ resourceId: "payroll-bot" }),
+      expect.objectContaining({ resourceId: "acme_list_issues" }),
+    );
+  });
+
+  it("links an agent that was probed to its page, which is where the answer is", async () => {
+    // 110f, plan 107 D10: an agent has a page, so the id goes there rather than
+    // narrowing the log — the request log makes the same choice for the same kinds.
+    show([record({ resource_id: "payroll-bot" })]);
+
+    expect(await screen.findByRole("link", { name: "payroll-bot" })).toHaveAttribute(
+      "href",
+      "/agents/payroll-bot",
+    );
+  });
+
+  it("keeps its filters in the URL, so a narrowed view is a link", async () => {
+    show([record({ principal_id: "u_sam" })], "/admin/denials?kind=tool&principal_id=u_sam");
+
+    expect(await screen.findByText("Only requests by u_sam.")).toBeInTheDocument();
+    expect(api.adminDenials).toHaveBeenLastCalledWith(
+      expect.objectContaining({ resourceKind: "tool", principalId: "u_sam" }),
+    );
+  });
+
+  it("offers older rows after a full page, before the oldest one shown", async () => {
+    const first = Array.from({ length: 101 }, (_, i) => record({ id: 300 - i }));
+    vi.mocked(api.adminDenials)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce([record({ id: 7, resource_kind: "admin", resource_id: "" })]);
+    render(
+      <MemoryRouter>
+        <DenialsPage />
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Show older" }));
+
+    expect(await screen.findByText("101 denied requests")).toBeInTheDocument();
+    expect(api.adminDenials).toHaveBeenLastCalledWith(
+      expect.objectContaining({ before: 201, limit: 101 }),
     );
   });
 

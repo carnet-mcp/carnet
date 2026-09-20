@@ -3217,7 +3217,7 @@ def test_the_response_shape_is_the_record_less_what_it_must_not_carry(
 
     (record,) = door_calls(client, door_admin).json()
     assert set(record) == {
-        "v", "ts", "run_id", "principal_kind", "principal_id", "agent", "tool",
+        "id", "v", "ts", "run_id", "principal_kind", "principal_id", "agent", "tool",
         "effect", "decision", "reason", "outcome", "duration_ms", "response_bytes",
         "acting_for", "identity_source",
         # 108. The person behind a personal token, by email, joined at read time —
@@ -3259,11 +3259,12 @@ def test_the_three_identity_sources_reach_the_reader_apart(
     meta_call(client, auth, READ, {"owner": "acme"}, {"token": idp.token()})
     meta_call(client, auth, READ, {"owner": "acme"}, {"email": TOM_EMAIL})
 
+    # Newest first since 110f (plan 107 D10): the asserted call was the last made.
     records = door_calls(client, door_admin).json()
     assert [(r["identity_source"], r["acting_for"]) for r in records] == [
-        ("none", None),
-        ("verified", TOM_EMAIL),
         ("asserted", TOM_EMAIL),
+        ("verified", TOM_EMAIL),
+        ("none", None),
     ]
 
 
@@ -3366,11 +3367,12 @@ def test_the_door_listing_limit_is_capped_by_the_signature(client, door_admin):
     assert door_calls(client, door_admin, limit=100000).status_code == 422
 
 
-def test_the_door_listing_limit_takes_the_most_recent_oldest_first(
+def test_the_door_listing_limit_takes_the_most_recent_newest_first(
     client, auth, vetted, token, door_admin
 ):
-    """The tail, still in the order it happened — `audit_records`' rule, all the way out
-    to the wire."""
+    """The most recent rows, newest first — `audit_records` still answers oldest first
+    and the route turns it (110f, plan 107 D10), because the row somebody came to a log
+    for is the one that just happened, and it was at the bottom of the window."""
     row, _ = token
     grant(row, TRIAGE)
 
@@ -3380,7 +3382,8 @@ def test_the_door_listing_limit_takes_the_most_recent_oldest_first(
     everything = door_calls(client, door_admin).json()
     tail = door_calls(client, door_admin, limit=2).json()
 
-    assert [r["run_id"] for r in tail] == [r["run_id"] for r in everything[-2:]]
+    assert [r["run_id"] for r in tail] == [r["run_id"] for r in everything[:2]]
+    assert [r["id"] for r in everything] == sorted((r["id"] for r in everything), reverse=True)
 
 
 def test_one_tenants_door_traffic_is_invisible_to_another(

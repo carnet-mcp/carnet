@@ -21,9 +21,13 @@ import { Button, Notice, Spinner } from "./components/ui";
 import AdminPage from "./features/admin/AdminPage";
 import ConnectorDetailPage from "./features/admin/ConnectorDetailPage";
 import ConnectorsPage from "./features/admin/ConnectorsPage";
+import NewConnectorPage from "./features/admin/connectors/NewConnectorPage";
 import DenialsPage from "./features/admin/DenialsPage";
 import DoorTrafficPage from "./features/admin/DoorTrafficPage";
 import GroupsPage from "./features/admin/GroupsPage";
+import IdpsPage from "./features/admin/IdpsPage";
+import PeoplePage from "./features/admin/PeoplePage";
+import RolesPage from "./features/admin/RolesPage";
 import OverviewPage from "./features/overview/OverviewPage";
 import AgentDetailPage from "./features/agents/AgentDetailPage";
 import AgentVersionPage from "./features/agents/AgentVersionPage";
@@ -126,7 +130,11 @@ export default function App() {
                       links to each other — "look at what jira is offering" is a URL, and a
                       tab index is not one. */}
                   <Route path="/admin/groups" element={<GroupsPage />} />
+                  <Route path="/admin/idps" element={<IdpsPage />} />
+                  <Route path="/admin/people" element={<PeoplePage />} />
+                  <Route path="/admin/roles" element={<RolesPage />} />
                   <Route path="/admin/connectors" element={<ConnectorsPage />} />
+                  <Route path="/admin/connectors/new" element={<NewConnectorPage />} />
                   <Route
                     path="/admin/connectors/:connectorId"
                     element={<ConnectorDetailPage />}

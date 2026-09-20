@@ -992,6 +992,49 @@ def test_a_price_rides_on_the_binding_beside_the_usage_map(registered):
     assert vetted.binding["usage_map"]["model"] == "model"
 
 
+def test_the_price_is_read_back_on_the_approval_and_the_mapping_is_not(
+    isolated_storage, monkeypatch, http
+):
+    """Step 110, decision 7. `GET /admin/connectors/{id}` returns the price an approval
+    recorded — a fact somebody reads, so the screen can show it and a re-vet does not
+    silently drop to list price — and returns none of the rest of the binding, which is a
+    thing to re-author and which `AuthorTool` refuses to look pre-filled with."""
+    from carnet.api.deps import admin_from_request
+
+    app = create_app()
+    app.dependency_overrides[admin_from_request] = lambda: Principal.user("u-admin", TEST_TENANT)
+    client = TestClient(app)
+    assert client.post("/admin/connectors", json={
+        "connector_id": "tracker", "url": BASE_URL, "kind": "rest",
+        "credential_env": "TRACKER_TOKEN",
+    }).status_code == 201
+
+    priced = client.put("/admin/connectors/tracker/tools/answer", json={
+        "effect": "write",
+        "resources": [{"type": "vendor.model", "args": ["title"],
+                       "families": ["gpt-5", "gpt-4o"]}],
+        "binding": PRICED_BINDING,
+        "description": "Ask the model.",
+    })
+    assert priced.status_code == 200, priced.text
+    unpriced = client.put("/admin/connectors/tracker/tools/plain", json={
+        "effect": "write",
+        "resources": [{"type": "vendor.model", "args": ["title"]}],
+        "binding": USAGE_BINDING,
+        "description": "Ask the model, unpriced.",
+    })
+    assert unpriced.status_code == 200, unpriced.text
+
+    by_name = {t["remote_name"]: t for t in client.get("/admin/connectors/tracker").json()["tools"]}
+    assert by_name["answer"]["pricing"] == PRICED_BINDING["pricing"]
+    assert by_name["answer"]["resources"] == [
+        {"type": "vendor.model", "families": ["gpt-5", "gpt-4o"]}
+    ]
+    assert by_name["plain"]["pricing"] is None
+    for tool in by_name.values():
+        assert not {"binding", "method", "path", "input_schema", "usage_map"} & set(tool)
+
+
 def test_a_binding_with_no_price_says_so_rather_than_nothing(registered):
     """`None`, filled by the normalizer, on `usage_map`'s device: every binding key
     present, so a row written by `--vet` and one written wholesale compare equal."""

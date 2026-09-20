@@ -1,12 +1,14 @@
+import { useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import Failure from "../../components/Failure";
 import { Badge, Button, Card, Empty, PageHead, Spinner, Tag } from "../../components/ui";
-import { api } from "../../lib/api";
+import { api, LOG_PAGE } from "../../lib/api";
 import { ms, on } from "../../lib/format";
 import type { Tone } from "../../components/ui";
 import type { DoorCallRecord, IdentitySource } from "../../lib/types";
-import { useResource } from "../../lib/useResource";
+import { usePagedLog } from "../../lib/usePagedLog";
+import { LogId } from "./logIds";
 
 /** The MCP door's traffic, rendered — *what came through the door, for whom, and was it
  * allowed*.
@@ -50,6 +52,20 @@ import { useResource } from "../../lib/useResource";
  * Read straight from `useSearchParams` with no local mirror. A mirror would be a second
  * source of truth for what the page is showing, and the failure mode is the one this
  * repo has refused everywhere else: two values free to disagree, silently.
+ *
+ * ## The filter bar, and *Show older* — 110f, plan 107 D10
+ *
+ * The narrowings above were only ever *arrived at*: the Overview linked here with a
+ * filter chosen, and the page could show it and drop it but not set one. An
+ * administrator asking *what did this token call yesterday* had to compose the URL by
+ * hand. The bar writes the same URL the Overview writes — six fields, submitted, into
+ * the query string — so a filter typed here is a link a colleague can open, and the
+ * chips beneath still name each one. The eleven-entry table above is untouched: the bar
+ * covers the six a person types, and the rest still arrive by link.
+ *
+ * Newest first, a page at a time, keyed on the oldest id shown — `usePagedLog` argues
+ * why an id rather than an offset. The cap and its hint are gone: a filtered page is no
+ * longer the recent end of a match nobody could see past.
  *
  * ## What is deliberately not here
  *
@@ -95,9 +111,11 @@ export default function DoorTrafficPage() {
   const get = (key: string) => params.get(key) ?? undefined;
   const outcome = params.has("outcome") ? (params.get("outcome") ?? "") : undefined;
 
-  const { data, error, loading } = useResource(
-    () =>
+  const { rows: data, error, loading, more, fetching, older } = usePagedLog(
+    (before, limit) =>
       api.adminDoorCalls({
+        before,
+        limit,
         since: get("since"),
         until: get("until"),
         tool: get("tool"),
@@ -111,6 +129,7 @@ export default function DoorTrafficPage() {
         effect: get("effect"),
         identitySource: get("identity_source"),
       }),
+    LOG_PAGE,
     // The whole query string, so any filter change refetches and none is forgotten from
     // a hand-maintained list of eleven.
     [params.toString()],
@@ -123,13 +142,23 @@ export default function DoorTrafficPage() {
     setParams(next, { replace: true });
   };
   const clear = () => setParams(new URLSearchParams(), { replace: true });
+  // A value from a row, as a narrowing: the tool cell is a filter button because a tool
+  // has no page of its own (`logIds`), and *every call to this tool* is the question
+  // migration 040's index answers.
+  const pick = (key: string) => (value: string) => {
+    const next = new URLSearchParams(params);
+    next.set(key, value);
+    setParams(next, { replace: true });
+  };
 
   return (
     <>
       <PageHead
         title="Request log"
-        lede="Tool calls made through the MCP server, oldest first."
+        lede="Tool calls made through the MCP server, newest first."
       />
+
+      <FilterBar params={params} onApply={(next) => setParams(next, { replace: true })} />
 
       {/* **Narrowings, not a filter builder.** There is no dropdown for `tool` and no
           input for `principal_id`, and that is deliberate: this page is where the
@@ -179,26 +208,12 @@ export default function DoorTrafficPage() {
       )}
 
       {data && data.length > 0 && (
-        // At the fetch cap the count is a page, not a total — `AdminPage`'s argument
-        // exactly (061), and it matters more here: a customer's door traffic passes
-        // 200 calls in an afternoon, and a title that counts the page reads as the
-        // whole history.
+        // The count is what is on screen; *Show older* beneath says whether there is
+        // more. "Matching" since 066, because the page filters: a hundred requests under
+        // a filter is a hundred of the match, and a title that said "requests" would
+        // read as the log.
         <Card
-          title={
-            data.length === 200
-              ? "The 200 most recent matching requests"
-              : `${data.length} ${data.length === 1 ? "request" : "requests"}`
-          }
-          hint={
-            data.length === 200
-              ? // The cap's sentence, and 066 sharpens it for a *filtered* page. An
-                // unfiltered listing at its cap is the recent end of a long log; a
-                // filtered one at its cap may be the recent end of a long *match*, and
-                // the reader has no other way to tell. Silent truncation reads as "that
-                // is everything" hardest when a filter looks like it did the work.
-                "older records are not shown. Narrow the date range to reach them."
-              : undefined
-          }
+          title={`${data.length} matching ${data.length === 1 ? "request" : "requests"}`}
         >
           {/* Eight columns of mono identifiers and a failure sentence do not fit a
               narrow window, and a table that does not fit has to scroll *inside its
@@ -219,33 +234,47 @@ export default function DoorTrafficPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.map((record, index) => (
-                  // Indexed, for `AdminPage`'s reason: the log is append-only and has no
-                  // id a client can see. `run_id` looks like one and is not — two calls in
-                  // one batch share nothing, but a correlation id is a correlation, not a
-                  // primary key, and the position is the identity here.
-                  <tr key={index}>
+                {data.map((record) => (
+                  // Keyed by the store's sequence number since 110f. `run_id` looks like
+                  // one and is not — a correlation id is a correlation, not a primary
+                  // key — and the index was right only while a page was never appended
+                  // to.
+                  <tr key={record.id}>
                     <td className="mono">{on(record.ts)}</td>
                     <td>
                       {/* `write` marked, because the read/write annotation is what a
                           connector admin sat down and decided, and it is the one property
-                          of a tool that says whether a mistake is recoverable. */}
-                      <Tag write={record.effect === "write"}>{record.tool}</Tag>
+                          of a tool that says whether a mistake is recoverable. The name
+                          is the filter for it: a tool has no page to link to. */}
+                      <Tag write={record.effect === "write"}>
+                        <LogId
+                          kind="tool"
+                          id={record.tool}
+                          onPick={pick("tool")}
+                          title="Show only calls to this tool"
+                        />
+                      </Tag>
                     </td>
-                    <td className="mono">{record.agent}</td>
+                    <td className="mono">
+                      <LogId kind="agent" id={record.agent} />
+                    </td>
                     <td>
                       {/* The person where there is one — step 108, and the one
                           question a customer opens this page with — with the token id
                           beneath, because *which machine* is still a real question
                           during an incident. A service token, a session and the system
-                          have no person and show the id alone, as before. */}
+                          have no person and show the id alone, as before. The token id
+                          links to the token's page (110f); a session or the system has
+                          none and stays text. */}
                       {record.owner ? (
                         <>
                           <div>{record.owner}</div>
-                          <div className="muted mono small">{record.principal_id}</div>
+                          <div className="muted mono small">
+                            <LogId kind={record.principal_kind} id={record.principal_id} />
+                          </div>
                         </>
                       ) : (
-                        <span className="mono">{record.principal_id}</span>
+                        <LogId kind={record.principal_kind} id={record.principal_id} />
                       )}
                     </td>
                     <td>
@@ -267,9 +296,107 @@ export default function DoorTrafficPage() {
               </tbody>
             </table>
           </div>
+          {more && (
+            <p className="log-more">
+              <Button kind="quiet" busy={fetching} onClick={older}>
+                Show older
+              </Button>
+            </p>
+          )}
         </Card>
       )}
     </>
+  );
+}
+
+/** The six filters a person types, as a form that writes the URL. Plan 107 D10.
+ *
+ *  Local state for the six inputs only until **Apply**: the URL is the page's truth
+ *  about what it shows, and a bar that refetched on every keystroke would turn
+ *  `?tool=jira_s` into a request for a tool that does not exist, four times, on the way
+ *  to the one that does. Submitting replaces those six keys and leaves the other five
+ *  (`decision`, `acting_for`, `owner`, `effect`, `identity_source`) as they arrived, so
+ *  a link from the Overview narrowed to denials stays narrowed to denials while the
+ *  reader adds a tool.
+ *
+ *  `outcome` is a select because its blank is a value: *not recorded* is
+ *  `outcome=`, a stored `''`, and the page's own note above explains why that survives
+ *  the client. The select's *any* is the absent key. */
+const OUTCOMES: { value: string; label: string }[] = [
+  { value: "*", label: "any outcome" },
+  { value: "ok", label: "ok" },
+  { value: "error", label: "error" },
+  { value: "unknown", label: "unknown" },
+  { value: "", label: "not recorded" },
+];
+
+function FilterBar({
+  params,
+  onApply,
+}: {
+  params: URLSearchParams;
+  onApply: (next: URLSearchParams) => void;
+}) {
+  const [tool, setTool] = useState(params.get("tool") ?? "");
+  const [agent, setAgent] = useState(params.get("agent") ?? "");
+  const [token, setToken] = useState(params.get("principal_id") ?? "");
+  const [outcome, setOutcome] = useState(params.has("outcome") ? (params.get("outcome") ?? "") : "*");
+  const [since, setSince] = useState(params.get("since") ?? "");
+  const [until, setUntil] = useState(params.get("until") ?? "");
+
+  const apply = (event: FormEvent) => {
+    event.preventDefault();
+    const next = new URLSearchParams(params);
+    const typed: [string, string][] = [
+      ["tool", tool.trim()],
+      ["agent", agent.trim()],
+      ["principal_id", token.trim()],
+      ["since", since],
+      ["until", until],
+    ];
+    for (const [key, value] of typed) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    if (outcome === "*") next.delete("outcome");
+    else next.set("outcome", outcome);
+    onApply(next);
+  };
+
+  return (
+    <form className="log-filter-form" onSubmit={apply} aria-label="Narrow the log">
+      <label>
+        Tool
+        <input value={tool} onChange={(e) => setTool(e.target.value)} placeholder="jira_search_issues" />
+      </label>
+      <label>
+        Agent
+        <input value={agent} onChange={(e) => setAgent(e.target.value)} placeholder="triage" />
+      </label>
+      <label>
+        Token
+        <input value={token} onChange={(e) => setToken(e.target.value)} placeholder="tok_…" />
+      </label>
+      <label>
+        Outcome
+        <select value={outcome} onChange={(e) => setOutcome(e.target.value)}>
+          {OUTCOMES.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        From
+        <input type="date" value={since} onChange={(e) => setSince(e.target.value)} />
+      </label>
+      <label>
+        To
+        <input type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
+      </label>
+      <Button type="submit">Apply</Button>
+    </form>
   );
 }
 

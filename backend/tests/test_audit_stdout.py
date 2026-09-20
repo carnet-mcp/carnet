@@ -82,10 +82,13 @@ def test_an_allowed_call_is_one_audit_line_with_the_rows_fields(started, capsys)
     assert isinstance(line["duration_ms"], int)
 
     # A copy, never a replacement: the row is still there, and it is the same record.
+    # Less `id`: that is the store's sequence number, assigned when the row lands
+    # (110f) — the line goes out before the store has one to give.
     (row,) = [r for r in read_audit(config.DEFAULT_TENANT_ID) if r["outcome"]]
     assert {k: v for k, v in line.items() if k != "type"} == {
         k: (v.isoformat(timespec="milliseconds") if hasattr(v, "isoformat") else v)
         for k, v in row.items()
+        if k != "id"
     }
 
 

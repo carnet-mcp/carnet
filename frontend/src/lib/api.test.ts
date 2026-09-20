@@ -74,12 +74,35 @@ describe("every call goes under /api", () => {
     // 12b. `/admin` is also a route this app owns, so the prefix matters here for
     // exactly the reason it mattered for `/agents` — a reload on it must reach the app.
     ["me", "/api/me", () => api.me()],
-    ["adminAudit", "/api/admin-audit?limit=200", () => api.adminAudit()],
-    ["adminAudit with a limit", "/api/admin-audit?limit=5", () => api.adminAudit(5)],
+    ["adminAudit", "/api/admin-audit?limit=100", () => api.adminAudit()],
+    ["adminAudit with a limit", "/api/admin-audit?limit=5", () => api.adminAudit({ limit: 5 })],
+    // 110f. *Show older*: the rows before an id, never an offset — an offset drifts by
+    // one for every row appended between two requests, and an id does not move.
+    [
+      "adminAudit turning the page",
+      "/api/admin-audit?limit=100&before=4712",
+      () => api.adminAudit({ before: 4712 }),
+    ],
     // 035a. The door's traffic — the same capped-limit shape as the log above, because
     // it is the same kind of thing: a reader over an append-only table with no upper
     // bound on its size.
-    ["adminDoorCalls", "/api/admin/door-calls?limit=200", () => api.adminDoorCalls()],
+    ["adminDoorCalls", "/api/admin/door-calls?limit=100", () => api.adminDoorCalls()],
+    [
+      "adminDoorCalls turning the page under a filter",
+      "/api/admin/door-calls?limit=100&before=88&tool=jira_search_issues",
+      () => api.adminDoorCalls({ before: 88, tool: "jira_search_issues" }),
+    ],
+    ["adminDenials", "/api/admin/denials?limit=100", () => api.adminDenials()],
+    [
+      "adminDenials turning the page",
+      "/api/admin/denials?limit=100&before=9",
+      () => api.adminDenials({ before: 9 }),
+    ],
+    [
+      "findPerson, by exact address",
+      "/api/admin/users?email=tom%40example.com",
+      () => api.findPerson("tom@example.com"),
+    ],
     [
       "adminDoorCalls with a limit",
       "/api/admin/door-calls?limit=5",
@@ -90,7 +113,7 @@ describe("every call goes under /api", () => {
     // call site is how a filter ends up in the wrong slot.
     [
       "adminDoorCalls with a day and a decision",
-      "/api/admin/door-calls?limit=200&since=2026-08-31&until=2026-08-31&decision=deny",
+      "/api/admin/door-calls?limit=100&since=2026-08-31&until=2026-08-31&decision=deny",
       () =>
         api.adminDoorCalls({
           since: "2026-08-31",
@@ -102,7 +125,7 @@ describe("every call goes under /api", () => {
     // asking for it must survive the client, where every other blank is dropped.
     [
       "adminDoorCalls asking for the calls nothing was recorded for",
-      "/api/admin/door-calls?limit=200&outcome=",
+      "/api/admin/door-calls?limit=100&outcome=",
       () => api.adminDoorCalls({ outcome: "" }),
     ],
     ["listGroups", "/api/groups", () => api.listGroups()],

@@ -29,7 +29,12 @@
 # customer's page.
 ARG BASE_REGISTRY=docker.io
 
-FROM ${BASE_REGISTRY}/library/node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS frontend-build
+# `--platform=$BUILDPLATFORM` (step 110): this stage's output is HTML, CSS and JS, which
+# have no architecture, so it runs on the machine doing the building rather than under
+# emulation. Without it a multi-architecture release ran `npm ci` and the bundle under
+# QEMU for the arm64 half — minutes of emulated work to produce bytes identical to the
+# native half. The `api` and `front` stages that ship stay on the target platform.
+FROM --platform=$BUILDPLATFORM ${BASE_REGISTRY}/library/node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS frontend-build
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci

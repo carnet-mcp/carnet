@@ -722,6 +722,10 @@ def _add_idp(parser, args) -> None:
                 "groups_claim": args.groups_claim or None,
                 "allowed_domains": tuple(args.domain or ()),
             },
+            # `system:cli` writes the record, as every other administrative act from
+            # this entry point does. Before the pass after 110f this was the one change
+            # to who may sign in that left no trace anywhere.
+            actor="system:cli",
         )
     except UnknownTenantError:
         parser.error(
@@ -2107,40 +2111,38 @@ def _apply_connector_recipe(parser, args) -> dict:
     a dependency, so there is no value it supplies that an operator cannot override
     without editing this build. Returns the merged values rather than mutating `args`,
     so what came from where stays readable at the call site.
+
+    **The merge itself is `recipes.connector_defaults`, since 110f**, the one rule
+    `POST /admin/connectors` applies too. This function only turns argparse's spelling
+    into that rule's input: `None` is *not supplied* for `--kind`, `--credential-header`
+    and `--credential-prefix` (an `x-api-key` vendor wants `--credential-prefix ''`, and
+    045c established that `or None` on that path silently restores `Bearer `), an
+    empty string is *not supplied* for the rest, and `--header` rows go on top of the
+    preset's.
     """
     recipe = _recipe_or_exit(parser, args.from_recipe)
-    preset = dict(recipe["connector"])
-    preset.pop("connector_id", None)
-
-    # `None` is *not supplied* for these three and a **real value** for the two
-    # credential fields — an `x-api-key` vendor wants `--credential-prefix ''`, and 045c
-    # established that `or None` anywhere on this path silently restores `Bearer `. So
-    # the test is `is None` on the argument, never truthiness.
-    merged = {
-        "url": args.url or preset.get("url") or "",
-        "kind": args.kind or preset.get("kind") or "http",
-        "credential_env": args.credential_env or preset.get("credential_env") or "",
+    given = {
+        "url": args.url or "",
+        "kind": args.kind,
+        "credential_env": args.credential_env or "",
         # Deliberately NOT offered by a recipe (`recipes.CONNECTOR_FIELDS` has no such
         # key), for 068's own reason applied one field over: a checked-in file can carry
         # a vendor's endpoints and scopes, and it cannot know where in *your* vault your
         # token is. Typed by the administrator, at the moment `--credential-env` would
         # have been.
         "credential_ref": args.credential_ref or "",
-        "credential_header": (
-            args.credential_header
-            if args.credential_header is not None
-            else preset.get("credential_header")
-        ),
-        "credential_prefix": (
-            args.credential_prefix
-            if args.credential_prefix is not None
-            else preset.get("credential_prefix")
-        ),
-        "description": args.description or preset.get("description") or "",
+        "credential_header": args.credential_header,
+        "credential_prefix": args.credential_prefix,
+        "description": args.description or "",
+        "headers": dict(_parse_header(parser, raw) for raw in args.header or ()),
     }
-    headers = dict(preset.get("headers") or {})
-    headers.update(dict(_parse_header(parser, raw) for raw in args.header or ()))
-    merged["headers"] = headers
+    merged = recipes.connector_defaults(recipe, given)
+    merged["url"] = merged.get("url") or ""
+    merged["kind"] = merged.get("kind") or "http"
+    merged["credential_env"] = merged.get("credential_env") or ""
+    merged["credential_ref"] = merged.get("credential_ref") or ""
+    merged["description"] = merged.get("description") or ""
+    merged["headers"] = dict(merged.get("headers") or {})
     merged["_recipe"] = recipe
     return merged
 
@@ -3256,6 +3258,57 @@ def _redirect_uri() -> str:
     return f"{PUBLIC_ORIGIN.rstrip('/')}{CALLBACK_PATH}"
 
 
+def _withdraw_tool(parser, tenant_id: str, connector_id: str, args) -> None:
+    """`--withdraw-tool CONNECTOR --tool NAME`: the screen's Remove, from the shell."""
+    if not args.tool:
+        parser.error("--withdraw-tool needs --tool, the name the server advertises")
+    try:
+        removed = tools.withdraw_tool(
+            tenant_id, connector_id, args.tool, actor=str(_cli_principal(tenant_id))
+        )
+    except storage.NoSuchConnectorError as exc:
+        parser.error(str(exc))
+    if removed:
+        print(f"Withdrew '{args.tool}' on '{connector_id}'.")
+        print(
+            "  Any agent granting it is invalid from its next read, with a sentence "
+            "naming the tool. Nothing else was touched.",
+            file=sys.stderr,
+        )
+    else:
+        print(f"'{args.tool}' was not approved on '{connector_id}'. Nothing to do.")
+
+
+def _deregister_connector(
+    parser, tenant_id: str, connector_id: str, disconnect_accounts: bool = False
+) -> None:
+    """`--deregister-connector CONNECTOR`: the screen's Deregister, from the shell.
+
+    `--disconnect-accounts` is the deliberate way past migration 021's RESTRICT, and it
+    prints how many people it disconnected — because nothing is revoked at the provider
+    and those people are the ones who have to go and do that.
+    """
+    existed = tools.mcp.get_connector(tenant_id, connector_id) is not None
+    try:
+        disconnected = tools.deregister_connector(
+            tenant_id,
+            connector_id,
+            actor=str(_cli_principal(tenant_id)),
+            disconnect_accounts=disconnect_accounts,
+        )
+    except storage.ConnectorInUseError as exc:
+        parser.error(str(exc))
+    if existed:
+        print(f"Deregistered '{connector_id}' and every approval on it.")
+        if disconnected:
+            print(
+                f"Disconnected {storage.connected_accounts(disconnected)}. Their tokens "
+                "are NOT revoked at the provider — tell them to revoke there."
+            )
+    else:
+        print(f"There is no connector '{connector_id}'. Nothing to do.")
+
+
 def _clear_oauth(tenant_id: str, connector_id: str) -> None:
     if oauth.unconfigure(tenant_id, connector_id, actor=str(_cli_principal(tenant_id))):
         print(f"Removed the consent flow for '{connector_id}'.")
@@ -4009,6 +4062,25 @@ def main() -> None:
             "hidden prompt, or piped"
         ),
     )
+    registration.add_argument(
+        "--withdraw-tool",
+        metavar="CONNECTOR",
+        help="with --tool: withdraw one tool's approval on this connector (plan 107 D7). "
+        "Agents that grant it become invalid at their next read; nothing else is "
+        "touched. The screen's Remove button, from the shell",
+    )
+    registration.add_argument(
+        "--deregister-connector",
+        metavar="CONNECTOR",
+        help="remove a connector and every approval on it. Refused while anybody has an "
+        "account connected to it (migration 021) unless --disconnect-accounts is given",
+    )
+    consent.add_argument(
+        "--disconnect-accounts",
+        action="store_true",
+        help="with --deregister-connector: disconnect everybody's account in the same "
+        "act. Nothing is revoked at the provider, so tell them to revoke there",
+    )
     consent.add_argument(
         "--clear-oauth",
         metavar="CONNECTOR",
@@ -4391,6 +4463,8 @@ def _with_store(parser: argparse.ArgumentParser, args: argparse.Namespace, tenan
         # them get "no consent flow configured" — for the same reason as every row above.
         or args.set_oauth
         or args.clear_oauth
+        or args.withdraw_tool
+        or args.deregister_connector
     ):
         # These writes have to be durable, and without a database this process is an
         # in-memory store that dies with it. Running `--add-tenant` then `--add-idp`
@@ -4582,6 +4656,16 @@ def _with_store(parser: argparse.ArgumentParser, args: argparse.Namespace, tenan
 
     if args.set_oauth:
         _set_oauth(parser, tenant_id, args.set_oauth, args)
+        return
+
+    if args.withdraw_tool:
+        _withdraw_tool(parser, tenant_id, args.withdraw_tool, args)
+        return
+
+    if args.deregister_connector:
+        _deregister_connector(
+            parser, tenant_id, args.deregister_connector, args.disconnect_accounts
+        )
         return
 
     if args.clear_oauth:

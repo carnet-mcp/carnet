@@ -485,6 +485,31 @@ def run(store):
         ),
         ("DELETE .../oauth", httpx.delete(f"{API}/admin/connectors/acme/oauth", headers=sam)),
         ("GET /admin-audit", httpx.get(f"{API}/admin-audit", headers=sam)),
+        # Step 110: the identity-provider routes. The dependency is the only guard —
+        # `save_tenant_idp` checks no role, having been written for `--add-idp`.
+        ("GET /admin/idps", httpx.get(f"{API}/admin/idps", headers=sam)),
+        (
+            "POST /admin/idps",
+            httpx.post(f"{API}/admin/idps", headers=sam, json={
+                "issuer": "https://x.example", "jwks_uri": "https://x.example/keys",
+                "audience": "x",
+            }),
+        ),
+        ("DELETE /admin/idps", httpx.delete(f"{API}/admin/idps", headers=sam, params={"issuer": ISSUER})),
+        (
+            "POST /admin/idps/discover",
+            httpx.post(f"{API}/admin/idps/discover", headers=sam, json={"issuer": "https://x.example"}),
+        ),
+        # Step 110: people and roles. The disable route is the one a stolen non-admin
+        # token would most like to reach.
+        ("GET /admin/users", httpx.get(f"{API}/admin/users", headers=sam)),
+        ("POST /admin/users/{id}/disable", httpx.post(f"{API}/admin/users/u-x/disable", headers=sam)),
+        ("POST /admin/users/{id}/enable", httpx.post(f"{API}/admin/users/u-x/enable", headers=sam)),
+        ("GET /admin/roles", httpx.get(f"{API}/admin/roles", headers=sam)),
+        # Step 110f (plan 107 D5, D7): the credential probe and the two deletes.
+        ("GET .../discovery-credential", httpx.get(f"{API}/admin/connectors/acme/discovery-credential", headers=sam)),
+        ("DELETE .../tools/{n}", httpx.delete(f"{API}/admin/connectors/acme/tools/list_issues", headers=sam)),
+        ("DELETE /admin/connectors/{id}", httpx.delete(f"{API}/admin/connectors/acme", headers=sam)),
     ):
         check(f"403 on {label}", response.status_code, 403)
 
@@ -494,6 +519,117 @@ def run(store):
         "administrator",
     )
     check("and he changed nothing", store.allowed_hosts(TENANT), [])
+    check("...and no provider either", len(store.list_tenant_idps(TENANT)), 1)
+
+    # --- the identity provider, over HTTP (step 110) -----------------------------------
+    #
+    # The first thing in the administrator's hour, and until 110 the one thing in it with
+    # no route. Driven here rather than only in the unit suite because the removal guard
+    # depends on who the caller signed in through, and this is the one harness where a
+    # real token from a real provider decides that.
+
+    say("she reads the provider this workspace signs in through")
+    listed = httpx.get(f"{API}/admin/idps", headers=priya, timeout=10)
+    check("200", listed.status_code, 200)
+    check("and it is the one the world registered", [r["issuer"] for r in listed.json()], [ISSUER])
+    check("with its audience and domains", (listed.json()[0]["audience"], listed.json()[0]["allowed_domains"]),
+          (AUDIENCE, ["acme.com"]))
+
+    say("she registers a second provider, from the form's body")
+    second = httpx.post(f"{API}/admin/idps", headers=priya, timeout=10, json={
+        "issuer": "https://login.example.com/acme/v2.0",
+        "jwks_uri": f"http://127.0.0.1:{JWKS_PORT}/jwks.json",
+        "audience": "api://carnet",
+        "email_claim": "preferred_username",
+        "allowed_domains": ["acme.com"],
+    })
+    check("200, not replaced", (second.status_code, second.json().get("replaced")), (200, False))
+    check("and the store has both", len(store.list_tenant_idps(TENANT)), 2)
+
+    say("a malformed one is the normaliser's own sentence, from the route as from the CLI")
+    bad = httpx.post(f"{API}/admin/idps", headers=priya, timeout=10, json={
+        "issuer": "https://login.example.com/acme/v2.0", "jwks_uri": "keys", "audience": "x",
+    })
+    check("400", bad.status_code, 400)
+    says("naming the field", detail(bad), "jwks_uri must be an http(s) URL")
+
+    say("discovery against an issuer that serves nothing says what to do instead")
+    # A closed loopback port: a real dial, refused by the kernel, and the sentence that
+    # names the remedy. Loopback is admitted here at all only because the dial carries
+    # the operator's consent, as the key-set fetch does — an in-network provider lives
+    # exactly there.
+    nothing = httpx.post(f"{API}/admin/idps/discover", headers=priya, timeout=20,
+                         json={"issuer": "http://127.0.0.1:1"})
+    check("502", nothing.status_code, 502)
+    says("with the remedy", detail(nothing), "enter its JWKS URL by hand")
+
+    say("and a document that is not a discovery document is refused rather than trusted")
+    # The world's JWKS server answers every path with its key set, so under this issuer
+    # the well-known path returns JSON with no `issuer` in it — which is what a wrong
+    # URL at a real provider looks like too.
+    not_one = httpx.post(f"{API}/admin/idps/discover", headers=priya, timeout=20,
+                         json={"issuer": f"http://127.0.0.1:{JWKS_PORT}"})
+    check("400", not_one.status_code, 400)
+    says("saying what it lacked", detail(not_one), "names no issuer")
+
+    say("removing the provider she signed in through is refused with the reason")
+    own = httpx.delete(f"{API}/admin/idps", headers=priya, timeout=10, params={"issuer": ISSUER})
+    check("400", own.status_code, 400)
+    says("naming the lock-out", detail(own), "would lock this tenant out")
+    check("and the row is still there", len(store.list_tenant_idps(TENANT)), 2)
+
+    say("removing the other one is allowed, and says whether it was there")
+    gone = httpx.delete(f"{API}/admin/idps", headers=priya, timeout=10,
+                        params={"issuer": "https://login.example.com/acme/v2.0"})
+    again = httpx.delete(f"{API}/admin/idps", headers=priya, timeout=10,
+                         params={"issuer": "https://login.example.com/acme/v2.0"})
+    check("removed, then not there", (gone.json()["removed"], again.json()["removed"]), (True, False))
+    check("and the store agrees", [r["issuer"] for r in store.list_tenant_idps(TENANT)], [ISSUER])
+
+    # --- people and roles, over HTTP (step 110) ----------------------------------------
+
+    say("she reads who is here, and who administers")
+    people = {row["email"]: row for row in httpx.get(f"{API}/admin/users", headers=priya, timeout=10).json()}
+    check("both people, by address", sorted(people), sorted([BOOTSTRAP_EMAIL, "sam@acme.com"]))
+    check("both have signed in", [people[e]["signed_in"] for e in sorted(people)], [True, True])
+    holders = httpx.get(f"{API}/admin/roles", headers=priya, timeout=10).json()
+    check("one administrator, by address, appointed by the bootstrap",
+          [(r["email"], r["role"], r["granted_by"]) for r in holders],
+          [(BOOTSTRAP_EMAIL, "admin", "system:bootstrap")])
+
+    say("she cuts sam off, and his very next request is refused")
+    sam_id = people["sam@acme.com"]["id"]
+    cut = httpx.post(f"{API}/admin/users/{sam_id}/disable", headers=priya, timeout=10)
+    check("200, changed", (cut.status_code, cut.json()["changed"]), (200, True))
+    refused = httpx.get(f"{API}/me", headers=sam, timeout=10)
+    check("sam is refused", refused.status_code, 403)
+    says("because the account is disabled, in those words", detail(refused), "disabled")
+    check("and the record names the route as the cause",
+          [r.get("detail", {}).get("cause") for r in store.admin_audit_records(TENANT)
+           if r["action"] == "user.disable"],
+          ["POST /admin/users/disable"])
+
+    say("cutting him off again changes nothing and says so")
+    check("changed: false",
+          httpx.post(f"{API}/admin/users/{sam_id}/disable", headers=priya, timeout=10).json()["changed"],
+          False)
+
+    say("she cannot cut herself off, and the refusal names the way back")
+    own = httpx.post(f"{API}/admin/users/{people[BOOTSTRAP_EMAIL]['id']}/disable", headers=priya, timeout=10)
+    check("400", own.status_code, 400)
+    says("the shell", detail(own), "--disable-user")
+
+    say("and lets sam back in, so the rest of this script can use him")
+    back = httpx.post(f"{API}/admin/users/{sam_id}/enable", headers=priya, timeout=10)
+    check("200, changed", (back.status_code, back.json()["changed"]), (200, True))
+    check("and he is back", httpx.get(f"{API}/me", headers=sam, timeout=10).status_code, 200)
+
+    say("there is no route that appoints an administrator")
+    check("every spelling is a 404 or 405",
+          {httpx.request(m, f"{API}{p}", headers=priya, timeout=10, json={"role": "admin"}).status_code
+           for m, p in (("PUT", f"/admin/roles/user/{sam_id}/admin"), ("POST", "/admin/roles"),
+                        ("PUT", f"/roles/user/{sam_id}/admin"))} <= {404, 405},
+          True)
 
     # --- the arc, entirely over HTTP --------------------------------------------------
 

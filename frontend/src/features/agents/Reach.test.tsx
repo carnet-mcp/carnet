@@ -32,7 +32,7 @@ function tool(overrides: Partial<ToolSummary> = {}): ToolSummary {
     note: "",
     effect: "read",
     identity: "service",
-    resources: [{ type: "github.repo" }],
+    resources: [{ type: "github.repo", families: [] }],
     max_response_bytes: null,
     vetted_by: "user:u_admin",
     vetted_at: "2026-08-01T09:00:00+00:00",
@@ -50,7 +50,7 @@ const CATALOGUE: ToolGroup[] = [
       tool({
         name: "post_message",
         effect: "write",
-        resources: [{ type: "chat.channel" }],
+        resources: [{ type: "chat.channel", families: [] }],
         description: "",
       }),
     ],
@@ -130,6 +130,20 @@ describe("the scope table", () => {
     expect(
       screen.getByText(/No resources are selected.*any resource the caller's account can reach/),
     ).toBeInTheDocument();
+  });
+
+  it("lists the granted tools that take no resource beside the table (107 D8)", () => {
+    show(
+      { tools: ["list_issues", "whoami"], scope: { "github.repo": { read: ["acme/*"] } } },
+      [{ ...CATALOGUE[0], tools: [tool(), tool({ name: "whoami", resources: [] })] }],
+    );
+
+    expect(screen.getByText("Not restricted")).toBeInTheDocument();
+    expect(
+      screen.getByText(/whoami does not take a resource, so it is not restricted/),
+    ).toBeInTheDocument();
+    // And the table is still there for the tool that is narrowed.
+    expect(screen.getByText("acme/*")).toBeInTheDocument();
   });
 
   it("says the tools take no resource when none of the granted ones declares one", () => {

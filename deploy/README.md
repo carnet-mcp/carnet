@@ -178,14 +178,42 @@ digests stay: a mirror preserves them, so the retargeted build pulls **the same 
 from a different address**, which is both what makes the mirror trustworthy and why the
 pins were never meant to be edited to get there. A path after the host is fine; the
 `library/` in the image names follows the prefix, because that is where Docker Hub's
-official images live in every mirror that proxies it. The published image,
-`ghcr.io/carnet-mcp/carnet`, is the `api` target of this same Dockerfile and can be
-mirrored the same way, but the stack builds from the checkout and does not need it.
+official images live in every mirror that proxies it. The published pair,
+`ghcr.io/carnet-mcp/carnet` and `ghcr.io/carnet-mcp/carnet-front`, are the `api` and
+`front` targets of this same Dockerfile and can be mirrored the same way; the stack
+builds from the checkout by default and does not need them (see *Pulling rather than
+building* below for when it should).
 
 `CARNET_DB_IMAGE` is the other override and answers a different environment: the sealed
 estate, where the images arrived in a tarball and the pinned digest cannot match an
 image that has been near no registry. `docs/OFFLINE.md` says when to set it, and it is
 never needed where a registry is reachable.
+
+## Pulling rather than building
+
+Everything above builds the two images from this checkout, which is right for a
+platform team that reads the Dockerfile before running it. A team whose policy is *we
+run what is published and never build* sets two lines in `.env` instead, both to one
+version, and drops `--build`:
+
+```bash
+CARNET_API_IMAGE=ghcr.io/carnet-mcp/carnet:0.11.0
+CARNET_FRONT_IMAGE=ghcr.io/carnet-mcp/carnet-front:0.11.0
+```
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The images are signed keylessly by the release workflow; the README's *Verifying the
+image* section is the command, and it applies to both names. The `build:` blocks stay
+in the compose file on purpose — compose builds only when the named image is absent,
+so a pulled image is never quietly rebuilt over — and unset, the two variables are the
+names the checkout's own build produces, which is why nothing above had to change.
+The key-generation line in *Day one* is the one place this matters: with the pair
+pulled, it is `docker run --rm ghcr.io/carnet-mcp/carnet:0.11.0 carnet --generate-key`
+and no `docker build`.
 
 ## Behind a corporate proxy
 
@@ -280,10 +308,10 @@ in `docs/plans/030-deployment-artifacts.md`, decision 5.
   Kubernetes; Terraform for the first that names a cloud. Either would mean guessing
   your ingress class, secret manager and database topology — ask, and it becomes a
   conversation instead of a guess.
-- **A published front-door image.** `ghcr.io/carnet-mcp/carnet` is the `api` target
-  only, signed and multi-architecture (`release.yml`); `carnet-front` builds from this
-  checkout, or arrives in the offline bundle. A published pair waits for the first
-  deployment that cannot build and is not a sealed estate.
+- **A registry other than GHCR.** Both images are published there, signed and
+  multi-architecture (`release.yml`, since step 110 the front door as well as the
+  API). Docker Hub, a Helm chart's own registry, an image somebody else builds: none
+  of it, until a customer's policy names a registry that cannot proxy GHCR.
 - **An air-gapped update channel.** A sealed estate upgrades by carrying the next
   tarball in (`docs/OFFLINE.md`). A delta channel, a mirror of our releases, an update
   server — none of it, until a customer asks in words.

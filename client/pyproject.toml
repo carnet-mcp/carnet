@@ -1,0 +1,83 @@
+[project]
+# **`carnet-mcp`, matching the import package `carnet_mcp`.** Plan 111's decision 2, and
+# it was re-opened on 2026-09-20 and came back to the same answer by a different route.
+#
+# The prettier `pip install carnet` was tried. It works — a distribution name and an
+# import name are independent, which is how `pyyaml` ships `yaml` — but it costs two
+# things that were measured rather than argued:
+#
+#   1. The server's distribution was also `carnet`, and two distributions cannot share a
+#      name. `pip install carnet` on a box holding `pip install -e backend` printed
+#      *Uninstalling carnet-0.11.0* and `from carnet.api import app` stopped working.
+#      Reproduced, not reasoned about. Fixing it meant renaming the server, which is a
+#      change to a component that had no other reason to move.
+#   2. The install and import names then disagree, which decision 2's own table had
+#      predicted is "the thing people file issues about" — and the first person to read
+#      the line said so, unprompted, within the hour.
+#
+# So the names match, `carnet` stays free on PyPI, and the server keeps its own name.
+# The `[extras]` want quoting in a shell: `pip install "carnet-mcp[langchain]"`, because
+# zsh globs an unquoted bracket.
+name = "carnet-mcp"
+# Read from `carnet_mcp.__version__`, one place, on the server package's precedent. The
+# client and the server are **separately versioned on purpose**: this package speaks to
+# a range of self-hosted doors, so pinning it to the server's number would promise
+# something false. `backend/scripts/check_versions.py` names this file as a not-source
+# in its docstring, so the exemption is a sentence somebody can find.
+dynamic = ["version"]
+description = "The Carnet door, as a Python client: three lines from an agent framework to a brokered, scoped, audited tool list"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+    # The whole transport. The door answers five methods with one JSON body per message,
+    # so a client for it is httpx and about forty lines; the official `mcp` package
+    # would add a session lifecycle, a task group and an SSE reader for a transport the
+    # door does not serve. Plan 111, decision 3 — and the counter-argument is recorded
+    # there: if the door ever streams, this line is revisited.
+    "httpx>=0.27",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+keywords = ["mcp", "model-context-protocol", "agents", "langchain", "crewai", "autogen", "openai-agents"]
+
+[project.urls]
+Homepage = "https://github.com/carnet-mcp/carnet"
+Repository = "https://github.com/carnet-mcp/carnet"
+Issues = "https://github.com/carnet-mcp/carnet/issues"
+Changelog = "https://github.com/carnet-mcp/carnet/blob/HEAD/CHANGELOG.md"
+
+# Each framework is an extra and each adapter imports it lazily: a customer who has
+# LangChain must not need CrewAI installed to import anything, and the bare install
+# pulls httpx and nothing else. The floors are the versions the adapters were written
+# against, read from each library's current API rather than guessed.
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.3"]
+crewai = ["crewai>=1.0"]
+autogen = ["autogen-core>=0.4"]
+openai-agents = ["openai-agents>=0.1"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "carnet_mcp._version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

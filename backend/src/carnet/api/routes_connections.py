@@ -47,11 +47,11 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import RedirectResponse
 
 from .. import storage, tools
-from ..access import connections, oauth
+from ..access import connections, grants, oauth
 from ..tools.mcp import egress
-from ..core import Principal
+from ..core import Principal, credentials
 from .deps import principal_from_request
-from .schemas import ConnectionState, ConnectionSummary, ConsentStart
+from .schemas import ConnectionState, ConnectionSummary, ConnectionTest, ConsentStart
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +106,7 @@ def list_connections(principal: Principal = Depends(principal_from_request)):
         for row in connections.list_accounts(tenant_id, principal)
     }
 
+    used_by = _used_by(principal)
     summaries = []
     for connector in tools.mcp.connectors_for(tenant_id):
         row = mine.get(connector.id)
@@ -115,6 +116,7 @@ def list_connections(principal: Principal = Depends(principal_from_request)):
                 connector_id=connector.id,
                 description=connector.description,
                 state=_state_of(row, app),
+                used_by=used_by.get(connector.id, []),
                 account_label=(row or {}).get("account_label") or "",
                 credential_kind=(row or {}).get("credential_kind") or "",
                 # The **access** token's expiry. Only renderable beside `credential_kind`
@@ -149,6 +151,45 @@ def list_connections(principal: Principal = Depends(principal_from_request)):
             )
         )
     return summaries
+
+
+def _used_by(principal: Principal) -> dict[str, list[str]]:
+    """`connector id -> the agents this caller may use whose tools act as *them* there`.
+    Plan 107 D11 — the `ConnectionNotice` on an agent's page, inverted.
+
+    That notice answers *does this agent need an account I have not connected*; the
+    Connections page had no way to answer the converse, *what breaks if I disconnect
+    this*, so a row read as a free choice when it was a dependency. Same two sources
+    as the notice, read here rather than by a third route: `grants.runnable_names` for
+    the agents (a personal token lists its owner's, exactly as the door does), and each
+    connector's vetting for which tools act as the caller — `identity == "user"` only,
+    because a `service` tool reads the shared credential and does not care whether the
+    caller has connected anything. An agent whose granted tools on a connector are all
+    `service` is therefore not listed, and that is the truthful answer.
+    """
+    tenant_id = principal.tenant_id
+    store = storage.active()
+    granted: dict[str, set[str]] = {}
+    for name in grants.runnable_names(principal):
+        agent = store.get_agent(tenant_id, name)
+        if agent is None:
+            continue
+        config = agent.get("config") or {}
+        granted[name] = set(config.get("permissions", {}).get("tools", []) or [])
+
+    used: dict[str, list[str]] = {}
+    for connector in tools.mcp.connectors_for(tenant_id):
+        as_caller = {
+            connector.local_name(vetted)
+            for vetted in connector.vetted
+            if vetted.identity == "user"
+        }
+        if not as_caller:
+            continue
+        users = sorted(name for name, names in granted.items() if names & as_caller)
+        if users:
+            used[connector.id] = users
+    return used
 
 
 def _state_of(row: dict | None, app: dict | None) -> str:
@@ -293,6 +334,70 @@ def _redirect_uri() -> str:
     from ..config import PUBLIC_ORIGIN
 
     return f"{PUBLIC_ORIGIN.rstrip('/')}{CALLBACK_PATH}"
+
+
+@router.post("/connectors/{connector_id}/connection/test", response_model=ConnectionTest)
+def test_connection(
+    connector_id: str, principal: Principal = Depends(principal_from_request)
+):
+    """Ask the server for its tool list **under the caller's own connected account**,
+    and say how many it offered. Plan 107 D11 — the button beside a connected row.
+
+    A connected row said *connected as* and nothing else, and the only way to learn
+    whether the account still worked was to make a real call through an agent and
+    read the refusal. This dials with the caller's connection and only the caller's
+    connection: it refuses (400) when there is none rather than falling through to the
+    shared credential, because *the shared credential works* is not the question the
+    button asks. `tools/list` and nothing more — no tool is called, nothing is written,
+    and a server that is down is the same 502 discovery answers with.
+
+    Any signed-in person, not an administrator: it is their account and their row. The
+    count is of everything the server advertised; the **names** are only of what this
+    tenant approved, which is already on everybody's catalogue — a person who is not an
+    administrator is not shown the server's whole surface off somebody else's button.
+    An approval the server no longer offers comes back under `missing`, because that is
+    a real answer to *why did that tool stop working* and the only other way to learn it
+    is to be refused at the door.
+
+    **A REST connector is refused with the reason**, on `admin.discover`'s precedent and
+    for its reason: a REST API does not describe itself, so there is no `tools/list` to
+    ask for. Until this was checked the probe dialled one as though it spoke MCP and
+    answered **500** — an edge the route suite could not reach, because it takes a
+    registered REST connector *and* a connected account on it.
+    """
+    tenant_id = principal.tenant_id
+    connector = tools.mcp.get_connector(tenant_id, connector_id)
+    if connector is None:
+        raise tools.RegistrationRefused(
+            storage.NO_SUCH_CONNECTOR_TO_VET.format(connector=connector_id, tenant=tenant_id)
+        )
+
+    if connector.transport_kind == tools.mcp.RestLaunch.KIND:
+        raise tools.RegistrationRefused(
+            f"'{connector_id}' is a REST API and does not describe itself; there is "
+            "nothing to ask it for. A REST connection is proved by calling one of its "
+            "tools, not by listing them."
+        )
+
+    credential, source = credentials.discovery_source(connector.id, principal)
+    if source != "connection" or credential is None:
+        raise tools.RegistrationRefused(
+            f"You have no account connected on '{connector_id}'; connect one first, "
+            "then test it."
+        )
+
+    seen = tools.mcp.discovery.discover(tenant_id, connector, credential.value)
+    advertised = {tool.get("name") for tool in seen["tools"]}
+    return ConnectionTest(
+        server=tools.mcp.discovery.server_label(seen["server"]),
+        tools=len(seen["tools"]),
+        approved=sorted(
+            connector.local_name(v) for v in connector.vetted if v.remote_name in advertised
+        ),
+        missing=sorted(
+            connector.local_name(v) for v in connector.vetted if v.remote_name not in advertised
+        ),
+    )
 
 
 @router.delete("/connectors/{connector_id}/connection", status_code=200)

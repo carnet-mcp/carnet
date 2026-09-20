@@ -12,6 +12,7 @@
  */
 
 import type { KeyboardEvent, ReactNode } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Icon, type IconName } from "./Icon";
@@ -99,6 +100,37 @@ export function Button(props: ButtonProps) {
 }
 
 // --- Card ----------------------------------------------------------------------------
+
+/** Copy a value to the clipboard, and say so for a moment. Plan 107 D9.
+ *
+ *  This app had no clipboard idiom on purpose (044): selectable text with a tab stop was
+ *  the affordance, and a copy button beside a *one-time* secret was read as inviting it
+ *  into a chat window. The reference consoles all have one beside the reveal, and the
+ *  owner's walk found the opposite hazard: hand-selecting a bearer token is how it ends
+ *  up half-copied, retried, and pasted into the wrong place. A browser that refuses the
+ *  clipboard (no permission, an insecure context) leaves the button saying *Copy*, and
+ *  the text is still selectable. */
+export function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+    if (!clipboard?.writeText) return;
+    clipboard
+      .writeText(value)
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => setCopied(false));
+  };
+  return (
+    <button type="button" className="btn quiet" aria-label={`Copy ${label}`} onClick={copy}>
+      <Icon name={copied ? "check" : "copy"} size={14} />
+      {copied ? " Copied" : " Copy"}
+    </button>
+  );
+}
+
 
 export function Card({
   title,

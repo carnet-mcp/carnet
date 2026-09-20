@@ -123,6 +123,15 @@ describe("the Audit log nav item", () => {
       "href",
       "/admin/denials",
     );
+    expect(screen.getByRole("link", { name: "Identity providers" })).toHaveAttribute(
+      "href",
+      "/admin/idps",
+    );
+    expect(screen.getByRole("link", { name: "People" })).toHaveAttribute("href", "/admin/people");
+    expect(screen.getByRole("link", { name: "Administrators" })).toHaveAttribute(
+      "href",
+      "/admin/roles",
+    );
   });
 
   it("takes the whole administrative group away from everybody else", async () => {
@@ -142,6 +151,11 @@ describe("the Audit log nav item", () => {
     expect(
       screen.queryByRole("link", { name: "Access denied" }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Identity providers" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "People" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Administrators" })).not.toBeInTheDocument();
   });
 
   it("offers Access tokens to somebody who is not an administrator", async () => {

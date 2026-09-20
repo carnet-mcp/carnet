@@ -15,6 +15,7 @@
  */
 
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,8 +28,13 @@ import DoorTrafficPage from "./DoorTrafficPage";
 import { api, ApiError } from "../../lib/api";
 import type { DoorCallRecord } from "../../lib/types";
 
+// Each fixture row gets its own sequence number, as the store gives one: the key a
+// row is rendered by and the cursor a page turns (110f).
+let seq = 0;
+
 function record(overrides: Partial<DoorCallRecord> = {}): DoorCallRecord {
   return {
+    id: ++seq,
     v: 7,
     ts: "2026-08-09T10:15:00+00:00",
     run_id: "door-0123456789ab",
@@ -98,29 +104,73 @@ describe("the log", () => {
     expect(await screen.findByText("No requests yet")).toBeInTheDocument();
   });
 
-  it("titles a full page as the most recent, not as the total (061)", async () => {
-    // 200 is the fetch cap, so 200 rows is a page — "200 calls" reads as "that is
-    // everything", the silent truncation the denials page argues against. Under the
-    // cap the count is complete and stays a plain count.
+  it("counts what is on screen and offers older rows after a full page", async () => {
+    // A hundred rows is a page, not a window (110f): the count is the count, and
+    // *Show older* is the way to the rest. "Matching" since 066, because the page
+    // filters: a hundred under a filter is a hundred of the match.
     show(
-      Array.from({ length: 200 }, (_, i) =>
+      Array.from({ length: 101 }, (_, i) =>
         record({ run_id: `door-${String(i).padStart(12, "0")}` }),
       ),
     );
 
-    // "matching" since 066, because the page filters now: a filtered listing at its cap
-    // is the recent end of a *match*, and a title that said "calls" would read as the
-    // recent end of the log.
-    expect(
-      await screen.findByText("The 200 most recent matching requests"),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/older records are not shown/)).toBeInTheDocument();
+    expect(await screen.findByText("100 matching requests")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show older" })).toBeInTheDocument();
+    expect(screen.queryByText(/older records are not shown/)).toBeNull();
+  });
+
+  it("offers nothing older when the match ends exactly on a page boundary", async () => {
+    show(
+      Array.from({ length: 100 }, (_, i) =>
+        record({ run_id: `door-${String(i).padStart(12, "0")}` }),
+      ),
+    );
+
+    expect(await screen.findByText("100 matching requests")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show older" })).toBeNull();
+  });
+
+  it("asks for the rows before the oldest shown, under the same filters", async () => {
+    const first = Array.from({ length: 101 }, (_, i) => record({ id: 900 - i }));
+    vi.mocked(api.adminDoorCalls)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce([record({ id: 3, tool: "acme_create_issue" })]);
+    render(
+      <MemoryRouter initialEntries={["/admin/door-calls?agent=triage"]}>
+        <DoorTrafficPage />
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Show older" }));
+
+    expect(await screen.findByText("acme_create_issue")).toBeInTheDocument();
+    expect(api.adminDoorCalls).toHaveBeenLastCalledWith(
+      expect.objectContaining({ before: 801, limit: 101, agent: "triage" }),
+    );
+    expect(screen.queryByRole("button", { name: "Show older" })).toBeNull();
   });
 
   it("titles a partial page as a plain count, which it honestly is", async () => {
     show([record(), record({ run_id: "door-ffffffffffff" })]);
 
-    expect(await screen.findByText("2 requests")).toBeInTheDocument();
+    expect(await screen.findByText("2 matching requests")).toBeInTheDocument();
+  });
+
+  it("links the agent and the token to their pages, and makes the tool a filter", async () => {
+    // 110f, plan 107 D10. An agent and a token have pages; a tool has none, so its name
+    // narrows the log instead — the denials page's own idiom.
+    show([record({ owner: "priya@example.com" })]);
+
+    expect(await screen.findByRole("link", { name: "triage" })).toHaveAttribute(
+      "href",
+      "/agents/triage",
+    );
+    expect(screen.getByRole("link", { name: "tok_9311cad7" })).toHaveAttribute(
+      "href",
+      "/tokens/tok_9311cad7",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "acme_list_issues" }));
+    expect(await screen.findByText(/Only calls to acme_list_issues/)).toBeInTheDocument();
   });
 
   it("asks for the log once and does not poll it", async () => {
@@ -346,6 +396,39 @@ describe("the filters come from the URL", () => {
       ).not.toBeInTheDocument(),
     );
     expect(screen.getByText(/Only denied calls/)).toBeInTheDocument();
+  });
+
+  it("writes the typed filters into the URL, and keeps the ones it does not offer", async () => {
+    // The bar covers the six a person types. A link from the Overview narrowed to
+    // denials stays narrowed to denials while the reader adds a tool — the other five
+    // keys are left as they arrived.
+    show([record()], "/admin/door-calls?decision=deny");
+    await screen.findByText("acme_list_issues");
+
+    await userEvent.type(screen.getByLabelText("Tool"), "acme_list_issues");
+    await userEvent.type(screen.getByLabelText("Token"), "tok_9311cad7");
+    await userEvent.selectOptions(screen.getByLabelText("Outcome"), "not recorded");
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(await screen.findByText(/Only calls to acme_list_issues/)).toBeInTheDocument();
+    expect(screen.getByText(/Only calls from tok_9311cad7/)).toBeInTheDocument();
+    expect(screen.getByText(/Only denied calls/)).toBeInTheDocument();
+    expect(api.adminDoorCalls).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        tool: "acme_list_issues",
+        principalId: "tok_9311cad7",
+        decision: "deny",
+        outcome: "",
+      }),
+    );
+  });
+
+  it("starts the bar from the URL, so a link's filters can be edited rather than retyped", async () => {
+    show([record()], "/admin/door-calls?tool=acme_list_issues&since=2026-08-01");
+    await screen.findByText("acme_list_issues", { selector: "button" });
+
+    expect(screen.getByLabelText("Tool")).toHaveValue("acme_list_issues");
+    expect(screen.getByLabelText("From")).toHaveValue("2026-08-01");
   });
 
   it("shows no filter bar at all on an unfiltered page", async () => {

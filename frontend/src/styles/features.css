@@ -1185,3 +1185,40 @@ a.conn-card:focus-visible {
 .conn-foot:empty {
   display: none;
 }
+
+/* --- show older, under a log's table (110f) ---------------------------------------
+ *
+ * The button that turns a log's page, beneath the rows it will append to. A paragraph
+ * inside the card rather than a footer primitive: it is one button, on three pages, and
+ * a primitive for that would be a name for a margin. */
+.log-more {
+  margin: var(--space-3) 0 0;
+}
+
+/* The request log's filter bar (110f, plan 107 D10): six inputs that write the URL.
+ * Wraps at narrow widths rather than scrolling, because a filter bar that scrolls hides
+ * the field somebody is looking for. */
+.log-filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: flex-end;
+  margin-bottom: var(--space-3);
+}
+.log-filter-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: var(--text-sm, 0.875rem);
+}
+.log-filter-form input,
+.log-filter-form select {
+  width: auto;
+  min-width: 8rem;
+}
+
+/* Which agents depend on a connection (plan 107 D11): a sentence with links, not a tag
+ * row — a dependency reads as prose, and the names are places to go. */
+.used-by a {
+  margin-right: 0.35rem;
+}

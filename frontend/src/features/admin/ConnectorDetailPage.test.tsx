@@ -28,10 +28,15 @@ vi.mock("../../lib/api", async () => {
     api: {
       getConnector: vi.fn(),
       discover: vi.fn(),
+      discoveryCredential: vi.fn(),
       vetTool: vi.fn(),
+      withdrawTool: vi.fn(),
+      deregisterConnector: vi.fn(),
       configureOAuth: vi.fn(),
       removeOAuth: vi.fn(),
       setAssertedIdentity: vi.fn(),
+      listRecipes: vi.fn(),
+      startConnect: vi.fn(),
     },
   };
 });
@@ -54,6 +59,7 @@ function connector(overrides: Partial<ConnectorDetail> = {}): ConnectorDetail {
     host_allowed: true,
     oauth: null,
     allow_asserted_identity: false,
+    from_recipe: "",
     tools: [],
     ...overrides,
   };
@@ -94,6 +100,7 @@ function vetted(overrides: Partial<VettedTool> = {}): VettedTool {
     vetted_at: "2026-08-09T10:00:00+00:00",
     server_name: "jira-mcp-server",
     server_version: "v2.3.0",
+    pricing: null,
     ...overrides,
   };
 }
@@ -113,10 +120,18 @@ const DISCOVERED: DiscoveryResult = {
     },
   ],
   findings: [],
+  credential: "none",
 };
 
 function show(detail: ConnectorDetail = connector()) {
   vi.mocked(api.getConnector).mockResolvedValue(detail);
+  // The page asks both on mount; a test that cares sets its own answer before `show`.
+  if (!vi.mocked(api.discoveryCredential).getMockImplementation()) {
+    vi.mocked(api.discoveryCredential).mockResolvedValue({ credential: "none", shared_via: "" });
+  }
+  if (!vi.mocked(api.listRecipes).getMockImplementation()) {
+    vi.mocked(api.listRecipes).mockResolvedValue([]);
+  }
   return render(
     <MemoryRouter initialEntries={["/admin/connectors/jira"]}>
       <Routes>
@@ -127,12 +142,9 @@ function show(detail: ConnectorDetail = connector()) {
 }
 
 beforeEach(() => {
-  vi.mocked(api.getConnector).mockReset();
-  vi.mocked(api.discover).mockReset();
-  vi.mocked(api.vetTool).mockReset();
-  vi.mocked(api.configureOAuth).mockReset();
-  vi.mocked(api.removeOAuth).mockReset();
-  vi.mocked(api.setAssertedIdentity).mockReset();
+  for (const fn of Object.values(api)) {
+    if (typeof fn === "function" && "mockReset" in fn) vi.mocked(fn).mockReset();
+  }
 });
 
 describe("on behalf of (033c)", () => {
@@ -286,6 +298,61 @@ describe("approving a tool", () => {
     expect(
       await screen.findByText(/Approved as jira_create_issue, against jira-mcp-server/),
     ).toBeInTheDocument();
+  });
+
+  it("sends the families a scope may name, as a list beside the type (110)", async () => {
+    // `--resource-family TYPE=A,B,C` as a box: comma-separated text, split once at
+    // submit, empties dropped. Omitted from the row above because a body that says
+    // nothing about families on a Jira project is the honest one.
+    vi.mocked(api.discover).mockResolvedValue(DISCOVERED);
+    vi.mocked(api.vetTool).mockResolvedValue({
+      local_name: "jira_create_issue",
+      remote_name: "create_issue",
+      effect: "write",
+      identity: "service",
+      resources: ["jira.project"],
+      server: "jira-mcp-server v2.3.0",
+      actor: "user:u_9311",
+    });
+    show();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Discover" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Approve…" }));
+    await userEvent.selectOptions(screen.getByLabelText(/Effect/), "write");
+    await userEvent.click(screen.getByRole("button", { name: "Add a resource" }));
+    await userEvent.type(screen.getByPlaceholderText("jira.project"), "jira.project");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "" }), "projectKey");
+    await userEvent.type(screen.getByLabelText("Families"), "finance, , eng ");
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() =>
+      expect(api.vetTool).toHaveBeenCalledWith(
+        "jira",
+        "create_issue",
+        expect.objectContaining({
+          resources: [
+            { type: "jira.project", args: ["projectKey"], families: ["finance", "eng"] },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("says above Approve that a read tool with no resource mapping is unrestricted (107 D8)", async () => {
+    vi.mocked(api.discover).mockResolvedValue(DISCOVERED);
+    show();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Discover" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Approve…" }));
+
+    // A read that takes arguments and maps none: said as a fact, not refused.
+    expect(screen.getByText("No resource mapping")).toBeInTheDocument();
+    expect(screen.getByText(/map the argument that names the resource/)).toBeInTheDocument();
+
+    // Mapping one takes the sentence away; it was about the absence.
+    await userEvent.click(screen.getByRole("button", { name: "Add a resource" }));
+    await userEvent.type(screen.getByPlaceholderText("jira.project"), "jira.project");
+    expect(screen.queryByText("No resource mapping")).not.toBeInTheDocument();
   });
 
   it("renders the server's refusal verbatim", async () => {
@@ -482,6 +549,46 @@ describe("what an approval recorded (035g)", () => {
     show(connector({ vetted: 1, tools: [vetted({ max_response_bytes: 200000 })] }));
 
     expect(await screen.findByText(/195.3 kB are denied/)).toBeInTheDocument();
+  });
+
+  it("shows the families beside the type, and which models the approval priced (110)", async () => {
+    // Both are the read-back half of 086's two fields: the families because they are
+    // the words a scope on this tool may say, the price because an approval whose price
+    // is invisible is one that gets re-vetted at list price. Models, not figures — the
+    // overview prices spend and says which table it used.
+    show(
+      connector({
+        connector_id: "foundry",
+        transport: "rest",
+        vetted: 1,
+        tools: [
+          vetted({
+            name: "foundry_chat",
+            remote_name: "chat",
+            effect: "write",
+            resources: [{ type: "azure.deployment", families: ["gpt-4o", "gpt-4o-mini"] }],
+            pricing: {
+              "gpt-4o": { input: 2.5, output: 10, cache_read: 1.25, cache_write: 0 },
+              "gpt-4o-mini": { input: 0.15, output: 0.6, cache_read: 0.075, cache_write: 0 },
+            },
+          }),
+        ],
+      }),
+    );
+
+    expect(
+      await screen.findByText("azure.deployment (gpt-4o, gpt-4o-mini)"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Priced on this approval: gpt-4o, gpt-4o-mini/),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing about a price on a tool that has none", async () => {
+    show(connector({ vetted: 1, tools: [vetted()] }));
+
+    expect(await screen.findByText("jira_list_issues")).toBeInTheDocument();
+    expect(screen.queryByText(/Priced on this approval/)).not.toBeInTheDocument();
   });
 
   it("does not render a note that is only whitespace", async () => {
@@ -781,7 +888,7 @@ describe("approving again (035g's edge pass)", () => {
     remote_name: "create_issue",
     effect: "write",
     identity: "user",
-    resources: [{ type: "jira.project" }],
+    resources: [{ type: "jira.project", families: [] }],
     note: "Finance owns this project.",
     max_response_bytes: 200000,
   });
@@ -819,6 +926,33 @@ describe("approving again (035g's edge pass)", () => {
 
     expect(screen.getByPlaceholderText("jira.project")).toHaveValue("jira.project");
     expect(screen.getByText(/Pick the argument for each again/)).toBeInTheDocument();
+  });
+
+  it("restores the families with the type, so a re-vet keeps a scope's words (110)", async () => {
+    // A family is what a scope line *names*; a re-vet that came back without it would
+    // approve a tool every existing `haiku` scope no longer matches, silently.
+    vi.mocked(api.discover).mockResolvedValue({
+      ...DISCOVERED,
+      tools: [{ ...DISCOVERED.tools[0], vetted: true }],
+    });
+    show(
+      connector({
+        vetted: 1,
+        tools: [
+          vetted({
+            name: "jira_create_issue",
+            remote_name: "create_issue",
+            effect: "write",
+            resources: [{ type: "jira.project", families: ["finance", "eng"] }],
+          }),
+        ],
+      }),
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Discover" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit approval" }));
+
+    expect(screen.getByPlaceholderText("jira.project")).toHaveValue("jira.project");
+    expect(screen.getByLabelText("Families")).toHaveValue("finance, eng");
   });
 
   it("refuses a resource with no argument rather than dropping it silently", async () => {
@@ -991,6 +1125,95 @@ describe("authoring a REST tool", () => {
     );
   });
 
+  it("sends the price on the binding, beside the usage map (110)", async () => {
+    vi.mocked(api.vetTool).mockResolvedValue({
+      local_name: "anthropic_chat",
+      remote_name: "chat",
+      effect: "write",
+      identity: "service",
+      resources: [],
+      server: "",
+      actor: "user:u_9311",
+    });
+    show(rest());
+
+    await userEvent.type(await screen.findByPlaceholderText("chat"), "chat");
+    await userEvent.click(screen.getByLabelText(/Input schema/));
+    await userEvent.paste(SCHEMA);
+    await userEvent.type(screen.getByPlaceholderText("/repos/{owner}/{repo}/issues"), "/messages");
+    const wheres = await screen.findAllByRole("combobox", { name: "" });
+    for (const select of wheres.filter((s) =>
+      Array.from(s.querySelectorAll("option")).some((o) => o.textContent === "JSON body"),
+    )) {
+      await userEvent.selectOptions(select, "body");
+    }
+    await userEvent.click(screen.getByLabelText(/^Prices/));
+    await userEvent.paste(
+      '{"claude-opus-5": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75}}',
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() =>
+      expect(api.vetTool).toHaveBeenCalledWith(
+        "jira",
+        "chat",
+        expect.objectContaining({
+          binding: expect.objectContaining({
+            pricing: {
+              "claude-opus-5": { input: 15, output: 75, cache_read: 1.5, cache_write: 18.75 },
+            },
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("sends no price when none was typed, rather than an empty table", async () => {
+    vi.mocked(api.vetTool).mockResolvedValue({
+      local_name: "anthropic_chat",
+      remote_name: "chat",
+      effect: "write",
+      identity: "service",
+      resources: [],
+      server: "",
+      actor: "user:u_9311",
+    });
+    show(rest());
+
+    await userEvent.type(await screen.findByPlaceholderText("chat"), "chat");
+    await userEvent.click(screen.getByLabelText(/Input schema/));
+    await userEvent.paste('{"type":"object","properties":{}}');
+    await userEvent.type(screen.getByPlaceholderText("/repos/{owner}/{repo}/issues"), "/ping");
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() =>
+      expect(api.vetTool).toHaveBeenCalledWith(
+        "jira",
+        "chat",
+        expect.objectContaining({ binding: expect.objectContaining({ pricing: null }) }),
+      ),
+    );
+  });
+
+  it("refuses a price that is not an object itself, and sends nothing", async () => {
+    // The one shape the request model would answer with a 422 — which names no field —
+    // is caught here with the example. The four-rate rule stays the server's, whose
+    // refusal is a sentence written for this form.
+    show(rest());
+
+    await userEvent.type(await screen.findByPlaceholderText("chat"), "chat");
+    await userEvent.click(screen.getByLabelText(/Input schema/));
+    await userEvent.paste('{"type":"object","properties":{}}');
+    await userEvent.type(screen.getByPlaceholderText("/repos/{owner}/{repo}/issues"), "/ping");
+    await userEvent.click(screen.getByLabelText(/^Prices/));
+    await userEvent.paste("[1.25, 10.0]");
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText(/Prices are a JSON object keyed by model id/)).toBeInTheDocument();
+    expect(api.vetTool).not.toHaveBeenCalled();
+  });
+
   it("offers an OAuth app, which REST can carry and stdio cannot", async () => {
     // The bug 047 found by making a REST connector clickable at last. The gate read
     // `transport !== "http"`, so REST was told it could never have a consent flow and
@@ -1032,8 +1255,209 @@ describe("authoring a REST tool", () => {
 
     expect(await screen.findByText(/is already approved/)).toBeInTheDocument();
     expect(
-      screen.getByText(/enter the method, path and schema again/),
+      screen.getByText(/enter the method, path, schema and prices again/),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve again" })).toBeInTheDocument();
+  });
+});
+
+// --- 107c: the credential said before the click, the preset in the OAuth form, and the
+// row actions the approved-tools table never had ------------------------------------------
+
+describe("the credential discovery will use (107 D5)", () => {
+  it("says it will use the connected account", async () => {
+    vi.mocked(api.discoveryCredential).mockResolvedValue({ credential: "connection", shared_via: "" });
+    show();
+
+    expect(await screen.findByText("Discovery will use your connected account.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect your account" })).not.toBeInTheDocument();
+  });
+
+  it("names the shared credential's variable, never a value", async () => {
+    vi.mocked(api.discoveryCredential).mockResolvedValue({ credential: "shared", shared_via: "JIRA_TOKEN" });
+    show();
+
+    const sentence = await screen.findByText(/Discovery will use the shared credential in/);
+    expect(sentence).toHaveTextContent("JIRA_TOKEN");
+    expect(sentence).not.toHaveTextContent("secret");
+  });
+
+  it("offers to connect from here when there is none and an OAuth app exists, coming back here", async () => {
+    vi.mocked(api.discoveryCredential).mockResolvedValue({ credential: "none", shared_via: "" });
+    vi.mocked(api.startConnect).mockResolvedValue({ authorize_url: "https://auth.acme.com/authorize?x" });
+    show(connector({ oauth: oauthApp() }));
+
+    expect(await screen.findByText(/This connector has no credential yet/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Connect your account" }));
+
+    await waitFor(() => expect(api.startConnect).toHaveBeenCalledWith("jira", "/admin/connectors/jira"));
+  });
+
+  it("says to set up the OAuth app first when there is neither", async () => {
+    vi.mocked(api.discoveryCredential).mockResolvedValue({ credential: "none", shared_via: "" });
+    show();
+
+    expect(await screen.findByText(/Set up the OAuth app above and connect your account/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect your account" })).not.toBeInTheDocument();
+  });
+});
+
+describe("the OAuth form and the preset (107 D6)", () => {
+  const GITHUB = {
+    id: "github-mcp-hosted",
+    name: "GitHub",
+    description: "",
+    verified_on: "2026-09-01",
+    verified_by: "",
+    verified_against: "",
+    staleness: "verified" as const,
+    hosts: [],
+    connector: {
+      connector_id: "github", url: "https://api.githubcopilot.com/mcp/", kind: "http" as const,
+      credential_env: "", credential_header: null, credential_prefix: null, headers: {}, description: "",
+    },
+    oauth: {
+      authorize_endpoint: "https://github.com/login/oauth/authorize",
+      token_endpoint: "https://github.com/login/oauth/access_token",
+      revoke_endpoint: "",
+      scopes: ["repo", "read:org"],
+      authorize_params: {},
+      scope_notes: {},
+    },
+    tools: [],
+  };
+
+  it("seeds endpoints and scopes from the preset and says so, leaving the client id empty", async () => {
+    vi.mocked(api.listRecipes).mockResolvedValue([GITHUB]);
+    show(connector({ connector_id: "github", from_recipe: "github-mcp-hosted" }));
+
+    expect(await screen.findByText("github-mcp-hosted")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Set up OAuth app" }));
+
+    expect(await screen.findByText("From the GitHub preset")).toBeInTheDocument();
+    expect(screen.getByText(/verified on 2026-09-01/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("https://auth.acme.com/authorize")).toHaveValue(
+      "https://github.com/login/oauth/authorize",
+    );
+    expect(screen.getByLabelText(/^Client ID/)).toHaveValue("");
+  });
+
+  it("says when the preset is gone from this version rather than seeding nothing silently", async () => {
+    vi.mocked(api.listRecipes).mockResolvedValue([]);
+    show(connector({ from_recipe: "retired-preset" }));
+
+    await screen.findByText("retired-preset");
+    await userEvent.click(screen.getByRole("button", { name: "Set up OAuth app" }));
+
+    expect(await screen.findByText(/which this version no longer ships/)).toBeInTheDocument();
+  });
+});
+
+describe("row actions on approved tools (107 D7)", () => {
+  it("removes an approval after naming the consequence", async () => {
+    vi.mocked(api.withdrawTool).mockResolvedValue({ remote_name: "list_issues", removed: true });
+    show(connector({ vetted: 1, tools: [vetted()] }));
+
+    await screen.findByText("jira_list_issues");
+    await userEvent.click(screen.getByRole("button", { name: "Remove…" }));
+    expect(screen.getByText(/Agents that grant it cannot be used until they are edited/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(api.withdrawTool).toHaveBeenCalledWith("jira", "list_issues"));
+    expect(api.getConnector).toHaveBeenCalledTimes(2);
+  });
+
+  it("Edit on an MCP tool runs discovery and opens that tool's form on the last review", async () => {
+    vi.mocked(api.discover).mockResolvedValue({
+      ...DISCOVERED,
+      tools: [{ ...DISCOVERED.tools[0], name: "list_issues", vetted: true, local_name: "jira_list_issues" }],
+    });
+    show(connector({ vetted: 1, tools: [vetted({ effect: "read", note: "Read only, please." })] }));
+
+    await screen.findByText("jira_list_issues");
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    await waitFor(() => expect(api.discover).toHaveBeenCalledWith("jira"));
+    expect(await screen.findByLabelText(/^Note/)).toHaveValue("Read only, please.");
+    expect(screen.getByRole("button", { name: "Approve again" })).toBeInTheDocument();
+  });
+
+  it("Edit on a REST tool prefills the authoring form, which says the binding is re-entered", async () => {
+    show(
+      connector({
+        connector_id: "anthropic",
+        transport: "rest",
+        vetted: 1,
+        tools: [vetted({ name: "anthropic_chat", remote_name: "chat", effect: "write" })],
+      }),
+    );
+
+    await screen.findByText("anthropic_chat");
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(await screen.findByPlaceholderText("chat")).toHaveValue("chat");
+    expect(screen.getByText(/is already approved/)).toBeInTheDocument();
+  });
+
+  it("deregisters after naming what goes and what stays, and renders the 409 verbatim", async () => {
+    vi.mocked(api.deregisterConnector).mockRejectedValue(
+      new ApiError(409, "connector 'jira' in tenant 't' still holds 2 connected accounts."),
+    );
+    show(connector({ vetted: 2 }));
+
+    await screen.findByText("Deregister");
+    await userEvent.click(screen.getByRole("button", { name: "Deregister…" }));
+    expect(screen.getByText(/2 approved tools are withdrawn/)).toBeInTheDocument();
+    expect(screen.getByText(/the removal is declined and says how many/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Deregister" }));
+
+    expect(await screen.findByText(/still holds 2 connected accounts/)).toBeInTheDocument();
+    expect(api.deregisterConnector).toHaveBeenCalledWith("jira", false);
+  });
+
+  it("offers the way through the 409 only after the server has refused", async () => {
+    // *Disconnect everybody* is not a decision to put in front of somebody who has not
+    // been told it is needed, so the second button does not exist until the refusal.
+    vi.mocked(api.deregisterConnector).mockRejectedValueOnce(
+      new ApiError(409, "connector 'jira' in tenant 't' still holds 2 connected accounts."),
+    );
+    show(connector({ vetted: 2 }));
+
+    await screen.findByText("Deregister");
+    await userEvent.click(screen.getByRole("button", { name: "Deregister…" }));
+    expect(
+      screen.queryByRole("button", { name: "Disconnect everybody and deregister" }),
+    ).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Deregister" }));
+
+    const through = await screen.findByRole("button", {
+      name: "Disconnect everybody and deregister",
+    });
+    // And what it does not do is said before it is pressed.
+    expect(screen.getByText(/does not revoke anything at the provider/)).toBeInTheDocument();
+
+    vi.mocked(api.deregisterConnector).mockResolvedValueOnce({
+      connector_id: "jira", removed: true, disconnected: 2,
+    });
+    await userEvent.click(through);
+
+    expect(api.deregisterConnector).toHaveBeenLastCalledWith("jira", true);
+  });
+
+  it("offers no way through a refusal that is not about connected accounts", async () => {
+    vi.mocked(api.deregisterConnector).mockRejectedValue(
+      new ApiError(400, "there is no connector 'jira'."),
+    );
+    show(connector({ vetted: 2 }));
+
+    await screen.findByText("Deregister");
+    await userEvent.click(screen.getByRole("button", { name: "Deregister…" }));
+    await userEvent.click(screen.getByRole("button", { name: "Deregister" }));
+
+    expect(await screen.findByText(/there is no connector/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Disconnect everybody and deregister" }),
+    ).toBeNull();
   });
 });

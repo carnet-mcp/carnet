@@ -30,6 +30,7 @@ vi.mock("../../lib/api", async () => {
       createGroup: vi.fn(),
       deleteGroup: vi.fn(),
       addMember: vi.fn(),
+      findPerson: vi.fn(),
       removeMember: vi.fn(),
       linkGroup: vi.fn(),
     },
@@ -220,20 +221,125 @@ describe("membership", () => {
     ).toBeInTheDocument();
   });
 
-  it("takes a member by user id, the form the audit log shows", async () => {
+  it("takes a person by email, and shows who that is before Add (110f)", async () => {
+    // By address since plan 107 D10. The resolved name stands between Find and Add so
+    // the person added is the person meant — an address that resolves to somebody
+    // unexpected is caught on this line rather than in the audit log.
     vi.mocked(api.getGroup).mockResolvedValue(detail());
+    vi.mocked(api.findPerson).mockResolvedValue([
+      {
+        id: "u_sam",
+        email: "sam@example.com",
+        display_name: "Sam Ortiz",
+        status: "active",
+        issuer: "https://login.example.com",
+        external_id: "",
+        signed_in: true,
+        last_seen_at: "2026-09-01T10:00:00+00:00",
+      },
+    ]);
+    vi.mocked(api.addMember).mockResolvedValue({
+      group_id: "g-oncall",
+      kind: "user",
+      id: "u_sam",
+      changed: true,
+    });
     show();
 
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
+    expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
+    await userEvent.type(screen.getByLabelText("Email address"), "sam@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Find" }));
 
-    // By id and not by email, and that is a limit rather than a preference: a route
-    // resolving an address to a principal would be an enumeration oracle over the
-    // company directory. The screen says which id it wants and where to read it from.
-    expect(await screen.findByText(/The user ID, as shown in the audit log/)).toBeInTheDocument();
+    expect(await screen.findByText(/Sam Ortiz — sam@example.com/)).toBeInTheDocument();
+    expect(api.findPerson).toHaveBeenCalledWith("sam@example.com");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(api.addMember).toHaveBeenCalledWith("g-oncall", "user", "u_sam");
   });
 
-  it("reports a member who was already in the group", async () => {
+  it("says when nobody is known by that address, rather than adding nothing", async () => {
     vi.mocked(api.getGroup).mockResolvedValue(detail());
+    vi.mocked(api.findPerson).mockResolvedValue([]);
+    show();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Members" }));
+    await userEvent.type(screen.getByLabelText("Email address"), "nobody@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Find" }));
+
+    expect(
+      await screen.findByText(/Nobody here is known as nobody@example.com/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
+    expect(api.addMember).not.toHaveBeenCalled();
+  });
+
+  it("refuses to choose when two people are known by one address", async () => {
+    // A tenant may hold two identity providers since 110d, so one address can name two
+    // principals. Picking the first would be this screen deciding which of two people a
+    // group is about — a grant nobody notices is wrong until it is used.
+    vi.mocked(api.getGroup).mockResolvedValue(detail());
+    vi.mocked(api.findPerson).mockResolvedValue([
+      {
+        id: "u_one", email: "sam@example.com", display_name: "Sam A",
+        status: "active", issuer: "https://a.example.com", external_id: "",
+        signed_in: true, last_seen_at: "",
+      },
+      {
+        id: "u_two", email: "sam@example.com", display_name: "Sam B",
+        status: "active", issuer: "https://b.example.com", external_id: "",
+        signed_in: true, last_seen_at: "",
+      },
+    ]);
+    show();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Members" }));
+    await userEvent.type(screen.getByLabelText("Email address"), "sam@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Find" }));
+
+    expect(
+      await screen.findByText("2 people are known by that address"),
+    ).toBeInTheDocument();
+    // Named by the only thing that tells them apart, and by their providers.
+    expect(screen.getByText("u_one")).toBeInTheDocument();
+    expect(screen.getByText("https://b.example.com")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
+  });
+
+  it("still takes a scheduler by id, because it has no address", async () => {
+    vi.mocked(api.getGroup).mockResolvedValue(detail());
+    vi.mocked(api.addMember).mockResolvedValue({
+      group_id: "g-oncall",
+      kind: "system",
+      id: "nightly",
+      changed: true,
+    });
+    show();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Members" }));
+    await userEvent.selectOptions(screen.getByRole("combobox"), "system");
+    await userEvent.type(screen.getByLabelText("Scheduler id"), "nightly");
+    await userEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(api.addMember).toHaveBeenCalledWith("g-oncall", "system", "nightly");
+    expect(api.findPerson).not.toHaveBeenCalled();
+  });
+
+  it("reports a member who was already in the group, by the address they were found by", async () => {
+    vi.mocked(api.getGroup).mockResolvedValue(detail());
+    vi.mocked(api.findPerson).mockResolvedValue([
+      {
+        id: "u_sam",
+        email: "sam@example.com",
+        display_name: "",
+        status: "active",
+        issuer: "https://login.example.com",
+        external_id: "",
+        signed_in: true,
+        last_seen_at: "",
+      },
+    ]);
     vi.mocked(api.addMember).mockResolvedValue({
       group_id: "g-oncall",
       kind: "user",
@@ -243,13 +349,11 @@ describe("membership", () => {
     show();
 
     await userEvent.click(await screen.findByRole("button", { name: "Members" }));
-    await userEvent.type(
-      await screen.findByPlaceholderText("u_9311cad7b95c4592"),
-      "u_sam",
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Add" }));
+    await userEvent.type(screen.getByLabelText("Email address"), "sam@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Find" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Add" }));
 
-    expect(await screen.findByText("user:u_sam was already in this group.")).toBeInTheDocument();
+    expect(await screen.findByText("sam@example.com was already in this group.")).toBeInTheDocument();
   });
 });
 

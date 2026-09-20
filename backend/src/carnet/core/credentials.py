@@ -354,11 +354,29 @@ def for_discovery(
     look broken, because discovering anonymously on a broken credential would produce
     a tool list that does not match what a run would see.
     """
+    return discovery_source(connector_id, principal, env_var, ref)[0]
+
+
+def discovery_source(
+    connector_id: str,
+    principal,
+    env_var: str | None = None,
+    ref: str | None = None,
+) -> "tuple[Credential | None, str]":
+    """`for_discovery`'s answer, and **which** answer it is: `"connection"`, `"shared"`
+    or `"none"`. Plan 107 D5.
+
+    The screen above the Discover button says which credential the click will use, and
+    until this the only way to find out was to click and read the 401. Same lookups,
+    same order, same refusals — a broken connection still raises rather than falling
+    through to the shared credential — so the sentence the page shows before the dial
+    is the truth about the dial.
+    """
     delegated = _delegated_credential(connector_id, principal)
     if delegated is not None:
-        return delegated
-
-    return _shared_credential(connector_id, env_var, ref)
+        return delegated, "connection"
+    shared = _shared_credential(connector_id, env_var, ref)
+    return shared, ("shared" if shared is not None else "none")
 
 
 def for_session(

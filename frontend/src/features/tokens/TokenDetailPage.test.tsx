@@ -48,7 +48,7 @@ const SEARCH = {
   description: "List issues in a GitHub repository.",
   note: "",
   effect: "read" as const,
-  resources: [{ type: "github.repo" }],
+  resources: [{ type: "github.repo", families: [] }],
   identity: "service" as const,
   max_response_bytes: null,
   vetted_by: "",

@@ -13,7 +13,7 @@ import {
   Tag,
 } from "../../components/ui";
 import { api } from "../../lib/api";
-import type { GroupDetail, GroupSummary } from "../../lib/types";
+import type { GroupDetail, GroupSummary, PersonEntry } from "../../lib/types";
 import { useResource } from "../../lib/useResource";
 
 /** Group management, which has been routes-without-a-screen since 12b — deliberately.
@@ -438,14 +438,28 @@ function MemberList({
   );
 }
 
-/** Adding a member, by principal id.
+/** Adding a member: a person by email, a scheduler by id.
  *
- * **By id and not by email**, and that is a limit rather than a preference. `--group-add`
- * resolves an address by looking somebody up in `users`, which only answers for a person
- * who has logged in at least once — and there is no route that resolves an address to a
- * principal, because one would be an enumeration oracle over the company directory for
- * anybody authenticated in the tenant. So this screen takes what the audit log and the
- * share sheet both show, and the CLI keeps the wider form.
+ * **By email since 110f (plan 107 D10).** It was by id, and the docstring here called
+ * that a limit rather than a preference: a route resolving an address to a principal
+ * would be an enumeration oracle over the company directory for anybody authenticated
+ * in the tenant. The concern was about *anybody here*, and `GET /admin/users?email=`
+ * answers administrators only — who already read every id in the audit log. So the
+ * form takes the address a colleague is known by, **Find** resolves it, and the
+ * resolved name is shown before **Add** so the person added is the person meant. Exact
+ * address, no prefix search: a box that completes names over the directory is a
+ * different thing and nobody has asked for it.
+ *
+ * A person who has never signed in and was not sent by the directory has no row, and
+ * the lookup says so rather than inventing one — `--group-add` has the same edge, for
+ * the same reason.
+ *
+ * **Two people can be known by one address**, since a tenant may hold two identity
+ * providers (110d) and the same person may exist in both. The route returns both rather
+ * than choosing, and so does this: it names them by id and asks, because adding the
+ * wrong one of two principals is a grant nobody notices is wrong until it is used.
+ *
+ * A `system` member (a scheduler) still goes in by id: it has no address.
  *
  * A group may not be a member of a group. Refused by `check_principal_kind`, which has
  * permitted exactly `user` and `system` since 009 — so nesting is refused by a rule older
@@ -461,17 +475,58 @@ function AddMember({
   const groupId = group.group_id;
   const [kind, setKind] = useState(group.external_id ? "system" : "user");
   const [id, setId] = useState("");
+  const [email, setEmail] = useState("");
+  // The person `email` resolved to, or null until Find has answered. Cleared on every
+  // keystroke so the name shown is always the name of the address typed.
+  const [found, setFound] = useState<PersonEntry | null>(null);
+  // More than one row for one address. Not an error and not a choice this screen may
+  // make on somebody's behalf — see the docstring.
+  const [ambiguous, setAmbiguous] = useState<PersonEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
 
+  const find = () => {
+    setBusy(true);
+    setNote("");
+    setAmbiguous([]);
+    api
+      .findPerson(email.trim())
+      .then((people) => {
+        if (people.length === 0) {
+          setFound(null);
+          setNote(
+            `Nobody here is known as ${email.trim()}. A person has a row once they have ` +
+              "signed in, or once your directory has sent them.",
+          );
+          return;
+        }
+        if (people.length > 1) {
+          setFound(null);
+          setAmbiguous(people);
+          return;
+        }
+        setFound(people[0]);
+      })
+      .catch((cause: unknown) =>
+        setNote(cause instanceof Error ? cause.message : String(cause)),
+      )
+      .finally(() => setBusy(false));
+  };
+
   const add = () => {
+    const memberId = kind === "user" ? found?.id ?? "" : id.trim();
+    if (!memberId) return;
     setBusy(true);
     setNote("");
     api
-      .addMember(groupId, kind, id.trim())
+      .addMember(groupId, kind, memberId)
       .then((outcome) => {
-        if (!outcome.changed) setNote(`${kind}:${id.trim()} was already in this group.`);
+        const who = kind === "user" && found ? found.email || found.id : `${kind}:${memberId}`;
+        if (!outcome.changed) setNote(`${who} was already in this group.`);
         setId("");
+        setEmail("");
+        setFound(null);
+        setAmbiguous([]);
         onAdded();
       })
       .catch((cause: unknown) =>
@@ -482,9 +537,23 @@ function AddMember({
 
   return (
     <div className="inline-form">
-      <FieldGroup label="Add a member" hint="The user ID, as shown in the audit log.">
+      <FieldGroup
+        label="Add a member"
+        hint={
+          kind === "user"
+            ? "Their email address, exactly. Find shows who that is before you add them."
+            : "The scheduler's id."
+        }
+      >
         <div className="spread">
-          <select value={kind} onChange={(e) => setKind(e.target.value)}>
+          <select
+            value={kind}
+            onChange={(e) => {
+              setKind(e.target.value);
+              setFound(null);
+              setNote("");
+            }}
+          >
             {/* A person cannot be hand-added to a directory-backed group: the next
                 sign-in would undo it. The option is absent rather than disabled,
                 because the server refuses it and an offer it refuses is the control
@@ -493,16 +562,79 @@ function AddMember({
             {!group.external_id && <option value="user">user</option>}
             <option value="system">system</option>
           </select>
-          <input
-            value={id}
-            placeholder="u_9311cad7b95c4592"
-            onChange={(e) => setId(e.target.value)}
-          />
-          <Button busy={busy} disabled={!id.trim()} onClick={add}>
-            Add
-          </Button>
+          {kind === "user" ? (
+            <>
+              <input
+                type="email"
+                value={email}
+                placeholder="sam@example.com"
+                aria-label="Email address"
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setFound(null);
+                  setAmbiguous([]);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && email.trim()) {
+                    e.preventDefault();
+                    find();
+                  }
+                }}
+              />
+              {found ? (
+                <Button kind="primary" busy={busy} onClick={add}>
+                  Add
+                </Button>
+              ) : (
+                <Button busy={busy} disabled={!email.trim()} onClick={find}>
+                  Find
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              <input
+                value={id}
+                placeholder="nightly"
+                aria-label="Scheduler id"
+                onChange={(e) => setId(e.target.value)}
+              />
+              <Button busy={busy} disabled={!id.trim()} onClick={add}>
+                Add
+              </Button>
+            </>
+          )}
         </div>
       </FieldGroup>
+      {ambiguous.length > 0 && (
+        // Named by id, because that is the only thing that tells them apart — and it is
+        // the form the audit log shows, so an administrator can go and look.
+        <Notice tone="warn" title={`${ambiguous.length} people are known by that address`}>
+          <p className="sentence">
+            Two identity providers can both hold one address. Add the one you mean by its
+            id, from the shell: <span className="mono">carnet --group-add</span>.
+          </p>
+          <ul className="sentence">
+            {ambiguous.map((person) => (
+              <li key={person.id}>
+                <span className="mono">{person.id}</span>
+                {person.display_name ? ` — ${person.display_name}` : ""} · signed in
+                through <span className="mono">{person.issuer}</span>
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      )}
+      {found && (
+        // The resolved person, before Add: the name where there is one, the address it
+        // was found by, and the id the log will show — so what Add does is never a
+        // surprise, and an address that resolved to the wrong person is caught here.
+        <p className="sentence">
+          {found.display_name ? `${found.display_name} — ` : ""}
+          {found.email} <span className="mono muted">({found.id})</span>
+          {found.status === "disabled" ? ", currently cut off" : ""}.
+        </p>
+      )}
       {group.external_id && (
         <p className="muted">
           Members of this group come from your directory. Add people to{" "}

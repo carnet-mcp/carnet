@@ -21,12 +21,17 @@ vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
-    api: { listConnections: vi.fn(), startConnect: vi.fn(), disconnect: vi.fn() },
+    api: {
+      listConnections: vi.fn(),
+      startConnect: vi.fn(),
+      disconnect: vi.fn(),
+      testConnection: vi.fn(),
+    },
   };
 });
 
 import ConnectionsPage from "./ConnectionsPage";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import { CONSENT_MESSAGE } from "../../lib/consentWindow";
 import type { ConnectionSummary } from "../../lib/types";
 
@@ -46,6 +51,7 @@ function row(overrides: Partial<ConnectionSummary> = {}): ConnectionSummary {
     reconsent_reason: "",
     scopes: [],
     scope_notes: {},
+    used_by: [],
     ...overrides,
   };
 }
@@ -119,7 +125,7 @@ describe("the three states", () => {
     show([row({ connector_id: "linear", state: "unavailable" })]);
 
     expect(
-      await screen.findByText("Sign-in for linear has not been set up."),
+      await screen.findByText("Your administrator has not set up sign-in for linear."),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
@@ -129,8 +135,95 @@ describe("the three states", () => {
     show([row({ state: "unavailable" })]);
 
     expect(
-      await screen.findByText("Sign-in for jira has not been set up."),
+      await screen.findByText("Your administrator has not set up sign-in for jira."),
     ).toBeTruthy();
+  });
+});
+
+describe("what depends on a connection, and whether it works (plan 107 D11)", () => {
+  it("names the agents that act as this person here, each a link", async () => {
+    show([row({ state: "connected", account_label: "priya@example.com", used_by: ["triage", "filer"] })]);
+
+    expect(await screen.findByText(/Used by/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "triage" })).toHaveAttribute("href", "/agents/triage");
+    expect(screen.getByRole("link", { name: "filer" })).toHaveAttribute("href", "/agents/filer");
+  });
+
+  it("says nothing about use when nothing depends on the row", async () => {
+    show([row({ state: "connected", account_label: "priya@example.com" })]);
+    await screen.findByText("Connected as priya@example.com.");
+
+    expect(screen.queryByText(/Used by/)).toBeNull();
+  });
+
+  it("offers Test beside Disconnect, and says what the account can reach", async () => {
+    vi.mocked(api.testConnection).mockResolvedValue({
+      server: "jira-mcp v2.3.0",
+      tools: 14,
+      approved: ["jira_search_issues", "jira_create_issue"],
+      missing: [],
+    });
+    show([row({ state: "connected", account_label: "priya@example.com" })]);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Test" }));
+
+    expect(
+      await screen.findByText(
+        "Connected as priya@example.com. jira-mcp v2.3.0 offers 14 tools. " +
+          "You can reach jira_search_issues, jira_create_issue.",
+      ),
+    ).toBeInTheDocument();
+    expect(api.testConnection).toHaveBeenCalledWith("jira");
+  });
+
+  it("says when the server offers tools but none is approved here", async () => {
+    vi.mocked(api.testConnection).mockResolvedValue({
+      server: "jira-mcp v2.3.0", tools: 14, approved: [], missing: [],
+    });
+    show([row({ state: "connected", account_label: "priya@example.com" })]);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Test" }));
+
+    expect(
+      await screen.findByText(/None of them is approved for use here yet/),
+    ).toBeInTheDocument();
+  });
+
+  it("says which approvals the server has stopped offering, which nothing else says", async () => {
+    // The connection works and something else is wrong: an agent granting one of these
+    // is refused at the door, and no other screen explains that.
+    vi.mocked(api.testConnection).mockResolvedValue({
+      server: "jira-mcp v2.3.0",
+      tools: 13,
+      approved: ["jira_search_issues"],
+      missing: ["jira_create_issue"],
+    });
+    show([row({ state: "connected", account_label: "priya@example.com" })]);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Test" }));
+
+    expect(
+      await screen.findByText("Approved here, but no longer offered"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/will be refused/)).toBeInTheDocument();
+  });
+
+  it("renders the server's own sentence when the account no longer works", async () => {
+    vi.mocked(api.testConnection).mockRejectedValue(
+      new ApiError(502, "jira did not answer: 401 Unauthorized"),
+    );
+    show([row({ state: "connected", account_label: "priya@example.com" })]);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Test" }));
+
+    expect(await screen.findByText("jira did not answer: 401 Unauthorized")).toBeInTheDocument();
+  });
+
+  it("offers no Test on a row that is not connected", async () => {
+    show([row()]);
+    await screen.findByRole("button", { name: "Connect" });
+
+    expect(screen.queryByRole("button", { name: "Test" })).toBeNull();
   });
 });
 
@@ -696,7 +789,7 @@ describe("what the connector asks for, and what that is not", () => {
   it("says nothing when there is no OAuth app to ask anything", async () => {
     show([row({ connector_id: "linear", state: "unavailable", scopes: [] })]);
 
-    await screen.findByText("Sign-in for linear has not been set up.");
+    await screen.findByText("Your administrator has not set up sign-in for linear.");
     expect(screen.queryByText(/asked for/)).toBeNull();
   });
 });

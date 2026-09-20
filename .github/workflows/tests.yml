@@ -1,7 +1,9 @@
-# The test suite, on every push and every pull request.
+# The test suite, on every push, every pull request, and once a week whether or not
+# anything was pushed.
 #
-# Nine jobs, because the suite has that many honest configurations and they answer
-# different questions:
+# Nine test jobs, because the suite has that many honest configurations and they answer
+# different questions, and a tenth (`red`, at the bottom) that is not a test and runs
+# only when one of the nine has failed where somebody ought to hear about it:
 #
 #   versions  every place that states the version states the same one (step 073):
 #             the package, the newest released changelog heading, four places in the
@@ -80,6 +82,21 @@
 #             have been caught by the lint that arrived in 035m either. That step is the
 #             smallest of the four: `tsconfig` already carries `strict` and the unused
 #             checks, so eslint here is the hook rules and nothing else.
+#
+#   red       not a test. Step 110, decision 12: on 2026-09-10 the public repository's
+#             gate went red on a push to `main` — the missing `harness` extra that
+#             step 109 diagnosed — and stayed red for four days, because every job
+#             here ran perfectly and nothing read the result. A red check on a commit
+#             page is seen by whoever happens to open that page. This job runs when
+#             any of the nine has failed on `main` or on a tag, and opens an issue
+#             titled for the ref and the commit — or comments on the open one, so a
+#             gate that stays red is one issue with a growing thread rather than one
+#             issue per push. An issue rather than a notification setting because a
+#             setting is per-person and leaves with that person; an issue is the
+#             repository's own and everybody watching it sees it. It carries the one
+#             permission (`issues: write`) the rest of this file deliberately lacks,
+#             scoped to itself, and never runs on a pull request, so a fork's PR gets
+#             nothing it could not get before.
 
 name: tests
 
@@ -91,6 +108,14 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  # Weekly, on `main`, whether or not anything was pushed (step 110, decision 12). The
+  # gate only runs when something moves, and a published repository can go a month
+  # without a push while the world moves under it — a yanked dependency, a base image
+  # with a new advisory, an external name a harness dials. This catches decay; the
+  # `red` job below catches a red push; neither substitutes for the other. Monday,
+  # early UTC, so a red week is read on a working day.
+  schedule:
+    - cron: "17 6 * * 1"
 
 jobs:
   versions:
@@ -653,3 +678,91 @@ jobs:
         # The build is a test: `tsc -b` runs first, and a bundle that will not build is
         # a deploy that fails after the backend has already shipped.
         run: npm run build
+
+  client:
+    name: client (carnet-mcp, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor the client's pyproject claims, and what it is developed on. A claim
+        # nothing checks is a claim that stops being true — the `fast` job's reason.
+        python: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: client/pyproject.toml
+
+      - name: Install
+        working-directory: client
+        # Its own virtualenv, its own dependency list: the client must not inherit the
+        # server's environment, or a bare `pip install carnet-mcp` on a customer's box
+        # would be the first time it ran without one. `langchain` too, so that adapter's
+        # tests run rather than skip here; the other three frameworks are heavier than
+        # this job should be and their adapter tests skip themselves, by design.
+        run: pip install -e ".[dev,langchain]"
+
+      - name: Run the suite
+        working-directory: client
+        run: pytest -q
+
+      - name: Fail if the LangChain adapter test skipped
+        working-directory: client
+        # The one framework this job installs. A skip here means the extra did not
+        # install, and a green build that tested no adapter is worse than a red one.
+        run: |
+          if pytest -q tests/test_adapters.py -k langchain 2>&1 | tail -1 | grep -q "skipped"; then
+            echo "::error::the LangChain adapter tests skipped — the extra did not install."
+            exit 1
+          fi
+
+      - name: Build the distribution
+        working-directory: client
+        # What `release-client.yml` publishes, built on every run so a broken
+        # `pyproject.toml` is found here and not on the tag.
+        run: |
+          pip install build
+          python -m build
+          ls -l dist/
+
+  red:
+    name: the gate is red where somebody should hear it
+    # Every test job, so `failure()` below sees all ten. Listed rather than
+    # discovered because there is no way to say "everything else" in this syntax, and
+    # a job added without being listed here is a job whose failure goes unread — the
+    # same defect this job exists for, one level down. `test_workflows.py` holds the
+    # two lists together.
+    needs: [versions, lint, fast, postgres, upgrade, browser, deploy, supply-chain, frontend, client]
+    # `failure()` is true when any job in `needs` failed. Only on `main` or a tag —
+    # a scheduled run's ref is `main`, so decay is caught too — and never on a pull
+    # request, whose red is the contributor's to read and whose token, from a fork,
+    # could not write an issue anyway.
+    if: failure() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      # Needed now that the decision is a file in the repository rather than inline
+      # YAML — and it is the reason `contents: read` is in the permissions above.
+      - uses: actions/checkout@v7
+
+      - name: Open an issue, or add to the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The nine results, as JSON, so the issue names which job went red rather
+          # than making the reader open the run to find out.
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+        # The decision itself is `.github/scripts/report-red.sh`, so that the one part
+        # of the gate that reports on the gate is a thing the gate can run: a notifier
+        # nobody has seen fire is a notifier nobody should trust, and inline YAML cannot
+        # be executed by a test. `test_workflows.py` drives it against a stubbed `gh`.
+        run: .github/scripts/report-red.sh

@@ -490,9 +490,19 @@ class ResourceType(BaseModel):
 
     So the object has one field today and is a place for a display name to arrive
     later, rather than a string that would have to become an object to gain one.
+
+    **`families` is the second field, and it is the opposite kind of fact** (step 110,
+    decision 7). `args` and `template` are *how one server names a thing*, which policy
+    must never learn. A family is *what a scope line may say* — `haiku` for a model
+    type, declared by the vetter in step 086 precisely so a grant can name it instead
+    of a dated id. That is the vocabulary a client writing a scope needs, not the
+    coupling the type exists to prevent; withholding it made the browser the one place
+    a family could be neither read nor written. Unioned across a tool's resources of
+    one type, in declaration order, the way the types themselves are deduplicated.
     """
 
     type: str
+    families: list[str] = Field(default_factory=list)
 
 
 class ToolSummary(BaseModel):
@@ -602,6 +612,31 @@ class ScopeNote(BaseModel):
     access: Literal["read", "write"]
 
 
+class ConnectionTest(BaseModel):
+    """`POST /connectors/{id}/connection/test` — the server answered `tools/list` under
+    the caller's own connected account. Nothing is written and no tool is called.
+    Plan 107 D11.
+
+    **A count of what the server offers, and names only for what this tenant approved.**
+    The count answers *is my account working*; the names answer *what can I reach*, and
+    they are the approved tools — already on everybody's catalogue — rather than the
+    server's whole surface, which a person who is not an administrator has no business
+    reading off somebody else's button. The first shape of this answered the count
+    alone, and the count alone cannot tell a working account from one whose approvals
+    have gone stale.
+    """
+
+    server: str
+    # How many tools the server advertised, approved here or not.
+    tools: int
+    # Approved here and still offered by the server: what this account can reach.
+    approved: list[str]
+    # Approved here and **no longer offered**. Not a failure of the connection and not
+    # silent either: an agent granting one of these meets a refusal at the door, and the
+    # only other way to find out is to be refused.
+    missing: list[str]
+
+
 class ConnectionSummary(BaseModel):
     """One row of the Connections page: a connector, and where this person stands with it.
 
@@ -644,6 +679,9 @@ class ConnectionSummary(BaseModel):
     # to whoever typed it for a pasted one. 7a's README flagged that distinction as a
     # known weakness and predicted 7b would fix half of it; it did — see
     # `oauth._account_label`, including what "verified" does and does not mean there.
+    # The agents the caller may use whose tools act as *them* on this connector — the
+    # `ConnectionNotice` on an agent's page, inverted (plan 107 D11). Empty when none.
+    used_by: list[str]
     account_label: str
 
     # `static` | `oauth` | `''` when not connected. Rendered, because the two are
@@ -825,6 +863,9 @@ class AdminRecord(BaseModel):
     log holds. `--admin-log` prints it the same way, unstructured, for the same reason.
     """
 
+    # The row's sequence number (110f, plan 107 D10): the cursor a log page turns —
+    # `?before=<id>` returns the rows older than it — and the key a row is rendered by.
+    id: int
     v: int
     ts: str
     actor_kind: str
@@ -864,6 +905,9 @@ class DenialRecord(BaseModel):
     is a 500 over a correct record.
     """
 
+    # The row's sequence number (110f, plan 107 D10): the cursor a log page turns —
+    # `?before=<id>` returns the rows older than it — and the key a row is rendered by.
+    id: int
     v: int
     ts: str
     principal_kind: str
@@ -906,6 +950,9 @@ class DoorCallRecord(BaseModel):
     upgrade it.
     """
 
+    # The row's sequence number (110f, plan 107 D10): the cursor a log page turns —
+    # `?before=<id>` returns the rows older than it — and the key a row is rendered by.
+    id: int
     v: int
     ts: str
     # The `door-<hex>` correlation id. Carried rather than hidden: it is what ties this
@@ -1083,6 +1130,147 @@ class HostEntry(BaseModel):
     # Computed per read rather than stored, because the rule is code and a stored copy of
     # a rule is a rule that goes stale. See `egress.approval_warning`.
     warning: str = ""
+
+
+# --- identity providers, step 110 decision 5 ------------------------------------------
+
+
+class IdpEntry(BaseModel):
+    """One registered identity provider, as `--list-idps` prints it and the screen shows
+    it. Every column of the row: nothing on it is a secret — a JWKS URL is public by
+    construction and an audience is the client id a browser already carries."""
+
+    issuer: str
+    jwks_uri: str
+    audience: str
+    # Together or not at all — `normalize_idp`'s rule. `None` means the whole issuer
+    # routes to this tenant.
+    discriminator_claim: str | None = None
+    discriminator_value: str | None = None
+    subject_claim: str = "sub"
+    email_claim: str = "email"
+    groups_claim: str | None = None
+    allowed_domains: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
+class IdpRequest(BaseModel):
+    """`POST /admin/idps`. The nine flags of `--add-idp`, as a body.
+
+    **Shape only.** Every rule about what a valid provider *is* — the three required
+    fields, the discriminator pair, the JWKS address, the wildcard domain that only the
+    local provider may claim — lives in `storage.normalize_idp`, which both stores run
+    before every write and the CLI reaches through the same call. A second copy here
+    would be a second opinion about what a valid issuer is, and the two would disagree on
+    the day somebody fixed one. So this refuses nothing the normaliser would not, and its
+    refusals arrive as 400s carrying the normaliser's own sentence.
+
+    An upsert, exactly as `--add-idp` is: registering an issuer this tenant already has
+    replaces the row, claim mappings and all. The CLI prints the mapping it wrote for
+    that reason, and the screen shows the row it replaced.
+    """
+
+    issuer: str = Field(min_length=1)
+    jwks_uri: str = Field(min_length=1)
+    audience: str = Field(min_length=1)
+    discriminator_claim: str | None = None
+    discriminator_value: str | None = None
+    subject_claim: str = "sub"
+    email_claim: str = "email"
+    groups_claim: str | None = None
+    allowed_domains: list[str] = Field(default_factory=list)
+
+
+class IdpRegistered(BaseModel):
+    """What `POST /admin/idps` recorded — the row as it now stands, plus whether one
+    stood there before, because an upsert that silently replaced a claim mapping is the
+    trap `--add-idp`'s own output was written against."""
+
+    provider: IdpEntry
+    replaced: bool
+
+
+class IdpRemoved(BaseModel):
+    issuer: str
+    discriminator_value: str | None = None
+    # Whether a row was there. Idempotent, like the host revoke, and reported for the
+    # same reason: an administrator who cannot tell "removed" from "was never there"
+    # cannot tell a working control from a stale screen.
+    removed: bool
+
+
+class IdpDiscoveryRequest(BaseModel):
+    """`POST /admin/idps/discover`. An issuer, and nothing else: the document is at a
+    fixed path under it (`/.well-known/openid-configuration`), which is how the browser's
+    own sign-in finds its endpoints."""
+
+    issuer: str = Field(min_length=1)
+
+
+class IdpDiscovered(BaseModel):
+    """What the provider says about itself, reduced to what the form needs. The issuer
+    comes back as the document spells it — a token's `iss` must match that byte for
+    byte, and a discovery document whose issuer is not the URL it was fetched under is
+    refused rather than corrected."""
+
+    issuer: str
+    jwks_uri: str
+    # Which claims the provider says it emits, so a person choosing `email_claim` or
+    # `groups_claim` picks from a list rather than from memory. Empty when the document
+    # does not say, which is allowed by the spec and common.
+    claims_supported: list[str] = Field(default_factory=list)
+
+
+# --- people and platform roles, step 110 decisions 3 and 4 ------------------------------
+
+
+class PersonEntry(BaseModel):
+    """One person in the tenant, as `--list-users` prints them.
+
+    `signed_in` is derived from `last_seen_at` and carried as its own flag because it is
+    the question the row is read for: a person the directory pushed who has not yet
+    arrived (071) has a row and has never been here, and that is the one row worth
+    noticing on a page about who is in the tenant.
+    """
+
+    id: str
+    email: str = ""
+    display_name: str = ""
+    status: str
+    issuer: str
+    # The directory's own identifier, when a push created or claimed the row. Empty
+    # for somebody who arrived by signing in.
+    external_id: str = ""
+    signed_in: bool
+    last_seen_at: str = ""
+
+
+class PersonStatus(BaseModel):
+    """What `POST /admin/users/{id}/disable` or `/enable` did. `changed` is false when
+    the person was already in that state — the seam writes no record for a restatement,
+    and the screen should not say *disabled* about somebody it did not disable."""
+
+    id: str
+    email: str = ""
+    status: str
+    changed: bool
+
+
+class RoleEntry(BaseModel):
+    """One platform role row, joined to the person it names so a reader sees an
+    address rather than an id. `granted_by` is a principal string as the log records
+    it — `system:bootstrap` for the first administrator, `system:cli` for a shell grant
+    — and it is left that way, because who appointed an administrator is a fact about
+    a principal, not a display name."""
+
+    principal: str
+    kind: str
+    id: str
+    email: str = ""
+    display_name: str = ""
+    role: str
+    granted_by: str = ""
+    granted_at: str = ""
 
 
 class HostRequest(BaseModel):
@@ -1309,7 +1497,11 @@ class ConnectorRequest(BaseModel):
     # MCP server, the only kind that existed before; `rest` is a plain REST API whose
     # tools are vetted with authored bindings rather than discovered. Defaulted so
     # every existing caller means what it meant.
-    kind: Literal["http", "rest"] = "http"
+    # `None` rather than `"http"` so *not supplied* is representable — the same reason
+    # the CLI's `--kind` defaults to None (step 068): a preset that says `rest` must
+    # win over a body that says nothing, and could never win over a body that always
+    # said `http`. Resolved to `http` at registration when nothing supplies it.
+    kind: Literal["http", "rest"] | None = None
     # The environment variable this server's credential is presented in. Named on the
     # manifest rather than guessed, so `core/credentials.py` is told where to read and
     # never learns what an MCP server is.
@@ -1389,6 +1581,15 @@ class VettedTool(BaseModel):
     # anything `--seed` wrote, because it contacted no server, and empty is what that says.
     server_name: str = ""
     server_version: str = ""
+    # What this vendor's models cost, as the approval recorded it — the `pricing` half of
+    # a REST binding (step 086), read back so the screen that shows an approval can show
+    # its price (step 110, decision 7). The rest of the binding — method, path, schema,
+    # mapping — stays unreturned on purpose; `AuthorTool`'s own comment says why a form
+    # that looked pre-filled would be worse than one that says it is not. A price is
+    # different: it is a fact somebody reads, not a mapping somebody re-submits, and
+    # an approval whose price is invisible is one that gets re-vetted at list price.
+    # `None` on an MCP tool and on a REST tool vetted without one.
+    pricing: dict | None = None
 
 
 class ConnectorSummary(BaseModel):
@@ -1428,6 +1629,39 @@ class ConnectorSummary(BaseModel):
     # this server's tools. On the list row because "which of our connectors accept
     # asserted identity" is the question a security review asks of this screen.
     allow_asserted_identity: bool = False
+    # The preset this connector was registered from, or `""` — migration 056, plan 107
+    # D6. A screen seeds the OAuth form from the preset's block when the connector has
+    # no consent flow of its own yet; a stale id reads as a preset this build no longer
+    # ships, never as an error.
+    from_recipe: str = ""
+
+
+class DiscoveryCredential(BaseModel):
+    """`GET /admin/connectors/{id}/discovery-credential` — which credential a Discover
+    would use, said before the click and without dialling. Plan 107 D5. `connection` is
+    the caller's own connected account, `shared` the connector's credential
+    (environment variable or vault reference), `none` an anonymous dial."""
+
+    credential: Literal["connection", "shared", "none"]
+    # The variable name or the vault reference for `shared`; never a value.
+    shared_via: str = ""
+
+
+class ToolWithdrawn(BaseModel):
+    remote_name: str
+    # Whether an approval was there. Idempotent, and reported for the host revoke's
+    # reason: an administrator who cannot tell "withdrawn" from "was never approved"
+    # cannot tell a working control from a stale screen.
+    removed: bool
+
+
+class ConnectorDeregistered(BaseModel):
+    connector_id: str
+    removed: bool
+    # How many people's connections went with it, which is 0 unless the caller asked
+    # for them to. Reported rather than assumed, because the number is the part an
+    # administrator has to tell people about: nothing is revoked at the provider.
+    disconnected: int = 0
 
 
 class ConnectorDetail(ConnectorSummary):
@@ -1495,6 +1729,8 @@ class DiscoveryResult(BaseModel):
     server: str
     tools: list[DiscoveredTool] = Field(default_factory=list)
     findings: list[DiscoveryFinding] = Field(default_factory=list)
+    # Which credential the dial used — plan 107 D5, `DiscoveryCredential`'s vocabulary.
+    credential: Literal["connection", "shared", "none"] = "none"
 
 
 class ResourceSpec(BaseModel):
@@ -1732,6 +1968,17 @@ class MintToken(BaseModel):
     name: str
     acts_as_owner: bool = True
     expires_days: int | None = Field(default=None, ge=1)
+    # Plan 107 D9. A service token minted from an agent's page can be granted that agent
+    # in the same request, so the five-screen loop — mint, go back to the agent, share,
+    # copy the id, paste — is one act. `grants.share`'s own rule applies unchanged: the
+    # caller must be an editor of the agent. Refused with a sentence on a personal token,
+    # which needs no grant and takes none.
+    grant: "TokenGrant | None" = None
+
+
+class TokenGrant(BaseModel):
+    agent: str = Field(min_length=1)
+    role: Literal["user", "editor"] = "user"
 
 
 class MintedToken(OwnedToken):

@@ -170,6 +170,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
               <SideLink to="/admin/denials" icon="denied" label="Access denied" />
               <SideLink to="/admin/groups" icon="groups" label="Groups" />
               <SideLink to="/admin/connectors" icon="connectors" label="Connectors" />
+              {/* 110. Last in the group on purpose: it is the first thing in an
+                  administrator's hour and the thing touched least often afterwards, and
+                  the rail is read top-down by how often a row is aimed at. */}
+              <SideLink to="/admin/idps" icon="identity" label="Identity providers" />
+              {/* 110 D3, D4. People — who is here, who is cut off — and the read-only
+                  roles page, in that order: offboarding is the act an operations team
+                  reaches for; reading who administers is the question they ask first. */}
+              <SideLink to="/admin/people" icon="people" label="People" />
+              <SideLink to="/admin/roles" icon="roles" label="Administrators" />
             </div>
           )}
         </nav>

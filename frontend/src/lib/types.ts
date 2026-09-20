@@ -184,6 +184,12 @@ export interface AgentCreated {
  *  build a scope out of them, which is the coupling the type exists to prevent. */
 export interface ResourceType {
   type: string;
+  /** The families this type's ids divide into — `haiku`, `sonnet` for a model type —
+   *  declared at vetting time (086) and returned since 110 so a scope line can be written
+   *  with the words it may say. The argument names still are not returned: a family is
+   *  what a scope may *name*, an argument is how one server *composes* the id, and only
+   *  the second is the coupling this type exists to prevent. Empty for nearly every type. */
+  families: string[];
 }
 
 /** One tool this tenant may grant.
@@ -248,6 +254,9 @@ export type IdentitySource = "verified" | "asserted" | "none";
  *  server drops them at `api/schemas.DoorCallRecord`. This file mirrors the wire, and
  *  the wire does not carry them. */
 export interface DoorCallRecord {
+  /** The store's own sequence number (110f, plan 107 D10): the key a row is rendered
+   *  by, and the cursor a page turns — `?before=<id>` asks for the rows older than it. */
+  id: number;
   v: number;
   ts: string;
   /** The `door-<hex>` correlation id. Carried rather than hidden: it is what ties this
@@ -357,6 +366,24 @@ export interface ConnectionSummary {
    *  describing somebody else's permission from a guess. Carries the same caveat as
    *  `scopes`: what a consent flow would ask for now, not what anybody granted. */
   scope_notes: Record<string, ScopeNote>;
+  /** The agents this person may use whose tools act as *them* on this connector — the
+   *  `ConnectionNotice` on an agent's page, inverted (plan 107 D11). Empty when nothing
+   *  depends on the row, which is the honest answer rather than a missing key. */
+  used_by: string[];
+}
+
+/** `POST /connectors/{id}/connection/test` — the server answered `tools/list` under this
+ *  person's own connected account. A count and the server's label; nothing was written
+ *  and no tool was called. Plan 107 D11. */
+export interface ConnectionTest {
+  server: string;
+  /** How many tools the server advertised, approved here or not. */
+  tools: number;
+  /** Approved here and still offered: what this account can reach. */
+  approved: string[];
+  /** Approved here and no longer offered — an agent granting one of these meets a
+   *  refusal at the door, and this is the only place that says why. */
+  missing: string[];
 }
 
 /** `POST /connectors/{id}/connect` — a URL to navigate to, and nothing else.
@@ -413,6 +440,9 @@ export interface Me {
  *  one the server never agreed to, then failing to render a record the log holds. The
  *  screen prints its keys, exactly as `--admin-log` does. */
 export interface AdminRecord {
+  /** The store's own sequence number (110f, plan 107 D10): the key a row is rendered
+   *  by, and the cursor a page turns — `?before=<id>` asks for the rows older than it. */
+  id: number;
   v: number;
   ts: string;
   actor_kind: string;
@@ -443,6 +473,9 @@ export interface AdminRecord {
  *  `editor`. A default would make this type invent *"they held nothing"* about somebody
  *  in an incident record. */
 export interface DenialRecord {
+  /** The store's own sequence number (110f, plan 107 D10): the key a row is rendered
+   *  by, and the cursor a page turns — `?before=<id>` asks for the rows older than it. */
+  id: number;
   v: number;
   ts: string;
   principal_kind: string;
@@ -666,6 +699,11 @@ export interface VettedTool {
    *  anything vetted without contacting a server, and empty is what that says. */
   server_name: string;
   server_version: string;
+  /** The price this approval recorded, alone out of the REST binding (110). A fact to
+   *  read — so an approval's price is visible and a re-vet does not drop to list price
+   *  unnoticed — where the request mapping is a thing to re-author, which `AuthorTool`
+   *  says it cannot prefill. `null` on an MCP tool and on a REST tool vetted without one. */
+  pricing: Record<string, Record<string, number>> | null;
 }
 
 /** One registered connector, as an administration list row.
@@ -695,6 +733,10 @@ export interface ConnectorSummary {
    *  connectors accept asserted identity" is the question a security review asks of
    *  this list. */
   allow_asserted_identity: boolean;
+  /** The preset this connector was registered from, or `""` (migration 056, 107 D6).
+   *  The OAuth form seeds from the preset's block when the connector has no consent
+   *  flow of its own yet; a stale id reads as a preset this build no longer ships. */
+  from_recipe: string;
 }
 
 export interface ConnectorDetail extends ConnectorSummary {
@@ -735,6 +777,31 @@ export interface DiscoveryResult {
   server: string;
   tools: DiscoveredTool[];
   findings: DiscoveryFinding[];
+  /** Which credential the dial used (107 D5): the caller's own connected account, the
+   *  connector's shared credential, or none. */
+  credential: "connection" | "shared" | "none";
+}
+
+/** `GET /admin/connectors/{id}/discovery-credential` — which credential a Discover
+ *  *would* use, said before the click and without dialling, through the same lookup the
+ *  dial makes. `shared_via` is the variable name or vault reference, never a value. */
+export interface DiscoveryCredential {
+  credential: "connection" | "shared" | "none";
+  shared_via: string;
+}
+
+export interface ToolWithdrawn {
+  remote_name: string;
+  removed: boolean;
+}
+
+export interface ConnectorDeregistered {
+  connector_id: string;
+  removed: boolean;
+  /** How many people's connections went with it — 0 unless the caller asked for them
+   *  to. Nothing is revoked at the provider, so this is the number of people who have
+   *  to be told to revoke there. */
+  disconnected: number;
 }
 
 /** A resource, as the vetting form sends it — **structured, never the CLI's `TYPE=ARG`.**
@@ -746,6 +813,10 @@ export interface ResourceSpec {
   type: string;
   args: string[];
   template?: string | null;
+  /** Optional — the families this type's ids divide into, so a scope can say `haiku`
+   *  rather than a dated id. Only meaningful where a vendor's identifiers have families;
+   *  the CLI's `--resource-family`, structured. Omitted rather than sent empty. */
+  families?: string[];
 }
 
 /** How to make one REST tool's request — step 045a, and what discovery would have
@@ -764,6 +835,13 @@ export interface RestBindingSpec {
   /** Where token usage lives in this API's answers, by dotted path. Optional, and only
    *  a model connector has ever needed it. */
   usage_map?: Record<string, string> | null;
+  /** What this vendor's models cost, USD per million tokens, keyed by model-id fragment
+   *  with all four rates (`input`, `output`, `cache_read`, `cache_write`) — 086's
+   *  `--pricing`, beside `usage_map` because it is the same kind of fact about the same
+   *  vendor written by the same person. The four-rate rule is the server's
+   *  (`check_rate_table`) and its refusals are sentences; the form checks only that this
+   *  is a JSON object. */
+  pricing?: Record<string, Record<string, number>> | null;
 }
 
 export interface VetRequest {
@@ -1488,4 +1566,107 @@ export interface OAuthConsent {
   resource: string | null;
   scope: string | null;
   token_name: string | null;
+}
+
+// --- identity providers, step 110 ---------------------------------------------------
+
+/** One registered identity provider — every column of the row, as `--list-idps` prints
+ *  it. Nothing here is a secret: a JWKS URL is public by construction and the audience is
+ *  the client id the browser itself carries. */
+export interface IdpEntry {
+  issuer: string;
+  jwks_uri: string;
+  audience: string;
+  /** Together or not at all. `null` means the whole issuer routes to this tenant; a
+   *  pair means only tokens carrying `claim=value` do — Google Workspace's `hd`. */
+  discriminator_claim: string | null;
+  discriminator_value: string | null;
+  subject_claim: string;
+  email_claim: string;
+  groups_claim: string | null;
+  allowed_domains: string[];
+  enabled: boolean;
+}
+
+/** `POST /admin/idps` — the nine flags of `--add-idp`, as a body. **Shape only**: every
+ *  rule about what a valid provider is lives in the server's one normaliser and arrives
+ *  as a 400 carrying its sentence, so this form pre-empts nothing. */
+export interface IdpRequest {
+  issuer: string;
+  jwks_uri: string;
+  audience: string;
+  discriminator_claim?: string | null;
+  discriminator_value?: string | null;
+  subject_claim?: string;
+  email_claim?: string;
+  groups_claim?: string | null;
+  allowed_domains?: string[];
+}
+
+/** The row as it now stands, and whether one stood there before — an upsert that
+ *  silently replaced a claim mapping is the trap `--add-idp`'s own output warns about. */
+export interface IdpRegistered {
+  provider: IdpEntry;
+  replaced: boolean;
+}
+
+export interface IdpRemoved {
+  issuer: string;
+  discriminator_value: string | null;
+  /** Whether a row was there. Idempotent, and reported for the host revoke's reason. */
+  removed: boolean;
+}
+
+/** What an issuer's discovery document says, reduced to what the form needs. The issuer
+ *  comes back as the document spells it, and the server has already refused a document
+ *  whose issuer is not the one asked for. */
+export interface IdpDiscovered {
+  issuer: string;
+  jwks_uri: string;
+  /** Which claims the provider says it emits, so `email_claim` and `groups_claim` are
+   *  picked from a list rather than from memory. Often empty; the spec allows it. */
+  claims_supported: string[];
+}
+
+// --- people and platform roles, step 110 -------------------------------------------
+
+/** One person in the tenant, as `--list-users` prints them. `signed_in` is its own flag
+ *  because it is the question the row is read for: a person the directory pushed who has
+ *  not yet arrived has a row and has never been here. */
+export interface PersonEntry {
+  id: string;
+  email: string;
+  display_name: string;
+  status: "active" | "disabled";
+  issuer: string;
+  /** The directory's own identifier, when a push created or claimed the row. Empty for
+   *  somebody who arrived by signing in. */
+  external_id: string;
+  signed_in: boolean;
+  last_seen_at: string;
+}
+
+/** What a disable or enable did. `changed` is false when the person was already in that
+ *  state; the seam writes no record for a restatement and the screen must not say
+ *  *disabled* about somebody it did not disable. */
+export interface PersonStatus {
+  id: string;
+  email: string;
+  status: "active" | "disabled";
+  changed: boolean;
+}
+
+/** One platform role row, joined to the person it names. `granted_by` is a principal
+ *  string as the log records it — `system:bootstrap` for the first administrator,
+ *  `system:cli` for a shell grant — because who appointed an administrator is a fact
+ *  about a principal, not a display name. */
+export interface RoleEntry {
+  principal: string;
+  kind: string;
+  id: string;
+  email: string;
+  display_name: string;
+  role: string;
+  granted_by: string;
+  granted_at: string;
 }

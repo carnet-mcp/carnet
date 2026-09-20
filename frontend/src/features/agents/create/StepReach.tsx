@@ -219,13 +219,25 @@ function Identifiers({
 const PLACEHOLDER: Record<string, string> = {
   "github.repo": "anthropics/anthropic-sdk-python",
   "chat.channel": "#eng",
+  // The three model types the shipped recipes declare (086, 108). A family name is
+  // also accepted where the vetter declared one — `sonnet` for `anthropic.model` — and
+  // the placeholder shows a whole id because that is what a person is most likely to
+  // have in front of them.
+  "anthropic.model": "claude-sonnet-5",
+  "openai.model": "gpt-5",
+  "azure.deployment": "gpt-4o-prod",
 };
 
-/** A plain-English label for a resource type, singular and plural, for the two types
- *  that ship. An unknown type falls back to the type itself. */
+/** A plain-English label for a resource type, singular and plural, for every type the
+ *  built-ins and the shipped recipes declare. An unknown type falls back to the type
+ *  itself. Plan 107, D8 wanted these authored at vetting time and carried by the
+ *  catalogue; that is the honest next step and this table is the defaults it would have. */
 const LABEL: Record<string, [string, string]> = {
   "github.repo": ["repository", "repositories"],
   "chat.channel": ["channel", "channels"],
+  "anthropic.model": ["model", "models"],
+  "openai.model": ["model", "models"],
+  "azure.deployment": ["deployment", "deployments"],
 };
 
 function singular(resource: string): string {

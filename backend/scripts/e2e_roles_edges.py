@@ -402,11 +402,15 @@ def run(store, provider, elsewhere):
     # --- the log's own edges ----------------------------------------------------------
     say("the administrative log: ordering, the cap, and what a read does not do")
     everything = c.get("/admin-audit?limit=1000", headers=priya).json()
-    check("oldest first", everything[0]["action"], "connector.save")
+    # Newest first since 110f (plan 107 D10): the first row written is the last row.
+    check("newest first", everything[-1]["action"], "connector.save")
     tail = c.get("/admin-audit?limit=3", headers=priya).json()
     check("a limit returns the most recent N", len(tail), 3)
-    check("still oldest-first within the result",
-          [r["action"] for r in tail], [r["action"] for r in everything[-3:]])
+    check("still newest-first within the result",
+          [r["action"] for r in tail], [r["action"] for r in everything[:3]])
+    older = c.get(f"/admin-audit?before={tail[-1]['id']}", headers=priya).json()
+    check("before=<oldest shown> turns the page to the rows before it",
+          [r["id"] for r in older], [r["id"] for r in everything[3:]])
     check("limit=0 is a 422, not an empty list",
           c.get("/admin-audit?limit=0", headers=priya).status_code, 422)
     check("a limit past the cap is a 422 rather than silent truncation",

@@ -68,6 +68,7 @@ from .base import (
     CANCELLABLE_RUN_STATUSES,
     CONNECTOR_EXISTS,
     CONNECTOR_IN_USE,
+    connected_accounts,
     DEADLINE_PASSED,
     DENIAL_FIELDS,
     BUDGET_REFUSAL_MARKER,
@@ -165,6 +166,7 @@ from .base import (
     prune_floor,
     normalize_email,
     normalize_host,
+    idp_detail,
     normalize_idp,
     normalize_authorize_params,
     describe_cadence,
@@ -1706,14 +1708,16 @@ class PostgresStorage:
                 # `ConnectorExistsError` for what the upsert would cost here.
                 cur.execute(
                     "INSERT INTO connectors "
-                    "(tenant_id, id, description, launch, allow_asserted_identity) "
-                    "VALUES (%s, %s, %s, %s, %s)",
+                    "(tenant_id, id, description, launch, allow_asserted_identity, "
+                    "from_recipe) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
                     (
                         tenant_id,
                         connector_id,
                         description or "",
                         json.dumps(launch or {}),
                         bool(allow_asserted_identity),
+                        from_recipe or "",
                     ),
                 )
                 self._write_admin(cur, tenant_id, record)
@@ -1723,6 +1727,43 @@ class PostgresStorage:
                     CONNECTOR_EXISTS.format(connector=connector_id, tenant=tenant_id)
                 ) from exc
             raise
+
+    def connector_recipe(self, tenant_id: str, connector_id: str) -> str:
+        row = self._fetchone(
+            "SELECT from_recipe FROM connectors WHERE tenant_id = %s AND id = %s",
+            (tenant_id, connector_id),
+        )
+        return (row[0] if row else "") or ""
+
+    def delete_vetted_tool(
+        self, tenant_id: str, connector_id: str, remote_name: str, *, actor: str
+    ) -> bool:
+        record = make_admin_record(
+            "connector.unvet",
+            "connector",
+            connector_id or "",
+            actor,
+            {"remote_name": remote_name},
+        )
+        with self._transaction() as cur:
+            cur.execute(
+                "SELECT 1 FROM connectors WHERE tenant_id = %s AND id = %s",
+                (tenant_id, connector_id),
+            )
+            if cur.fetchone() is None:
+                raise NoSuchConnectorError(
+                    NO_SUCH_CONNECTOR_TO_VET.format(connector=connector_id, tenant=tenant_id)
+                )
+            cur.execute(
+                "DELETE FROM vetted_tools WHERE tenant_id = %s AND connector_id = %s "
+                "AND remote_name = %s",
+                (tenant_id, connector_id, remote_name),
+            )
+            removed = bool(cur.rowcount)
+            # Only when a row went — the log records changes rather than attempts.
+            if removed:
+                self._write_admin(cur, tenant_id, record)
+        return removed
 
         # No `vetted_tools` rows, deliberately: registration vets nothing, and a
         # connector with an empty allowlist contributes no tools to the catalogue. That
@@ -1977,16 +2018,51 @@ class PostgresStorage:
 
             self._write_admin(cur, tenant_id, record)
 
-    def delete_connector(self, tenant_id: str, connector_id: str, *, actor: str) -> None:
-        record = make_admin_record(
-            "connector.delete", "connector", connector_id or "", actor
-        )
-
+    def delete_connector(
+        self,
+        tenant_id: str,
+        connector_id: str,
+        *,
+        actor: str,
+        disconnect_accounts: bool = False,
+    ) -> int:
         # vetted_tools cascades. `connections` deliberately does NOT — migration 021
         # makes this RESTRICT, so a connector somebody has connected to cannot be
-        # removed out from under their sealed credential.
+        # removed out from under their sealed credential. `disconnect_accounts` is the
+        # deliberate way through it, in this transaction, counted in the record.
+        disconnected = 0
         try:
             with self._transaction() as cur:
+                # Counted first, inside the transaction, for two reasons: the refusal's
+                # sentence carries the number, and the two stores then refuse in the
+                # same shape rather than one of them relying on a constraint to do it.
+                # The FK stays as the backstop below for a row inserted concurrently.
+                cur.execute(
+                    "SELECT count(*) FROM connections WHERE tenant_id = %s "
+                    "AND connector_id = %s",
+                    (tenant_id, connector_id),
+                )
+                connected = int(cur.fetchone()[0])
+                if connected and not disconnect_accounts:
+                    raise ConnectorInUseError(
+                        CONNECTOR_IN_USE.format(
+                            connector=connector_id,
+                            tenant=tenant_id,
+                            accounts=connected_accounts(connected),
+                        )
+                    )
+
+                if connected:
+                    cur.execute(
+                        "DELETE FROM connections WHERE tenant_id = %s AND connector_id = %s",
+                        (tenant_id, connector_id),
+                    )
+                    disconnected = cur.rowcount
+
+                record = make_admin_record(
+                    "connector.delete", "connector", connector_id or "", actor,
+                    {"disconnected": disconnected} if disconnected else None,
+                )
                 cur.execute(
                     "DELETE FROM connectors WHERE tenant_id = %s AND id = %s",
                     (tenant_id, connector_id),
@@ -1996,6 +2072,10 @@ class PostgresStorage:
                 # deletion commit together or neither does.
                 if cur.rowcount:
                     self._write_admin(cur, tenant_id, record)
+        except ConnectorInUseError:
+            # Raised by this method rather than by the constraint, so it must not be
+            # re-dressed by the handler below as though psycopg had said it.
+            raise
         except StorageError as exc:
             cause = exc.__cause__
             if (
@@ -2006,10 +2086,20 @@ class PostgresStorage:
                 and getattr(getattr(cause, "diag", None), "constraint_name", "")
                 == "connections_connector_fk"
             ):
+                # The backstop: a connection inserted between the count above and the
+                # delete below. The count is unknown here — the transaction is rolled
+                # back — so the sentence says *some*, which is the honest thing a
+                # constraint violation can say.
                 raise ConnectorInUseError(
-                    CONNECTOR_IN_USE.format(connector=connector_id, tenant=tenant_id)
+                    CONNECTOR_IN_USE.format(
+                        connector=connector_id,
+                        tenant=tenant_id,
+                        accounts="connected accounts",
+                    )
                 ) from exc
             raise
+
+        return disconnected
 
     def load_vetting_record(self, tenant_id: str) -> list[dict]:
         # One statement for the whole tenant rather than one per connector: the caller
@@ -2129,6 +2219,13 @@ class PostgresStorage:
         "cache_write_tokens",
     )
 
+    # What a read returns: the identity column first (110f), then everything written.
+    # `id` is the store's sequence number — the cursor a log page turns and the order
+    # every read here already sorts by — and it is never written, which is why it is
+    # this second tuple rather than a first entry in `_AUDIT_COLUMNS`: the INSERT and
+    # its parameters walk that one.
+    _AUDIT_READ = ("id", *_AUDIT_COLUMNS)
+
     # Generated from `_AUDIT_COLUMNS` rather than typed out, so the statement, the
     # placeholder count and the parameter order have one source. Hand-syncing three
     # lists is how `credential` came to be written by this store and dropped by the
@@ -2178,7 +2275,7 @@ class PostgresStorage:
         run_id: str | None = None,
         limit: int | None = None,
     ) -> list[dict]:
-        columns = ", ".join(self._AUDIT_COLUMNS)
+        columns = ", ".join(self._AUDIT_READ)
         params: list = [tenant_id]
 
         where = "tenant_id = %s"
@@ -2194,7 +2291,7 @@ class PostgresStorage:
             # sequence in the order it happened.
             sql = (
                 f"SELECT {columns} FROM ("
-                f"  SELECT {columns}, id FROM audit WHERE {where} ORDER BY id DESC "
+                f"  SELECT {columns} FROM audit WHERE {where} ORDER BY id DESC "
                 f"  LIMIT %s"
                 f") recent ORDER BY id"
             )
@@ -2202,7 +2299,7 @@ class PostgresStorage:
 
         rows = []
         for row in self._fetchall(sql, tuple(params)):
-            record = dict(zip(self._AUDIT_COLUMNS, row))
+            record = dict(zip(self._AUDIT_READ, row))
             # Written as an ISO string, and read back as one: audit records are
             # compared and diffed as data, and a driver-native datetime here would
             # make the two implementations disagree about what a record is.
@@ -2214,7 +2311,7 @@ class PostgresStorage:
 
     # --- the administrative audit log -------------------------------------------
 
-    _ADMIN_COLUMNS = ADMIN_AUDIT_FIELDS[1:]  # everything but tenant_id, merged on read
+    _ADMIN_COLUMNS = ("id",) + ADMIN_AUDIT_FIELDS[1:]  # id, then everything but tenant_id
 
     _ADMIN_INSERT = """
         INSERT INTO admin_audit (
@@ -2259,6 +2356,7 @@ class PostgresStorage:
         action: str | None = None,
         target_kind: str | None = None,
         target_id: str | None = None,
+        before: int | None = None,
         limit: int | None = None,
     ) -> list[dict]:
         columns = ", ".join(self._ADMIN_COLUMNS)
@@ -2274,6 +2372,9 @@ class PostgresStorage:
                 where += f" AND {column} = %s"
                 params.append(value)
 
+        if before is not None:
+            where += " AND id < %s"
+            params.append(before)
         if limit is None:
             sql = f"SELECT {columns} FROM admin_audit WHERE {where} ORDER BY id"
         else:
@@ -2283,7 +2384,7 @@ class PostgresStorage:
             # order it happened.
             sql = (
                 f"SELECT {columns} FROM ("
-                f"  SELECT {columns}, id FROM admin_audit WHERE {where} ORDER BY id DESC "
+                f"  SELECT {columns} FROM admin_audit WHERE {where} ORDER BY id DESC "
                 f"  LIMIT %s"
                 f") recent ORDER BY id"
             )
@@ -2300,7 +2401,7 @@ class PostgresStorage:
 
     # --- the access-denial log --------------------------------------------------
 
-    _DENIAL_COLUMNS = DENIAL_FIELDS[1:]  # everything but tenant_id, merged on read
+    _DENIAL_COLUMNS = ("id",) + DENIAL_FIELDS[1:]  # id, then everything but tenant_id
 
     _DENIAL_INSERT = """
         INSERT INTO access_denials (
@@ -2338,6 +2439,7 @@ class PostgresStorage:
         principal_id: str | None = None,
         resource_kind: str | None = None,
         resource_id: str | None = None,
+        before: int | None = None,
         limit: int | None = None,
     ) -> list[dict]:
         columns = ", ".join(self._DENIAL_COLUMNS)
@@ -2354,6 +2456,9 @@ class PostgresStorage:
                 where += f" AND {column} = %s"
                 params.append(value)
 
+        if before is not None:
+            where += " AND id < %s"
+            params.append(before)
         if limit is None:
             sql = f"SELECT {columns} FROM access_denials WHERE {where} ORDER BY id"
         else:
@@ -2363,7 +2468,7 @@ class PostgresStorage:
             # the order it happened.
             sql = (
                 f"SELECT {columns} FROM ("
-                f"  SELECT {columns}, id FROM access_denials WHERE {where} "
+                f"  SELECT {columns} FROM access_denials WHERE {where} "
                 f"  ORDER BY id DESC LIMIT %s"
                 f") recent ORDER BY id"
             )
@@ -2454,12 +2559,13 @@ class PostgresStorage:
         self,
         tenant_id: str,
         *,
+        before: int | None = None,
         limit: int | None = None,
         since: "date | None" = None,
         until: "date | None" = None,
         **filters,
     ) -> list[dict]:
-        columns = ", ".join(f"a.{column}" for column in self._AUDIT_COLUMNS)
+        columns = ", ".join(f"a.{column}" for column in self._AUDIT_READ)
         params: list = [tenant_id, self._DOOR_CALL_PATTERN]
         where = "a.tenant_id = %s AND a.run_id LIKE %s"
 
@@ -2491,6 +2597,9 @@ class PostgresStorage:
                 params.append(value)
 
         source = f"audit a{self._JOIN_OWNER}"
+        if before is not None:
+            where += " AND a.id < %s"
+            params.append(before)
         if limit is None:
             sql = (
                 f"SELECT {columns}, COALESCE(u.email, '') FROM {source}"
@@ -2501,10 +2610,10 @@ class PostgresStorage:
             # and for its two reasons: taking the tail wants `id DESC`, and the caller
             # still wants the sequence in the order it happened. The owner rides through
             # the subquery as one more column.
-            plain = ", ".join(self._AUDIT_COLUMNS)
+            plain = ", ".join(self._AUDIT_READ)
             sql = (
                 f"SELECT {plain}, owner FROM ("
-                f"  SELECT {columns}, COALESCE(u.email, '') AS owner, a.id"
+                f"  SELECT {columns}, COALESCE(u.email, '') AS owner"
                 f"    FROM {source} WHERE {where} ORDER BY a.id DESC LIMIT %s"
                 f") recent ORDER BY id"
             )
@@ -2512,7 +2621,7 @@ class PostgresStorage:
 
         rows = []
         for row in self._fetchall(sql, tuple(params)):
-            record = dict(zip((*self._AUDIT_COLUMNS, "owner"), row))
+            record = dict(zip((*self._AUDIT_READ, "owner"), row))
             # An ISO string in both stores, the coercion every log reader here applies.
             record["ts"] = record["ts"].isoformat(timespec="milliseconds")
             record["tenant_id"] = tenant_id
@@ -3468,9 +3577,17 @@ class PostgresStorage:
         out["allowed_domains"] = tuple(out["allowed_domains"] or ())
         return out
 
-    def save_tenant_idp(self, tenant_id: str, idp: dict) -> None:
+    def save_tenant_idp(self, tenant_id: str, idp: dict, *, actor: str | None = None) -> None:
         row = normalize_idp(idp)
         self._require_tenant(tenant_id)
+        # In the same transaction as the upsert below, which is decision 2's whole
+        # point: a record that can be absent when the write succeeded is worse than no
+        # record, because it is one somebody will trust.
+        record = (
+            make_admin_record("idp.save", "idp", row["issuer"], actor, idp_detail(row))
+            if actor
+            else None
+        )
 
         # Conflict check and write in one transaction. Two admins registering the same
         # issuer at the same moment would otherwise both pass the check and the second
@@ -3539,6 +3656,9 @@ class PostgresStorage:
             # clearing every marker in the tenant to rotate a `jwks_uri` is the
             # stampede the marker exists to prevent. In this transaction, so a
             # registration that fails leaves the markers alone.
+            if record is not None:
+                self._write_admin(cur, tenant_id, record)
+
             if was != row["groups_claim"]:
                 self._forget_directory_digests(cur, tenant_id)
 
@@ -3604,16 +3724,36 @@ class PostgresStorage:
         ]
 
     def delete_tenant_idp(
-        self, tenant_id: str, issuer: str, discriminator_value: str | None = None
+        self,
+        tenant_id: str,
+        issuer: str,
+        discriminator_value: str | None = None,
+        *,
+        actor: str | None = None,
     ) -> None:
-        # `IS NOT DISTINCT FROM` rather than `=`, so a NULL discriminator matches a
-        # NULL discriminator. With `=` this would silently delete nothing for exactly
-        # the Okta and Entra rows that are the common case.
-        self._execute(
-            "DELETE FROM tenant_idps WHERE tenant_id = %s AND issuer = %s "
-            "AND discriminator_value IS NOT DISTINCT FROM %s",
-            (tenant_id, issuer, discriminator_value),
+        record = (
+            make_admin_record(
+                "idp.remove", "idp", issuer, actor,
+                {"discriminator_value": discriminator_value or ""},
+            )
+            if actor
+            else None
         )
+
+        with self._transaction() as cur:
+            # `IS NOT DISTINCT FROM` rather than `=`, so a NULL discriminator matches a
+            # NULL discriminator. With `=` this would silently delete nothing for exactly
+            # the Okta and Entra rows that are the common case.
+            cur.execute(
+                "DELETE FROM tenant_idps WHERE tenant_id = %s AND issuer = %s "
+                "AND discriminator_value IS NOT DISTINCT FROM %s",
+                (tenant_id, issuer, discriminator_value),
+            )
+            # `rowcount` rather than a SELECT first: the record belongs to the deletion
+            # and this is the deletion's own answer, in its own transaction. Only when a
+            # row went — see the protocol.
+            if record is not None and cur.rowcount:
+                self._write_admin(cur, tenant_id, record)
 
     # --- users ------------------------------------------------------------------
 

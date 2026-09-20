@@ -81,7 +81,7 @@ export default function AgentDetailPage() {
               that is what the door scopes by, and it is the whole of what an agent is
               for a caller at `/mcp`. The connect card first, because it is about the
               call somebody is minutes away from making. */}
-          <ConnectCard name={data.name} />
+          <ConnectCard name={data.name} role={data.your_role} />
           <Reach agent={data} catalogue={catalogue.data} failed={catalogue.error} />
           <StoredNotRead agent={data} />
           {/* **Above the share sheet**, which is where a builder

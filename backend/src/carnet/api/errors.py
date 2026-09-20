@@ -133,6 +133,8 @@ from ..tools.mcp.transport import TransportError
 from ..storage.base import (
     AgentNameTaken,
     ConnectorExistsError,
+    ConnectorInUseError,
+    IssuerConflictError,
     NoSuchGroupError,
     StorageError,
     UnknownTenantError,
@@ -414,6 +416,28 @@ def install(app) -> None:
         # The message is the transport's own and is safe to relay: it names the customer's
         # host, to an administrator of that customer, about a server they registered.
         return _problem(502, str(exc))
+
+    @app.exception_handler(ConnectorInUseError)
+    def _connector_in_use(_request: Request, exc: ConnectorInUseError):
+        # Plan 107 D7. Migration 021 made `connections` RESTRICT on purpose: a sealed
+        # credential is never deleted as a side effect of an administrative act about
+        # configuration. A `StorageError` by class and a 503 by that handler, which
+        # would tell an administrator the database was down; the state of the world
+        # forbids this write, which is what 409 says, and the sentence names who has
+        # to disconnect first.
+        return _problem(409, str(exc))
+
+    @app.exception_handler(IssuerConflictError)
+    def _issuer_conflict(_request: Request, exc: IssuerConflictError):
+        # Step 110. A `StorageError` by class — it is raised inside `save_tenant_idp` —
+        # and a 503 by that handler, which would tell an administrator registering a
+        # provider from a form that the database was down. It is not down: the row
+        # would have made a token ambiguous between two tenants, which is the one
+        # storage refusal whose consequence is a cross-tenant read, and 409 is the
+        # status for a write the current state forbids. Registered before the
+        # `StorageError` handler for the same reason `ValueRefused` is: FastAPI picks
+        # the most specific class, and the order here is documentation of that.
+        return _problem(409, str(exc))
 
     @app.exception_handler(ValueRefused)
     def _value_refused(_request: Request, exc: ValueRefused):

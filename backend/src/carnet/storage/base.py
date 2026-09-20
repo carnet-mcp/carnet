@@ -708,11 +708,11 @@ class Storage(Protocol):
         """Register a connector with an **empty allowlist**. Raises if it exists.
 
         `from_recipe` is step 068 and is **provenance, never a link**: the id of the
-        checked-in preset the values came from, written into `admin_audit.detail` and
-        nowhere else. No column, no foreign key, no join — that is rule 1, and it is what
-        makes deleting a recipe safe. Answering *which connectors came from the recipe
-        that just broke* therefore means reading the log by hand, which is the direct and
-        deliberate price.
+        checked-in preset the values came from, written into `admin_audit.detail` and —
+        since migration 056 (plan 107 D6) — into a column read back by
+        `connector_recipe`, so a screen can find the preset a week later. Still no
+        foreign key and no join — that is rule 1, and it is what makes deleting a recipe
+        safe: a stale id reads as a preset this build no longer ships.
 
         The caller asserts it, so the writer checks the recipe exists in this build
         before passing it — otherwise this is a client writing arbitrary text into an
@@ -808,11 +808,61 @@ class Storage(Protocol):
         to be able to reach.
         """
 
-    def delete_connector(self, tenant_id: str, connector_id: str, *, actor: str) -> None:
-        """Idempotent. Cascades to that connector's vetted tools.
+    def delete_connector(
+        self,
+        tenant_id: str,
+        connector_id: str,
+        *,
+        actor: str,
+        disconnect_accounts: bool = False,
+    ) -> int:
+        """Idempotent. Cascades to that connector's vetted tools. Returns how many
+        connected accounts were removed with it, which is 0 unless asked.
 
         Writes `connector.delete` **only when a row was actually removed**, on
         `delete_agent`'s precedent: the log records changes rather than attempts.
+
+        **`connections` does not cascade, and `disconnect_accounts` is the way through
+        rather than an exception to that.** Migration 021 made the foreign key RESTRICT
+        on purpose: a sealed credential a person consented to give must never be
+        destroyed as a side effect of an administrative act about configuration, and
+        `ConnectorInUseError` is that rule speaking. What the rule asks for is that the
+        disconnection be *deliberate* — and until this flag the only way to be
+        deliberate was to ask every person to visit a page, which is why a decommissioned
+        connector stayed registered instead. So: refused by default, with the count in
+        the sentence; removed in the same transaction when the caller says so, and
+        counted in the record's detail. Nothing is revoked at the provider — this layer
+        has no network — and the sentence says so, because the alternative is an
+        administrator believing tokens died when they did not.
+        """
+
+    def connector_recipe(self, tenant_id: str, connector_id: str) -> str:
+        """The id of the preset this connector was registered from, or `""`.
+
+        Migration 056 (plan 107 D6). Read separately from `get_connector` rather than
+        as a key on the manifest, because the manifest is the allowlist and round-trips
+        through `save_connector` — a wholesale write by `--seed`, which knows no preset
+        and must not erase the record of one. `""` for a connector registered by hand,
+        one registered before 056, and one that does not exist.
+        """
+
+    def delete_vetted_tool(
+        self, tenant_id: str, connector_id: str, remote_name: str, *, actor: str
+    ) -> bool:
+        """Withdraw **one** tool's approval. Returns whether a row went. Plan 107 D7.
+
+        `vet_tool`'s inverse and its shape: one row on `(tenant, connector,
+        remote_name)`, every other approval untouched. Writes `connector.unvet` only
+        when a row was removed, with the remote name in the detail, on `delete_agent`'s
+        precedent. Raises `NoSuchConnectorError` for a connector nobody registered —
+        withdrawing a tool from a server that is not there is a command with a typo in
+        it, not a no-op.
+
+        What is **not** done here: nothing about the agents that grant the tool. A grant
+        naming a withdrawn tool makes that agent invalid at its next read, with the
+        sentence the product already has for a withdrawn connector, and that is the
+        behaviour rather than a cascade — an agent is somebody else's record of a
+        decision, and this call is not theirs.
         """
 
     def load_vetting_record(self, tenant_id: str) -> list[dict]:
@@ -924,9 +974,15 @@ class Storage(Protocol):
         action: str | None = None,
         target_kind: str | None = None,
         target_id: str | None = None,
+        before: int | None = None,
         limit: int | None = None,
     ) -> list[dict]:
         """Administrative records for this tenant, **oldest first**.
+
+        Every row carries `id`, the append-only sequence number — since 110f (plan 107
+        D10) the cursor a log page turns: `before` returns only rows older than that id,
+        so *show older* is `before=<the oldest id shown>` and a row appended between two
+        requests moves nothing. The in-memory store numbers its rows the same way.
 
         Ordered by insertion rather than by `ts`, and `limit` returns the most recent N
         still oldest-first — identical to `audit_records`, deliberately, because two
@@ -973,6 +1029,7 @@ class Storage(Protocol):
         principal_id: str | None = None,
         resource_kind: str | None = None,
         resource_id: str | None = None,
+        before: int | None = None,
         limit: int | None = None,
     ) -> list[dict]:
         """Denial records for this tenant, **oldest first**.
@@ -1019,6 +1076,7 @@ class Storage(Protocol):
         self,
         tenant_id: str,
         *,
+        before: int | None = None,
         limit: int | None = None,
         since: date | None = None,
         until: date | None = None,
@@ -1434,8 +1492,18 @@ class Storage(Protocol):
     # They are the only two, and they are both keyed on an issuer — a value the
     # platform registered, not one a caller supplies freely.
 
-    def save_tenant_idp(self, tenant_id: str, idp: dict) -> None:
+    def save_tenant_idp(self, tenant_id: str, idp: dict, *, actor: str | None = None) -> None:
         """Register an identity provider for a tenant. Insert or update.
+
+        **`actor` writes the administrative record**, and is optional because two very
+        different kinds of caller reach this. A person registering a provider — through
+        the screen or through `--add-idp` — is an administrative act on the one piece of
+        configuration that decides who may sign in, and it left no trace at all until
+        the pass after 110f. A deployment building its own world — `bootstrap`, a
+        harness, `--local`'s front door — is not a person and has no actor to name, and
+        inventing `system:cli` for it would put a sentence in a record kept forever that
+        nobody said. So: an actor means a record, and no actor means no record, which is
+        exactly what those two callers each want.
 
         `idp` carries `issuer`, `jwks_uri`, `audience`, and optionally
         `discriminator_claim` / `discriminator_value`, `email_claim`,
@@ -1474,9 +1542,19 @@ class Storage(Protocol):
         """This tenant's providers, ordered by issuer. The operator's view."""
 
     def delete_tenant_idp(
-        self, tenant_id: str, issuer: str, discriminator_value: str | None = None
+        self,
+        tenant_id: str,
+        issuer: str,
+        discriminator_value: str | None = None,
+        *,
+        actor: str | None = None,
     ) -> None:
-        """Idempotent. Scoped by tenant, so one customer cannot unregister another's."""
+        """Idempotent. Scoped by tenant, so one customer cannot unregister another's.
+
+        `actor` writes the record, on `save_tenant_idp`'s terms — and **only when a row
+        actually went**, which is `connector.unvet`'s rule: an idempotent removal that
+        found nothing did nothing, and a record of it would be a record of a decision
+        nobody took."""
 
     # --- users ------------------------------------------------------------------
 
@@ -4959,11 +5037,50 @@ def check_allowed_domains(issuer: str, allowed_domains) -> None:
         )
 
 
+def idp_detail(row: dict) -> dict:
+    """What an `idp.save` record carries, from a normalized row. One statement, read by
+    both stores, so the two cannot come to describe the same act differently.
+
+    Everything but the issuer, which is the record's `target_id` already. **No secret
+    is involved at any point** — an identity provider row is a set of URLs and claim
+    names, and the keys are fetched from `jwks_uri` rather than held — so this is a
+    projection rather than a redaction, and the thing to keep out is not a credential
+    but a field nobody changed. `allowed_domains` is a tuple in the row and a list here,
+    because a record is JSON.
+    """
+    return {
+        "discriminator_claim": row.get("discriminator_claim") or "",
+        "discriminator_value": row.get("discriminator_value") or "",
+        "jwks_uri": row.get("jwks_uri") or "",
+        "audience": row.get("audience") or "",
+        "subject_claim": row.get("subject_claim") or "",
+        "email_claim": row.get("email_claim") or "",
+        "groups_claim": row.get("groups_claim") or "",
+        "allowed_domains": list(row.get("allowed_domains") or ()),
+        "enabled": bool(row.get("enabled", True)),
+    }
+
+
 def normalize_idp(idp: dict) -> dict:
-    """Validate and fill in a `tenant_idps` row. Raises `StorageError` on nonsense."""
+    """Validate and fill in a `tenant_idps` row.
+
+    **This is the one statement of what a valid provider is**, and since step 110 it is
+    read by two doors: `--add-idp` and `POST /admin/idps`. Plan 110 wanted the CLI's
+    checks lifted into the route's schema so the two could not disagree; the checks
+    that matter were already here, both stores call this before every write, and the
+    CLI cannot import a pydantic schema without the `api` extra — so the statement stays
+    at the boundary every writer crosses, and the route's schema is shape alone.
+
+    The refusals are `ValueRefused`, not the bare `StorageError` they were before 110:
+    each is a fact about the row the caller can fix, and `ValueRefused` is what the API
+    renders as a 400 carrying the sentence, where a `StorageError` is a 503 saying the
+    store is unavailable — the wrong-refusal-family mistake this tree has now caught in
+    eight places, and here it would have told an administrator typing a form that the
+    database was down.
+    """
     missing = [field for field in IDP_REQUIRED if not idp.get(field)]
     if missing:
-        raise StorageError(
+        raise ValueRefused(
             f"identity provider is missing {missing}. An issuer identifies it, a "
             "jwks_uri is where its keys live, and an audience is what makes a token "
             "ours rather than merely valid."
@@ -4971,12 +5088,35 @@ def normalize_idp(idp: dict) -> dict:
 
     row = {**IDP_DEFAULTS, **{k: v for k, v in idp.items() if v is not None}}
 
+    # The three identifiers are compared byte for byte against token claims and dialled
+    # as given; whitespace inside one, or a control character, is a row that can never
+    # match and never be fetched — pasted from a console with a trailing newline, which
+    # is how `normalize_external_id` found the same defect one table over.
+    for field in IDP_REQUIRED:
+        text = str(row[field])
+        if text != text.strip() or any(ch < " " or ch == "\x7f" for ch in text):
+            raise ValueRefused(
+                f"{field} may not carry leading or trailing whitespace or control "
+                f"characters (got {text!r}). Paste it exactly as the provider spells it."
+            )
+        if field != "issuer" and " " in text:
+            raise ValueRefused(f"{field} may not contain a space (got {text!r}).")
+    # The key set is fetched, so it has to be somewhere a dial can go. The issuer is
+    # not held to a scheme: it is a claim compared as a string, and the local
+    # provider's is not a URL at all (`LOCAL_ISSUER_WILDCARD_OK`).
+    if not str(row["jwks_uri"]).startswith(("https://", "http://")):
+        raise ValueRefused(
+            f"jwks_uri must be an http(s) URL, the address the provider publishes its "
+            f"signing keys at (got {row['jwks_uri']!r}). Its discovery document names "
+            "it under `jwks_uri`."
+        )
+
     claim = row.get("discriminator_claim")
     value = row.get("discriminator_value")
     if (claim is None) != (value is None):
         # The CHECK constraint, in Python. A claim with no value routes nothing; a
         # value with no claim names no field to read it from.
-        raise StorageError(
+        raise ValueRefused(
             "discriminator_claim and discriminator_value must be given together or "
             "not at all. One without the other cannot route anything."
         )
@@ -6380,11 +6520,20 @@ NO_SUCH_CONNECTOR_TO_TRUST = (
 )
 
 CONNECTOR_IN_USE = (
-    "connector '{connector}' in tenant '{tenant}' still holds connected accounts, so "
-    "it cannot be deleted. Their credentials are sealed and unreadable without it — "
+    "connector '{connector}' in tenant '{tenant}' still holds {accounts}, so it cannot "
+    "be deleted on its own. Their credentials are sealed and unreadable without it — "
     "disconnect them first, deliberately, rather than leaving rows that a connector "
-    "later reusing this id would silently inherit."
+    "later reusing this id would silently inherit. Deregister again asking to "
+    "disconnect the accounts to do both in one act; nothing is revoked at the provider "
+    "either way, so each person should revoke there too."
 )
+
+
+def connected_accounts(count: int) -> str:
+    """`3 connected accounts`, and `1 connected account`. One place, because the number
+    appears in a refusal a person reads and *1 connected accounts* is the kind of
+    sentence that makes a reader distrust the rest of it."""
+    return f"{count} connected account{'' if count == 1 else 's'}"
 
 # Both raised by both stores, so the refusal a person reads does not depend on which
 # store they happen to be running against.
@@ -7902,6 +8051,13 @@ ADMIN_TARGET_KINDS = frozenset(
         "schedule",
         "trigger",
         "scim_token",
+        # `idp` arrives with the pass after 110f. An identity provider is the one piece
+        # of a tenant's configuration that decides **who may sign in at all**, and until
+        # now registering or removing one was the only administrative act in the product
+        # that left no trace — noted as open when 110d shipped the screen. It is a
+        # target and never an actor: a provider vouches for people, and the person who
+        # registered it is the one the record names.
+        "idp",
     }
 )
 
@@ -8002,6 +8158,14 @@ ADMIN_ACTIONS = frozenset(
     {
         "agent.create",
         "agent.save",
+        # The two identity-provider acts, from the pass after 110f. `idp.save` is an
+        # upsert — the row is `ON CONFLICT DO UPDATE`, so a re-registration that rotates
+        # a `jwks_uri` is a second decision and gets a second record, on `egress.allow`'s
+        # precedent. `idp.remove` is written only when a row actually went, on
+        # `connector.unvet`'s: an idempotent removal that found nothing to remove did
+        # nothing, and a record of it would be a record of a decision nobody took.
+        "idp.save",
+        "idp.remove",
         "agent.update",
         "agent.delete",
         # Step 021. A restore is an ordinary write as far as this log is concerned —
@@ -8045,6 +8209,10 @@ ADMIN_ACTIONS = frozenset(
         "connector.create",
         "connector.save",
         "connector.vet",
+        # Step 110f (plan 107 D7). `connector.vet`'s inverse: one approval withdrawn,
+        # by remote name, so "who took this tool away, and when" is answerable from
+        # the log after `vetted_tools` has forgotten the row ever existed.
+        "connector.unvet",
         "connector.delete",
         # Step 033c. A security control changing state: whether the MCP door believes
         # an *asserted* acting-for for this connector's tools. Its own action rather

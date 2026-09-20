@@ -610,3 +610,58 @@ def test_the_catalogue_is_found_relative_to_the_module():
     assert sorted(p.stem for p in recipes.RECIPES_DIR.glob("*.json")) == sorted(
         item["id"] for item in recipes.catalogue()
     )
+
+
+# --- the one merge rule, plan 110 D6 ----------------------------------------------------
+
+
+def test_connector_defaults_is_the_preset_under_whatever_was_supplied():
+    """The caller always wins — rule 1 of 068 in one line — and *not supplied* is spelled
+    two ways: `None` for the two credential-shaping fields where `""` is a real value
+    (`x-api-key` wants no prefix, 045c), and `None` or `""` for everything else."""
+    from carnet.access import recipes
+
+    recipe = {
+        "id": "tracker",
+        "connector": {
+            "connector_id": "tracker",
+            "url": "https://api.tracker.example",
+            "kind": "rest",
+            "credential_env": "TRACKER_TOKEN",
+            "credential_header": "x-api-key",
+            "credential_prefix": "",
+            "description": "From the preset.",
+            "headers": {"accept": "application/json"},
+        },
+    }
+
+    # Nothing supplied: the preset, whole, and no connector_id (that is the caller's).
+    merged = recipes.connector_defaults(recipe, {})
+    assert "connector_id" not in merged
+    assert merged["url"] == "https://api.tracker.example"
+    assert merged["kind"] == "rest"
+    assert (merged["credential_header"], merged["credential_prefix"]) == ("x-api-key", "")
+    assert merged["headers"] == {"accept": "application/json"}
+
+    # Supplied wins, field by field; an empty string is "not supplied" for a url and a
+    # real value for a prefix; headers merge with the caller's on top.
+    merged = recipes.connector_defaults(
+        recipe,
+        {
+            "url": "",
+            "kind": None,
+            "description": "Ours.",
+            "credential_prefix": "Token ",
+            "credential_header": None,
+            "headers": {"accept": "text/plain", "x-team": "eng"},
+        },
+    )
+    assert merged["url"] == "https://api.tracker.example"
+    assert merged["kind"] == "rest"
+    assert merged["description"] == "Ours."
+    assert (merged["credential_header"], merged["credential_prefix"]) == ("x-api-key", "Token ")
+    assert merged["headers"] == {"accept": "text/plain", "x-team": "eng"}
+
+    # A preset with no headers and no caller headers: None, which is what
+    # `register_connector` reads as "the launch's own default".
+    assert recipes.connector_defaults({"id": "x", "connector": {"url": "https://x"}}, {})["headers"] is None

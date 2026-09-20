@@ -7,6 +7,241 @@ preserves, how far back it works from, what a failure leaves behind — is
 Versions are `MAJOR.MINOR.PATCH` while below 1.0: a minor is a step of work, a patch is
 a fix between steps, and neither is allowed to break an upgrade path.
 
+## Unreleased
+
+**The frameworks are on the card, and in the guide** (step 111, part (a)). LangChain,
+CrewAI, the OpenAI Agents SDK and AutoGen each ship an MCP adapter that speaks Streamable
+HTTP with a bearer header, which is what `/mcp` is — so an agent built in any of them
+could connect to a door before today, and the four lines proving it were written nowhere.
+They are now a **Frameworks** group on the connect card, a *Connect your framework*
+section in `docs/GUIDE.md`, and one line in the README. Same table, same rule as the
+client dialects since 075: a snippet says *where it goes* only once it has been run
+against the real library and a real door, and the card says *from the vendor's
+documentation, not yet run from here* for the rest. LangChain was run on 2026-09-19
+(`langchain-mcp-adapters` 0.3.2 against a fileborne door: list, call, refusal, bad
+token) and ships verified; the other three followed on 2026-09-20 (`openai-agents` 0.22.3,
+`autogen-ext` 0.7.5 with `mcp<2`, `crewai-tools` 1.15.22 with its `[mcp]` extra), each
+for list, call and refusal. Two snags found by running them are now in the install
+lines: CrewAI's adapter stops at an interactive prompt without the `[mcp]` extra, and
+AutoGen's extra pulls an `mcp` it cannot import.
+
+**`carnet-mcp`, the client package** (step 111, part (b)). `client/` is a second
+distribution — `pip install "carnet-mcp[langchain]"`, import package `carnet_mcp`, one
+module per framework, `httpx` and nothing else underneath. The shorter `carnet` was
+tried and put back: a client importing as `carnet` shadows the server, and a client
+*distributed* as `carnet` makes pip uninstall a maintainer's editable server, both
+reproduced rather than reasoned about; and with the install and import names then
+disagreeing, the first person to read the line said so unprompted. `carnet` stays free
+on PyPI and the server keeps it. `Door` and `AsyncDoor`
+speak the protocol directly — `initialize` once with a version check that warns rather
+than refuses, `tools/list` once and cached, `tools/call` — and do not depend on the
+official `mcp` package, because the door answers one JSON body per message and a client
+for that is forty lines. **A refusal reaches the model, not the stack trace:** a brokered
+denial (an `isError` result) and an ungranted tool name (a JSON-RPC `-32602`) both arrive
+on the framework's tool-error channel in the door's own words, the first with the audit
+row's id appended, and only a door that did not answer raises. The package makes HTTP
+requests to exactly one host and its suite reads the source to assert there is no other
+address in it. Verified: all four adapters against a real door for list, call and
+refusal; LangChain end to end by `backend/scripts/e2e_client_langchain.py`, which brings
+a fileborne door up in-process, drives the tools through LangChain's own `invoke` and
+`ainvoke`, and revokes the grant mid-session to show the cached tool refused by name on
+the next call — visibility going stale while enforcement does not. An eleventh CI job
+runs the client's suite in its own virtualenv on 3.10 and 3.12 and builds the
+distribution; `release-client.yml` publishes on a `client-v*` tag through PyPI's trusted
+publishing, so there is no API token to rotate. The client is versioned apart from the
+server on purpose, and `check_versions.py` names it as a not-source in writing. Not
+published yet: the PyPI project and its trusted publisher are a one-time act by whoever
+owns the name there, and no `client-v*` tag has been pushed. An edge pass the same day
+drove every part for real — real agent loops in all four frameworks against a scripted
+model, a misbehaving upstream, concurrency, Python 3.10, a clean-environment wheel
+install, a real browser — and fixed six client defects it found, the worst of which was a
+connector property named with a leading underscore taking two adapters down entirely;
+plan 111's second addendum lists them.
+
+**The gate says so when it is red, and the front door is published** (step 110, decisions
+11 and 12). On 2026-09-10 the public repository's test workflow went red on a push to
+`main` and stayed red for four days: every job ran, and nothing read the result. A tenth
+job in `tests.yml`, `red`, now runs when any of the nine fails on `main` or a tag and
+opens an issue titled for the ref and the commit, naming the jobs that did not pass — or
+comments on the open one, so a gate that stays red is one thread rather than one issue
+per push. A weekly schedule runs the whole gate on `main` whether or not anything was
+pushed, for the decay a push cannot catch: a yanked dependency, a base image with a new
+advisory, an external name a harness dials. And `release.yml` publishes
+`ghcr.io/carnet-mcp/carnet-front` beside the API image — same tags, same keyless
+signature, its own anonymous-pull smoke that proves the entrypoint composes a policy and
+a certificate from two variables and refuses half a provider by name. Until now a team
+whose policy forbids building could pull the API and had to build the front door from a
+checkout, which is half a published deployment. `CARNET_API_IMAGE` and
+`CARNET_FRONT_IMAGE` in `.env` name the pair, and `docker compose pull` replaces the
+build; unset, nothing changes. The frontend bundle now builds on the build host's own
+architecture (`--platform=$BUILDPLATFORM` on its stage) rather than under emulation for
+the arm64 half, because HTML has no architecture.
+
+**The two fields the vetting form never grew** (step 110, decision 7). Step 086 put a
+price and a family on the vet route and the CLI and never told the browser, so a family
+scope and a price on a binding were the two things the admin's hour in `docs/GUIDE.md`
+could not do from a screen. Every resource row now takes families, comma-separated, and
+the REST authoring form takes a price table beside the usage map. Both are read back:
+`ResourceType` carries `families` on every projection — and still not the argument
+names, because a family is what a scope may *say* where an argument is how one server
+*composes* an id — and a vetted tool carries its `pricing`, alone out of the binding, so
+an approval's price is visible and a re-vet starts from it rather than from list price.
+The register's claim that the REST half of the vetting form was missing turned out to be
+false since step 047; the row is corrected rather than closed.
+
+**The bundle is signed, with a key, and verified with nothing but openssl** (step 110,
+decision 10). `offline_bundle.sh --sign-key` writes `SHA256SUMS.sig`, a detached ECDSA
+P-256 signature over `SHA256SUMS`, and copies the key's public half in as
+`carnet-release.pub`; the far side's `verify.sh` checks it with `openssl dgst -verify`,
+prints the key's fingerprint to compare with one carried in by another route, and says in
+one line when a bundle is unsigned or openssl is missing rather than passing. OpenSSL
+rather than cosign because the sealed estate is the machine nobody can install anything
+on; a key rather than keyless because keyless verification reaches Fulcio and Rekor. The
+key is a person's and never sees CI. The ceremony that mints it — and the published
+fingerprint — has not been performed yet, and `docs/OFFLINE.md` says so where the
+fingerprint will go.
+
+**The identity provider has a screen** (step 110, decisions 2 and 5). The first thing in
+an administrator's hour, and until now the only one with no browser path at all, so the
+hour began in `docker compose exec` whatever else had a screen. `GET/POST/DELETE
+/admin/idps` and `POST /admin/idps/discover`, and an *Identity providers* page: a form
+over the nine flags of `--add-idp`, a look-up that fills the key set from the provider's
+discovery document through the same pinned, operator-consented dial the key fetch uses,
+and removal that refuses the provider you signed in through, with the reason. The form
+pre-empts nothing: what a valid provider is has one statement, `storage.normalize_idp`,
+read by both doors, and its refusals are now 400s carrying the sentence rather than 503s
+saying the store was down; an issuer that would make a token ambiguous between two
+tenants is a 409. The CLI's `--add-idp` is unchanged and remains the operator's
+cross-tenant act.
+
+**People and administrators have screens, and the line between them is the design**
+(step 110, decisions 3 and 4). `GET /admin/users` and `POST /admin/users/{id}/disable`
+and `/enable`, and a *People* page: who has signed in or been sent by the directory,
+their status, and the one act an operations team needs most and could not reach without
+a terminal — cutting somebody off, through the same seam `--disable-user` and a SCIM
+push use, with what stops and what stays said in place, and the caller's own row refused
+with the way back. `GET /admin/roles` and an *Administrators* page that is a read: who
+holds a platform role, appointed by whom, since when — and for a change, the shell
+command and the sentence that says why it is not a button. Plan 12b's refusal of role
+grants over HTTP stands, restated: admins appointing admins is the one thing a stolen
+admin session cannot be cured of, because the authority it hands out outlives the
+session. Disabling reduces authority and a shell can undo it; granting reproduces it.
+
+**Connector setup, the backend half** (step 110f, funding plan 107's decisions 5, 6 and
+7, and 110's decision 6). Migration 056 puts `from_recipe` on the connector row, so the
+preset a connector came from is a fact a screen can read a week later rather than a line
+in the log. `POST /admin/connectors` now **applies** a recipe instead of recording that
+one was mentioned: every field the body leaves empty takes the preset's value, under one
+merge rule (`recipes.connector_defaults`) that the CLI's `--from-recipe` shares, so the
+browser's second implementation of the recipe format can go. A recipe this build does not
+ship, or ships broken, is a 400 with the sentence rather than a silent hand registration.
+Discovery says which credential it dialled with, and `GET
+/admin/connectors/{id}/discovery-credential` says which it *would* use before the click,
+through the same lookup. `DELETE /admin/connectors/{id}/tools/{name}` withdraws one
+approval and `DELETE /admin/connectors/{id}` deregisters a connector — refused with a 409
+while anybody has an account connected to it, because migration 021's RESTRICT is the
+older and better-argued decision than 107's sentence about deleting connections along
+with it. `--withdraw-tool` and `--deregister-connector` are the shell's spellings.
+
+**Connector setup, the screens** (step 110f, plan 107 decision 4 and the rest of 5–7).
+The connector page is in the order setup needs — registration, the OAuth app, the
+approved tools, what the server offers, the on-behalf-of posture, deregister — with the
+credential discovery will use said above the button and *Connect your account* when there
+is none, the OAuth form seeded from the preset until a flow is configured, and **Edit** and
+**Remove** on every approved row. `/admin/connectors/new` is the setup as six steps: a
+preset or not, the address with its host approved in place, the server, the credentials —
+the shared one and the OAuth app pre-filled from the preset — the tools through the
+page's own discovery, then done. The list page is a list, with **Add a connector** and the
+approved hosts.
+
+**Creating an agent ends with a connected client** (step 110f, plan 107 decision 9).
+`POST /me/tokens` takes an optional `grant`, so a service token generated from an agent's
+page is granted that agent in the same request — the five-screen loop as one act — and a
+share the seam refuses revokes the token it was generated for. The connect card generates
+a token in place, fills the secret into the client config for as long as the reveal is
+open, and has copy buttons beside the address, the config and the secret, which reverses
+step 044's no-clipboard decision: hand-selecting a bearer token is how it ends up
+half-copied and pasted into the wrong place. Claude leads the client tabs on an https
+deployment, Claude Code on plain http, the rest under *More*. **Generate token** moved to
+the tokens page's head.
+
+**The logs turn pages, and a connection says what depends on it** (step 110f, plan 107
+decisions 10 and 11, the backend half). The three logs answered the newest two hundred
+rows oldest first and nothing older was reachable from a browser — noticed on the audit
+log by the first administrator who scrolled to the bottom for the row they came for.
+`GET /admin-audit`, `/admin/denials` and `/admin/door-calls` now answer newest first, every
+row carries the store's own sequence number as `id`, and `?before=<id>` is *show older*:
+the rows older than the oldest shown, so a row appended between two requests moves
+nothing. Both stores answer it and the contract suite drives it. `GET /admin/users?email=`
+answers one person or none by exact address, for adding a group member by the address a
+colleague is known by rather than by an id read off a log. `GET /connections` carries
+`used_by` on every row — the agents the caller may use whose granted tools act as *them*
+on that connector, the `ConnectionNotice` on an agent's page inverted, so a row reads as
+the dependency it is rather than a free choice — and `POST
+/connectors/{id}/connection/test` asks the server for its tool list under the caller's
+own connected account and says how many it offered. It refuses when no account is
+connected rather than falling through to the shared credential, because *the shared
+credential works* is not the question the button asks.
+
+**And the screens** (step 110f, plan 107 decisions 10 and 11, the other half). The three
+logs show a hundred rows newest first with **Show older** beneath, which asks for the
+rows before the oldest one shown — an id, never an offset, so a row appended between two
+requests moves nothing. An agent, token, connector or group id in a log cell is a link to
+its page; a tool is a filter; the two logs that could disagree about that now share one
+table. The request log grew a filter bar — tool, agent, token, outcome, dates — that
+writes the URL the Overview already links with, so a filter typed there is a link a
+colleague can open; the denials page's filters moved into its URL for the same reason,
+the 422 wording that kept them out having been fixed in 066. **Add a member** on the
+groups page takes an email address, **Find** resolves it, and the person is named before
+**Add**. Each Connections row says which agents act as you there, each a link, and
+**Test** beside Disconnect reports *Connected as you. 14 tools available* or the server's
+own sentence; the row for a connector with no sign-in names your administrator as the one
+with the task, and links an administrator to the connector's page.
+
+**The edge pass, and the six things it was asked to finish.** Driving 110f's routes
+adversarially over real HTTP against real Postgres — `backend/scripts/e2e_log_edges.py`,
+139 checks — found two defects the route suite could not reach. `GET /admin/users?email=`
+with a **blank** value fell through to `"" == ""` and answered with every person the
+directory had pushed without an address: a listing wearing a lookup's clothes. And the
+connection probe dialled a **REST** connector as though it spoke MCP and answered 500,
+which takes a registered REST connector *and* a connected account on it to reach. Both
+are refusals now, with sentences. The harness also pins what only a real database can
+disprove: that the log sequence is one number line shared by every customer, so a cursor
+must walk ids and not positions; that a row appended between two pages moves nothing; and
+that `before` composes with a filter rather than replacing it. A third defect, found by
+the contract suite once it had something to compare, was the in-memory store dropping a
+connector's recipe *before* the in-use check, so a refused deletion left the two stores
+disagreeing about which preset a connector came from.
+
+Then the six open items. **The connection probe names what it found**: the approved tools
+the server still offers, and — the part nothing else in the product will ever explain —
+the approvals it has **stopped** offering, which is why an agent granting one meets a
+refusal at the door. **The paging hook no longer guesses**: it asks for one row more than
+it shows, so *Show older* is offered when there is something older rather than after
+every full page, and a log whose length is a multiple of the page no longer ends with a
+click that answers with nothing. **Registering or removing an identity provider is
+recorded** — `idp.save` and `idp.remove`, written inside the same transaction as the row,
+with the person who did it; who may sign in at all was the last change here that left no
+trace. **Deregistering a connector has a way through its refusal**: migration 021 asks
+that disconnecting people be *deliberate*, not impossible, and the only way through used
+to be asking every one of them to visit a page — so a decommissioned connector stayed
+registered, which is the state the RESTRICT was meant to prevent.
+`?disconnect_accounts=true` and `--disconnect-accounts` do it in one transaction, the
+refusal counts the people it is protecting, and both say plainly that nothing is revoked
+at the provider. The screen offers it only after the server has refused.
+
+The last two are about the parts of the gate that watch the gate. The `red` job's body
+moved into `.github/scripts/report-red.sh` and the release smoke's into
+`deploy/smoke-front.sh`, because the one part of CI that reports on CI was the one part
+nothing could execute. `test_workflows.py` now runs the notifier against a stubbed `gh`
+and checks every branch it has; the front-door smoke was run green against a locally
+built image of the same Dockerfile target. What remains unproven is what only GitHub can
+prove: that `if: failure()` fires, and that the published package pulls anonymously.
+`deploy/mint-release-key.sh` is the signing ceremony as one command, rehearsed end to end
+under a throwaway key — mint, sign, verify, a bent signature refused, an edited
+`SHA256SUMS` refused, a key that is not the published one refused by name — so what is
+left there is not whether it works but who holds the key.
+
 ## 0.11.0 — 2026-09-14
 
 **The registry is an argument, the digest is not; and the artefact a person carries in**

@@ -124,6 +124,22 @@ export function requiredRows(tools: string[], catalogue: ToolGroup[] | null): Re
   );
 }
 
+/** The ticked tools that declare **no resource** — and are therefore not restricted by
+ *  any scope, because `permissions.check` loops over a tool's resources and an empty list
+ *  falls through to allow (plan 107, D8).
+ *
+ *  Derived from the catalogue like `requiredRows`, and it is its complement: a ticked
+ *  tool contributes a row or it appears here, never both. Ordered as ticked. Unknown
+ *  when the catalogue is: a name the catalogue does not describe is neither restricted
+ *  nor unrestricted, and `Reach` already says what such a name is. */
+export function unrestrictedTools(tools: string[], catalogue: ToolGroup[] | null): string[] {
+  const known = new Map<string, boolean>();
+  for (const group of catalogue ?? []) {
+    for (const tool of group.tools) known.set(tool.name, tool.resources.length === 0);
+  }
+  return tools.filter((name) => known.get(name) === true);
+}
+
 /** The scope, computed. Never stored — see the module docstring. */
 export function scopeOf(
   draft: Draft,

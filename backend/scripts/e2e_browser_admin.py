@@ -277,7 +277,7 @@ def main():
         TENANT,
         {
             "issuer": provider.issuer,
-            "jwks_uri": f"{provider.issuer}/v1/keys",
+            "jwks_uri": f"{IDP}/v1/keys",
             "audience": dev_idp.AUDIENCE,
             "subject_claim": "uid",
             "email_claim": "sub",
@@ -381,9 +381,9 @@ def drive():
         say("the three sections, offered in the sidebar to an administrator")
         page.click("nav.sidebar-nav a:has-text('Audit log')")
         check(
-            "Audit log, Groups, Connectors",
-            [i for i in nav(page) if i in ("Audit log", "Groups", "Connectors")],
-            ["Audit log", "Groups", "Connectors"],
+            "Audit log, Groups, Connectors, Identity providers, People, Administrators",
+            [i for i in nav(page) if i in ("Audit log", "Groups", "Connectors", "Identity providers", "People", "Administrators")],
+            ["Audit log", "Groups", "Connectors", "Identity providers", "People", "Administrators"],
         )
         # **Waited for, not read immediately.** The log is fetched after the shell paints,
         # so reading `page.content()` straight after the nav renders is a race — it passed
@@ -433,22 +433,17 @@ def drive():
         # The tag in the table, not the notice above the form that says the same words.
         check("the row is marked in the list",
               page.locator("td span.tag:has-text('not reachable')").count() >= 1, True)
-        # **A warning is not an approval.** A host that can never be dialled must not
-        # unlock the stage that depends on one, or the refusal arrives at the first run
-        # instead of here.
-        check(
-            "and it does not unlock registration",
-            page.locator("button:has-text('Register')").count(),
-            0,
-        )
+        # **A warning is not an approval.** Since 107 D4 the gate is the setup's own
+        # address step, asserted there below; the list page offers the setup whether
+        # or not a host is approved, because approving one is the setup's second step.
 
         say("she approves the real one")
         page.fill("input[placeholder='mcp.acme.com']", HOST)
         page.click("button:has-text('Approve')")
         page.wait_for_timeout(1200)
         check(
-            "registration is offered now",
-            page.locator("button:has-text('Register')").count(),
+            "and the setup is offered as a link",
+            page.locator("a.btn:has-text('Add a connector')").count(),
             1,
         )
 
@@ -460,7 +455,32 @@ def drive():
         # form with two boxes is a form somebody fills in both of. What a browser adds
         # over `ConnectorsPage.test.tsx` is that the second box genuinely is not on the
         # page until the choice is made — under the served CSP, with the real stylesheet.
-        say("first she reads what the form offers about where the credential lives")
+        say("she opens the setup, which is six steps in the order the backend needs them")
+        page.click("a.btn:has-text('Add a connector')")
+        page.wait_for_selector("h2:text-is('Start')", timeout=15000)
+        check("step one of six is lit", page.locator("ol.steps li.on").inner_text().strip().endswith("Start"), True)
+        page.click("button:has-text('Continue')")
+        page.wait_for_selector("h2:text-is('Address')", timeout=15000)
+
+        say("the address step will not let her past a host that is not approved")
+        page.fill("input[placeholder='https://mcp.acme.com/mcp']", "https://not-approved.localtest.me/mcp")
+        page.wait_for_selector("text=not approved", timeout=10000)
+        check("Continue is disabled", page.locator("button:has-text('Continue')").is_disabled(), True)
+        says("with the reason beside it", page.content(), "to continue. Connectors can only connect to approved hosts")
+        check("and the approval is offered where the question is asked",
+              page.locator("button:has-text('Approve host')").count(), 1)
+
+        say("she points it at the host she approved, and continues")
+        page.fill("input[placeholder='https://mcp.acme.com/mcp']", MCP_URL)
+        page.wait_for_selector("span.badge:has-text('approved'), .badge:has-text('approved')", timeout=10000)
+        page.wait_for_timeout(300)
+        page.click("button:has-text('Continue')")
+        page.wait_for_selector("h2:text-is('Server')", timeout=15000)
+        page.fill("input[placeholder='jira']", "acme")
+        page.click("button:has-text('Continue')")
+        page.wait_for_selector("h2:text-is('Shared credential')", timeout=15000)
+
+        say("first she reads what the credentials step offers about where the credential lives")
         check(
             "the variable box is there and the vault box is not",
             (
@@ -493,13 +513,23 @@ def drive():
         page.click("label.choice:has-text('Environment variable')")
         page.wait_for_timeout(400)
 
-        page.fill("input[placeholder='jira']", "acme")
-        page.fill("input[placeholder='https://mcp.acme.com/mcp']", MCP_URL)
         page.click("button:has-text('Register')")
-        page.wait_for_timeout(1500)
-        # Registering answers with a card rather than a notice now, so the sentence
-        # that says nothing is approved yet is the card's own — scoped to it, because
-        # the form below the cards ends with "approve the tools" in its own words.
+        # The setup lands on its tools step: the connector page's own discovery card,
+        # with the credential sentence above the button (107 D5).
+        page.wait_for_selector("h2:text-is('Available tools')", timeout=15000)
+        check("step five of six is lit", page.locator("ol.steps li.on").inner_text().strip().endswith("Tools"), True)
+        says("and says which credential discovery will use",
+             page.locator("section.card:has(h2:text-is('Available tools'))").inner_text(),
+             "no credential yet")
+        page.click("div.wizard-nav button:has-text('Done')")
+        page.wait_for_selector("h2:text-is('Done')", timeout=15000)
+        # The sentence waits on the connector's own row, fetched after the heading paints.
+        page.wait_for_selector("text=is registered with no tools approved yet", timeout=15000)
+        says("done says what was made", page.content(), "is registered with no tools approved yet")
+
+        say("back on the list, the new connector is a card")
+        page.goto(f"{APP}/admin/connectors")
+        page.wait_for_selector("div.conn-card:has-text('acme')", timeout=15000)
         acme_card = page.locator("div.conn-card:has-text('acme')").first.inner_text()
         says("and is told nothing is approved yet", acme_card, "No tools approved yet")
         says("with the next thing to do", acme_card, "Open it to discover and approve tools")
@@ -515,6 +545,16 @@ def drive():
         )
 
         # --- discovery -------------------------------------------------------------------
+
+        say("the page says which credential discovery will use, before she clicks")
+        # Step 110f (107 D5). Three sentences, one true: this connector was registered
+        # with a shared variable name and nothing set in it, so the honest answer is
+        # that there is no credential yet — said above the button, not learned from a
+        # 401 after it.
+        page.wait_for_selector("text=Available tools", timeout=15000)
+        tools_card = page.locator("section.card:has(h2:text-is('Available tools'))")
+        tools_card.locator("text=/Discovery will use|no credential yet/").first.wait_for(timeout=15000)
+        says("as a sentence above Discover", tools_card.inner_text(), "Discover")
 
         say("she looks at the server")
         page.click("button:has-text('Discover')")
@@ -766,11 +806,23 @@ def drive():
             False,
         )
 
-        page.fill("input[placeholder='jira']", "trusted")
+        # Through the setup (107 D4): the address, the server, then the box on the
+        # credentials step — the one control 091 refused to fold away.
+        page.click("a.btn:has-text('Add a connector')")
+        page.wait_for_selector("h2:text-is('Start')", timeout=15000)
+        page.click("button:has-text('Continue')")
         page.fill("input[placeholder='https://mcp.acme.com/mcp']", MCP_URL)
+        page.wait_for_selector(".badge:has-text('approved')", timeout=10000)
+        page.wait_for_timeout(300)
+        page.click("button:has-text('Continue')")
+        page.fill("input[placeholder='jira']", "trusted")
+        page.click("button:has-text('Continue')")
+        page.wait_for_selector("h2:text-is('Shared credential')", timeout=15000)
         page.check("input[type='checkbox']")
         page.click("button:has-text('Register')")
-        page.wait_for_timeout(1500)
+        page.wait_for_selector("h2:text-is('Available tools')", timeout=15000)
+        page.goto(f"{APP}/admin/connectors")
+        page.wait_for_selector("div.conn-card:has-text('trusted')", timeout=15000)
 
         # **Scoped to the card.** The registration form below these cards describes the
         # same control in the same words — deliberately, so two screens cannot word one
@@ -800,6 +852,82 @@ def drive():
             page.locator("button:has-text('Stop accepting asserted identity')").count(),
             1,
         )
+
+        # --- identity providers (step 110) ---------------------------------------------
+
+        say("the provider she signed in through is on the identity-provider page")
+        page.click("nav.sidebar-nav a:has-text('Identity providers')")
+        page.wait_for_selector("text=Register a provider", timeout=15000)
+        page.wait_for_selector(f".row:has-text('{IDP}')", timeout=15000)
+        own_row = page.locator(f".row:has-text('{IDP}')").first.inner_text()
+        says("routing on the whole issuer", own_row, "Routes on the whole issuer")
+        says("vouching for the world's domain", own_row, "acme.com")
+        says("and mapping the claims the world registered", own_row, "identity: uid")
+
+        say("removing it is refused, in the server's words, because she is signed in through it")
+        page.locator(f".row:has-text('{IDP}')").first.locator(
+            "button:has-text('Remove…')"
+        ).click()
+        page.wait_for_selector("text=Remove this provider?", timeout=5000)
+        says("the confirmation names the consequence", page.content(), "locked out at their next sign-in")
+        page.click(".notice button:has-text('Remove')")
+        page.wait_for_selector("text=would lock this tenant out", timeout=10000)
+        check("and the row is still there",
+              page.locator(f".row:has-text('{IDP}')").count(), 1)
+
+        say("looking up an issuer that serves no discovery document says what to do instead")
+        page.fill("input[placeholder='https://acme.okta.com']", f"http://127.0.0.1:{MCP_PORT}")
+        page.click("button:has-text('Look it up')")
+        page.wait_for_selector("text=enter its JWKS URL by hand", timeout=20000)
+
+        say("she registers a second provider by hand, and it is listed")
+        page.fill("input[placeholder='https://acme.okta.com']", "https://login.example.com/acme/v2.0")
+        page.fill("input[placeholder='https://acme.okta.com/oauth2/v1/keys']",
+                  "https://login.example.com/acme/discovery/keys")
+        page.fill("input[placeholder='api://default']", "api://carnet")
+        page.fill("input[placeholder='acme.com, acme.co.uk']", "acme.com")
+        page.click("button:has-text('Register')")
+        page.wait_for_selector("text=Registered https://login.example.com/acme/v2.0", timeout=10000)
+        page.wait_for_selector(".row:has-text('login.example.com')", timeout=10000)
+
+        say("and removes it again, which is allowed")
+        second_row = page.locator(".row:has-text('login.example.com')").first
+        second_row.locator("button:has-text('Remove…')").click()
+        # Scoped to the row: the first row's refusal is still on the page, and an
+        # unscoped `.notice button` found that row's notice first on this scene's first
+        # run — which is also why the page now closes a confirmation on refusal.
+        second_row.locator(".notice button:has-text('Remove')").click()
+        page.wait_for_timeout(1500)
+        check("gone from the list", page.locator(".row:has-text('login.example.com')").count(), 0)
+        check("and the one she signed in through remains",
+              page.locator(f".row:has-text('{IDP}')").count(), 1)
+
+        # --- people and administrators (step 110) ---------------------------------------
+
+        say("the people page lists her, marked as herself, and refuses to cut her off")
+        page.click("nav.sidebar-nav a:has-text('People')")
+        page.wait_for_selector(f".row:has-text('{BOOTSTRAP_EMAIL}')", timeout=15000)
+        her_row = page.locator(f".row:has-text('{BOOTSTRAP_EMAIL}')").first
+        says("marked as herself", her_row.inner_text(), "you")
+        her_row.locator("button:has-text('Cut off…')").click()
+        page.wait_for_selector("text=Their sign-in stops now", timeout=5000)
+        her_row.locator(".notice button:has-text('Cut off')").click()
+        page.wait_for_selector("text=no way back from a browser", timeout=10000)
+        # By the verb offered, not by the words in the row: the row always says "Cut
+        # off…" on its button, and a Tag is uppercased by CSS, which `inner_text`
+        # honours — both found by this scene's first two runs.
+        check("and she is still active", her_row.locator("button:has-text('Cut off…')").count(), 1)
+
+        say("the administrators page names her, her appointer, and the command — with no button")
+        page.click("nav.sidebar-nav a:has-text('Administrators')")
+        page.wait_for_selector("text=Platform roles", timeout=15000)
+        roles_content = page.content()
+        says("by address", roles_content, BOOTSTRAP_EMAIL)
+        says("appointed by the bootstrap", roles_content, "system:bootstrap")
+        says("the shell command", roles_content, "carnet --grant-role admin")
+        says("and why it is not a button", roles_content, "keeps the authority after the session is gone")
+        check("no button on the page at all",
+              page.locator("main button, section.card button").count(), 0)
 
         # --- groups ------------------------------------------------------------------
 
@@ -957,12 +1085,18 @@ def drive():
         # one is, and a count of nine says nothing about whether any of them grants.
         #
         # Tabs are excluded by role rather than by name, so a ninth dialect does not
-        # reopen this. What is asserted is what the section is about: every control that
-        # is not a tab is the caller minting for themselves.
+        # reopen this, and so are the copy buttons 110f added beside the address, the
+        # configs and the secret — a clipboard write grants nothing. What is asserted is
+        # what the section is about: every remaining control is the caller generating
+        # for themselves.
         check(
-            "and the page's only non-tab control is the session's own mint (044) — "
+            "and the page's only non-tab, non-copy control is the session's own mint (044) — "
             "nothing grants to anybody else",
-            sorted(page.locator("main button:not([role='tab'])").all_inner_texts()),
+            sorted(
+                text.strip()
+                for text in page.locator("main button:not([role='tab'])").all_inner_texts()
+                if text.strip() not in ("Copy", "Copied")
+            ),
             ["Generate token"],
         )
         says("...and the tabs beside it only choose a snippet (075)",
@@ -1203,11 +1337,28 @@ def drive():
             "read:everything" in legacy,
             False,
         )
+        # Two Disconnects and, since 110f (plan 107 D11), two Tests — and still nothing
+        # here refreshes or grants.
         check(
-            "two rows, two Disconnects, and nothing here refreshes or grants",
-            page.locator("main button").count(),
-            2,
+            "two rows, two Disconnects, two Tests, and nothing here refreshes or grants",
+            sorted(page.locator("main button").all_inner_texts()),
+            ["Disconnect", "Disconnect", "Test", "Test"],
         )
+
+        # **Test, on a connection whose credential is a placeholder.** The seeded row's
+        # ciphertext was never sealed by this deployment's key, so the one honest answer
+        # is a sentence about *that* — rendered on the row, verbatim — rather than a
+        # tool count invented from the shared credential. The property under test is
+        # the route's refusal to fall through, observed from the page.
+        say("and Test on it answers with a sentence on the row, not a count from elsewhere")
+        acme_row.locator("button:has-text('Test')").click()
+        try:
+            acme_row.locator(".notice").wait_for(timeout=15000)
+        except Exception:
+            pass
+        answer = acme_row.locator(".notice").inner_text() if acme_row.locator(".notice").count() else ""
+        check("a sentence appeared on the row", bool(answer.strip()), True)
+        check("and it is not a tool count", "offers" in answer and "tools." in answer, False)
 
         # --- sharing with a group, 035h -------------------------------------------------
 
@@ -1709,6 +1860,36 @@ def drive():
             admin.locator("section.card:has(h2:text-is('Instructions'))").inner_text(),
             "in this version",
         )
+
+        # --- cutting somebody off, from a browser (step 110, decision 4) ----------------
+        #
+        # Last, because it is the one act here that changes what another person can do,
+        # and sam has scenes above that need him. Priya cuts him off from her page; his
+        # own page, reloaded, is refused; she lets him back in.
+
+        say("priya cuts sam off from the people page")
+        admin.goto(f"{APP}/admin/people")
+        admin.wait_for_selector(f".row:has-text('{SECOND_PERSON}')", timeout=15000)
+        sam_row = admin.locator(f".row:has-text('{SECOND_PERSON}')").first
+        sam_row.locator("button:has-text('Cut off…')").click()
+        sam_row.locator(".notice button:has-text('Cut off')").click()
+        # Waited on the verb that appears only after the reload: `:has-text('cut off')`
+        # matched the row's own "Cut off…" button at once, before the list had reloaded.
+        admin.wait_for_selector(f".row:has-text('{SECOND_PERSON}') button:has-text('Let back in')", timeout=10000)
+        check("the row says so, by offering the way back",
+              admin.locator(f".row:has-text('{SECOND_PERSON}') button:has-text('Let back in')").count(), 1)
+
+        say("and sam's own session is refused at its next request")
+        sam_page.goto(f"{APP}/agents")
+        sam_page.wait_for_timeout(2500)
+        says("with the account named as disabled", sam_page.content(), "disabled")
+
+        say("she lets him back in")
+        admin.locator(f".row:has-text('{SECOND_PERSON}')").first.locator("button:has-text('Let back in')").click()
+        admin.wait_for_timeout(1500)
+        admin.wait_for_selector(f".row:has-text('{SECOND_PERSON}') button:has-text('Cut off…')", timeout=10000)
+        check("and the row offers to cut him off again, so he is back",
+              admin.locator(f".row:has-text('{SECOND_PERSON}') button:has-text('Cut off…')").count(), 1)
 
         browser.close()
 

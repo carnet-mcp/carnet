@@ -2893,3 +2893,27 @@ def test_vetting_from_a_recipe_applies_its_response_cap(monkeypatch, tenant_with
     assert vetted["chat_completions"].redact_args == ("messages", "tools", "functions", "prediction")
     # The flag still wins.
     assert vetted["embeddings"].max_response_bytes == 1000
+
+
+# --- withdrawing an approval and deregistering, plan 107 D7 (110f) --------------------
+
+
+def test_withdraw_tool_and_deregister_connector_mirror_the_screen(monkeypatch, capsys):
+    """The shell's spellings of the two row actions the connector page gained."""
+    _jira_from_recipe(monkeypatch)
+
+    run(monkeypatch, "--withdraw-tool", "jira", "--tool", "search")
+    assert "was not approved" in message(capsys)
+
+    fails(monkeypatch, "--withdraw-tool", "jira")
+    assert "needs --tool" in message(capsys)
+
+    fails(monkeypatch, "--withdraw-tool", "nope", "--tool", "x")
+    assert "nope" in message(capsys)
+
+    run(monkeypatch, "--deregister-connector", "jira")
+    assert "Deregistered 'jira'" in message(capsys)
+    assert storage.active().get_connector(cli.DEFAULT_TENANT_ID, "jira") is None
+
+    run(monkeypatch, "--deregister-connector", "jira")
+    assert "Nothing to do" in message(capsys)

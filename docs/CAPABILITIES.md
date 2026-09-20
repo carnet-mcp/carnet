@@ -165,7 +165,7 @@ browser also does, plus the operator's commands the browser deliberately does no
 
 | Flag | What it does |
 | --- | --- |
-| `--grant-role ROLE WHO` | make somebody an administrator of this tenant (`admin`). Refused for an address nobody has signed in with — a role is not an invitation |
+| `--grant-role ROLE WHO` | make somebody an administrator of this tenant (`admin`). Refused for an address nobody has signed in with — a role is not an invitation. Deliberately shell-only: the Administrators screen reads roles and prints this command (12b, 110) |
 | `--revoke-role ROLE WHO` | take a platform role away; warns when the tenant is left with no administrator |
 | `--list-roles` | who may administer this tenant |
 
@@ -188,7 +188,7 @@ browser also does, plus the operator's commands the browser deliberately does no
 | Flag | What it does |
 | --- | --- |
 | `--list-users` | who is in this tenant, their status, whether they have signed in |
-| `--disable-user WHO` | cut somebody off now: sign-in refused, every token they own refused at its next call. Nothing they made is deleted |
+| `--disable-user WHO` | cut somebody off now: sign-in refused, every token they own refused at its next call. Nothing they made is deleted. Also on the People screen since 110 |
 | `--enable-user WHO` | let a disabled person back in |
 
 ### Registering a connector
@@ -214,6 +214,9 @@ browser also does, plus the operator's commands the browser deliberately does no
 | `--list-hosts` | which hosts this tenant will dial, and who approved each |
 | `--discover ID` | connect and print what the server advertises, with input schemas — and the block to paste into a `carnet.yaml` |
 | `--vet ID` | approve one of a connector's tools. Needs `--tool` and `--effect` |
+| `--withdraw-tool CONNECTOR` | with `--tool`: withdraw one tool's approval; agents that grant it become invalid at their next read (the screen's Remove, from the shell) |
+| `--deregister-connector CONNECTOR` | remove a connector and every approval on it; refused while anybody has an account connected to it, and the refusal counts them |
+| `--disconnect-accounts` | with `--deregister-connector`: disconnect everybody in the same act. Nothing is revoked at the provider, so those people must revoke there |
 | `--tool TOOL` | the tool name the server advertises |
 | `--effect {read,write}` | does this tool observe, or change something |
 | `--identity {service,user}` | whose account it acts as: the connector's shared credential, or the caller's own connected account — refused when they have none, never the shared fallback |
@@ -265,7 +268,7 @@ browser also does, plus the operator's commands the browser deliberately does no
 | `--tenant-status TENANT_ID STATUS` | `active` or `suspended`. Suspending stops sign-ins and refuses every door call; nothing is deleted |
 | `--prune-logs` | run one retention sweep now and report what went. Needs `CARNET_RETENTION_DAYS` |
 | `--delete-tenant TENANT_ID` | erase a customer and everything of theirs, permanently. Must be suspended first; prompts for the id as confirmation |
-| `--add-idp TENANT_ID` | register an identity provider (needs `--issuer`, `--jwks-uri`, `--audience`) |
+| `--add-idp TENANT_ID` | register an identity provider (needs `--issuer`, `--jwks-uri`, `--audience`). Since 110 an administrator can do the same for their own tenant from the Identity providers screen |
 | `--issuer ISSUER` | the provider's `iss` claim, exactly as it emits it |
 | `--jwks-uri JWKS_URI` | where it publishes its signing keys |
 | `--audience AUDIENCE` | what a token's `aud` must be |
@@ -381,10 +384,11 @@ is relayed whole, with its `Retry-After`.
 | Route | What it answers |
 | --- | --- |
 | `GET /tools` | everything this tenant may grant, grouped by where it came from |
-| `GET /connections` | every vetted connector, and this person's own state for each |
+| `GET /connections` | every vetted connector, and this person's own state for each, with `used_by` — the agents they may use whose tools act as them there (110f) |
 | `POST /connectors/{connector_id}/connect` | start the consent flow: a URL at the provider, carrying PKCE and never the secret |
 | `GET /connect/callback` | where the provider sends the browser back; exchanges the code and redirects to the Connections page |
 | `DELETE /connectors/{connector_id}/connection` | disconnect this person's own account, revoking upstream where it can |
+| `POST /connectors/{connector_id}/connection/test` | ask the server for its tool list under this person's own connected account: how many it offered, which approved tools it still offers, and which approvals it has stopped offering. Refused when no account is connected, never falls through to the shared credential, and refused for a REST connector, which does not describe itself |
 
 ### Groups
 
@@ -403,48 +407,63 @@ is relayed whole, with its `Retry-After`.
 | Route | What it answers |
 | --- | --- |
 | `GET /admin/overview` | the numbers the Overview page draws: calls per day, latency, refusals by control, who called, what it cost |
-| `GET /admin-audit` | the administrative log: who granted, revoked, vetted or deleted what |
-| `GET /admin/denials` | the access-denial log |
-| `GET /admin/door-calls` | the door log: who called what, as whom, and what was refused; since step 108 every row carries `owner` (the person behind a personal token, by email) and `?owner=` filters by it |
+| `GET /admin-audit` | the administrative log: who granted, revoked, vetted or deleted what; newest first since 110f, every row carrying its `id`, and `?before=<id>` turns the page to the rows older than it |
+| `GET /admin/denials` | the access-denial log; newest first, `id` on every row, `?before=` pages (110f) |
+| `GET /admin/door-calls` | the door log: who called what, as whom, and what was refused; since step 108 every row carries `owner` (the person behind a personal token, by email) and `?owner=` filters by it; newest first, `id` on every row, `?before=` pages (110f) |
 | `GET /admin/hosts` | every host this tenant will dial, and who approved each |
 | `POST /admin/hosts` | approve one; a host that can never be dialled is recorded with a warning |
 | `DELETE /admin/hosts/{host}` | withdraw one; connectors are not touched, and the answer names what is stranded |
 | `GET /admin/recipes` | the connector presets this build ships |
 | `GET /admin/connectors` | every registered connector, what is vetted on it, and whether people can self-serve it |
-| `POST /admin/connectors` | register one; it vets nothing |
+| `POST /admin/connectors` | register one; it vets nothing. Since 110f a body naming `from_recipe` has the preset **applied** on the server — every field the body leaves empty takes the preset's value — under one merge rule the CLI shares |
+| `DELETE /admin/connectors/{connector_id}` | deregister one and every approval on it; refused (409) while anybody has an account connected to it, because a sealed credential is never deleted as a side effect. `?disconnect_accounts=true` is the deliberate way through: it removes those connections in the same transaction and answers with how many, and nothing is revoked at the provider |
+| `GET /admin/connectors/{connector_id}/discovery-credential` | which credential a Discover would use — your connected account, the shared credential, or none — said before the click and without dialling |
 | `GET /admin/connectors/{connector_id}` | one connector and what was approved on it, by whom, against what server version |
-| `POST /admin/connectors/{connector_id}/discovery` | ask the server what it offers right now, with each tool's arguments and whether it is vetted |
+| `POST /admin/connectors/{connector_id}/discovery` | ask the server what it offers right now, with each tool's arguments and whether it is vetted, and which credential the dial used |
 | `PUT /admin/connectors/{connector_id}/tools/{remote_name}` | approve one tool; re-vetting restamps the row |
+| `DELETE /admin/connectors/{connector_id}/tools/{remote_name}` | withdraw one approval; agents granting it become invalid at their next read, nothing else is touched |
 | `PUT /admin/connectors/{connector_id}/asserted-identity` | turn asserted acting-for on or off for one connector |
 | `PUT /admin/connectors/{connector_id}/oauth` | configure its consent flow; the secret goes in and never comes back |
 | `DELETE /admin/connectors/{connector_id}/oauth` | remove it; credentials people already gave are untouched |
+| `GET /admin/idps` | this tenant's identity providers, every column: issuer, key set, audience, what it routes on, the claim mappings, the domains it vouches for |
+| `POST /admin/idps` | register one, or replace the one with this issuer — `--add-idp` as a body, for the caller's own tenant; the answer says whether it replaced a row, because a replacement resets every claim mapping to what the body said |
+| `DELETE /admin/idps` | remove one, named by `?issuer=` (and `discriminator_value`) because an issuer is a URL and a slash in a path segment is a routing 404; the provider the caller signed in through is refused with the reason (it would lock the tenant out with them inside) |
+| `GET /admin/users` | who is in this tenant, their status, and whether they have ever signed in — a row that never has is one the directory sent; `?email=` answers by exact address, refusing a blank one, and returns every match because two providers can hold one address |
+| `POST /admin/users/{user_id}/disable` | cut somebody off now: sign-in refused, every token they own refused at its next call, nothing they made deleted. Refuses the caller's own row with the way back |
+| `POST /admin/users/{user_id}/enable` | let them back in; reverses the status and nothing else |
+| `GET /admin/roles` | who holds a platform role, since when and appointed by whom — a read; there is no route that grants one, on purpose (12b, 110) |
+| `POST /admin/idps/discover` | fetch an issuer's discovery document and return its key set URL and the claims it says it emits; a pinned dial with the operator's consent, refusing a document whose issuer is not the one asked for |
 
 ---
 
 ## 4. The screens
 
 React, served by the front door beside the API. The sidebar offers four pages to everyone
-and five more to an administrator.
+and eight more to an administrator.
 
 | Page | Path | What is on it |
 | --- | --- | --- |
 | Agents | `/agents` | the agents shared with you, each with the apps it touches and whether anyone has called through it |
 | Create wizard | `/agents/new` | four steps — name, tools, resources, review — that build a permission list and validate it before saving |
-| Agent detail | `/agents/:name` | the connect card with the MCP server URL and a paste-ready token, the share sheet, resource access, version history, rename and delete |
+| Agent detail | `/agents/:name` | the connect card — the MCP server URL, a config per client with copy buttons, a **Frameworks** group with the LangChain, CrewAI, OpenAI Agents SDK and AutoGen snippets (each run from here against a real door, with the install snag where there was one), and **Generate a token** in place: a service token is granted this agent as it is generated and the secret is filled into the config until Done — the share sheet, resource access, version history, rename and delete |
 | Edit | `/agents/:name/edit` | the same form over an existing agent, refusing to overwrite an edit somebody else made meanwhile |
 | A version | `/agents/:name/versions/:version` | one stored configuration and a Restore button |
-| Connections | `/connections` | every approved connector and your own state for each: a Connect button that starts consent, what it will ask for, who you are connected as, Disconnect |
-| Access tokens | `/tokens` | your tokens: generate one, see its secret once, revoke it |
+| Connections | `/connections` | every approved connector and your own state for each: a Connect button that starts consent, what it will ask for, who you are connected as, which agents act as you there (**Used by**, each a link), **Test** — the server's tool count under your own account — and Disconnect; a connector with no sign-in names your administrator as the one with the task, and links an administrator to its page |
+| Access tokens | `/tokens` | your tokens: generate one from the page head, see its secret once with a copy button, revoke it |
 | A token | `/tokens/:tokenId` | its four stamps, resource access, the simulator (*would this call be allowed*), and today's spend against its limit |
 | Usage | `/overview` (also `/admin/overview`) | a month of requests drawn: calls per day, how long they took, how big the answers were, who called, under which agent, what was denied and by which control, what it cost |
 | Approve a client | `/oauth/authorize` | the consent page a Claude Desktop or Cursor lands on: which client, what it will reach, Approve or Deny |
 | Sign-in callback | `/login/callback` | where the identity provider sends the browser back |
-| Audit log | `/admin` | every change to access in the workspace |
-| Request log | `/admin/door-calls` | every tool call through the MCP server, row by row, with each denial's own sentence |
-| Access denied | `/admin/denials` | who tried what, and was denied |
-| Groups | `/admin/groups` | groups, their members, and whether a directory owns the membership |
-| Connectors | `/admin/connectors` | approve a host, register a connector, from a recipe or by hand |
-| A connector | `/admin/connectors/:connectorId` | discovery against the live server, approve each tool with its effect and resources, set up the OAuth app |
+| Audit log | `/admin` | every change to access in the workspace, newest first, a hundred at a time with **Show older**; an agent, token, connector or group target is a link to its page |
+| Request log | `/admin/door-calls` | every tool call through the MCP server, newest first with **Show older**, each denial's own sentence; a filter bar (tool, agent, token, outcome, dates) that writes the URL, the agent and token linked, the tool a filter |
+| Access denied | `/admin/denials` | who tried what, and was denied — newest first with **Show older**, the filters in the URL so a narrowed view is a link, an agent linked and a tool a filter |
+| Groups | `/admin/groups` | groups, their members, and whether a directory owns the membership; a person is added by email address, resolved and named before **Add** |
+| Connectors | `/admin/connectors` | what is connected, as cards, with **Add a connector**; the approved hosts, and withdrawing one |
+| Add a connector | `/admin/connectors/new` | the setup as six steps in the order it needs them: a preset or not, the address and its host (approved in place), the server, the credentials — the shared one and the OAuth app, pre-filled from the preset — then the tools, then done |
+| People | `/admin/people` | everyone who has signed in or whom the directory sent, with their status; cut somebody off, or let them back in, with what stops and what stays said in place |
+| Administrators | `/admin/roles` | who holds a platform role, appointed by whom and since when; the shell command for a change, and the sentence that says why it is not a button |
+| Identity providers | `/admin/idps` | who may vouch for a person signing in: the registered providers, a form over the nine flags of `--add-idp` with a look-up that fills the key set from the provider's discovery document, and removal that refuses the one you signed in through |
+| A connector | `/admin/connectors/:connectorId` | in the order setup needs them: the registration (and the preset it came from), the OAuth app — seeded from the preset's block until one is configured — the approved tools with **Edit** and **Remove** on each row, discovery against the live server with the credential it will use said above the button and *Connect your account* when there is none, the REST authoring form with its request binding, usage map and prices, the on-behalf-of posture, and **Deregister** |
 
 `/` redirects to the agents page; anything unrouted is a Not found page.
 
@@ -529,6 +548,7 @@ otherwise; a misspelt value is refused rather than defaulted.
 | `CARNET_DOMAIN` | the hostname the front door terminates TLS for |
 | `CARNET_BASE_REGISTRY` | the mirror the four pinned base images are pulled from (default `docker.io`); the digests stay, so a retargeted build is the same bytes from a different address |
 | `CARNET_DB_IMAGE` | the bundled database's image reference, whole — only for a sealed estate where the image arrived in a tarball and the pinned digest cannot match it (`docs/OFFLINE.md`) |
+| `CARNET_API_IMAGE` / `CARNET_FRONT_IMAGE` | the two built images by reference, for a team that pulls the published pair (`ghcr.io/carnet-mcp/carnet`, `ghcr.io/carnet-mcp/carnet-front`) rather than building from the checkout; unset, compose builds and names them itself |
 | `CARNET_HTTP_PORT` / `CARNET_HTTPS_PORT` | the only published ports (default 80 and 443) |
 | `CARNET_DB_PASSWORD` | the bundled database's password |
 | `CARNET_OIDC_ISSUER` / `CARNET_OIDC_CLIENT_ID` / `CARNET_OIDC_SCOPES` | the browser's identity provider, declared once and served to the SPA and its CSP |
