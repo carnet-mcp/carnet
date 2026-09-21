@@ -1671,8 +1671,15 @@ def the_managed_database() -> None:
                            env_file=env, capture_output=True, text=True)
         names = sorted(json.loads(line)["Service"]
                        for line in services.stdout.splitlines() if line.strip())
+        # The point is the absence of `db`, not the arithmetic — but it is spelled as
+        # the whole list on purpose, so a service appearing here has to be looked at
+        # rather than absorbed. `setup` joined it in step 121; this list is the one
+        # the local run cannot reach, because the scene needs an external Postgres and
+        # skips without CARNET_E2E_PG. It was found by CI, which is the arrangement
+        # working, and the remedy is to run this scene locally with a throwaway
+        # database rather than to trust the skip.
         check("...and `db` is not among the containers",
-              names, ["api", "front", "migrate"])
+              names, ["api", "front", "migrate", "setup"])
 
         subprocess.run(["docker", "network", "connect", network, holder],
                        capture_output=True, text=True)
