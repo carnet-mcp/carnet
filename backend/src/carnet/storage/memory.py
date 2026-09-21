@@ -3110,6 +3110,68 @@ class InMemoryStorage:
             self._append_admin(tenant_id, record)
             return True
 
+    def move_users_to_issuer(
+        self, tenant_id: str, from_issuer: str, to_issuer: str, *, actor: str
+    ) -> dict:
+        split_actor(actor)
+        if from_issuer == to_issuer:
+            raise StorageError(
+                "the old and the new issuer are the same, so every row would be "
+                "stripped of its subject and re-adopted where it already was."
+            )
+
+        moved: list[str] = []
+        skipped: list[dict] = []
+        with self._lock:
+            taken = {
+                normalize_email(row["email"])
+                for row in self._users.values()
+                if row["tenant_id"] == tenant_id
+                and row["issuer"] == to_issuer
+                and normalize_email(row["email"])
+            }
+            rows = sorted(
+                (
+                    row
+                    for row in self._users.values()
+                    if row["tenant_id"] == tenant_id and row["issuer"] == from_issuer
+                ),
+                key=lambda row: (row["created_at"], row["id"]),
+            )
+
+            for row in rows:
+                address = normalize_email(row["email"])
+                if not address:
+                    skipped.append(
+                        {"id": row["id"], "email": "", "why": "no email address"}
+                    )
+                    continue
+                if address in taken:
+                    skipped.append(
+                        {
+                            "id": row["id"],
+                            "email": row["email"],
+                            "why": "that address already exists at the new provider",
+                        }
+                    )
+                    continue
+                row["issuer"] = to_issuer
+                row["subject"] = None
+                self._append_admin(
+                    tenant_id,
+                    make_admin_record(
+                        "user.reissue",
+                        "user",
+                        row["id"],
+                        actor,
+                        {"from_issuer": from_issuer, "to_issuer": to_issuer},
+                    ),
+                )
+                taken.add(address)
+                moved.append(row["id"])
+
+        return {"moved": moved, "skipped": skipped}
+
     def find_user_by_external_id(
         self, tenant_id: str, issuer: str, external_id: str
     ) -> dict | None:

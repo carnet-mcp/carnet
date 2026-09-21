@@ -1637,6 +1637,44 @@ class Storage(Protocol):
         locked out with no sentence saying why.
         """
 
+    def move_users_to_issuer(
+        self, tenant_id: str, from_issuer: str, to_issuer: str, *, actor: str
+    ) -> dict:
+        """Point this tenant's people at a different identity provider. Step 121.
+
+        The day a company that started on the bundled provider buys Okta. Without
+        this, the answer is *everybody gets a second row*: identity is
+        `(issuer, subject)`, so a token from the new provider matches nothing, and
+        `find_provisioned_user` matches nothing either because it looks only at rows
+        with **no subject at the same issuer**. The person signs in, a fresh row is
+        created, and their grants, their connected accounts, the agents they own and
+        their tokens all stay on the row they can no longer reach.
+
+        So each row is moved to the new issuer and has its subject **cleared**, which
+        is exactly the shape 071's adoption path already matches: same tenant, same
+        issuer, `subject IS NULL`, matched by the address the new provider vouches for
+        in a token it signed. The person keeps their `id`, and therefore everything
+        that names it. Nothing new has to be believed about identity — the one
+        existing by-address match is reused rather than a second one invented.
+
+        Returns `{"moved": [ids], "skipped": [{"id", "email", "why"}]}`, and skips
+        rather than guesses in the two cases where a machine should not decide:
+
+          - **no address.** The adoption path matches on one, so a moved row with no
+            email is a person who could never be adopted and can no longer sign in.
+          - **that address already exists at the new issuer.** Merging two real people
+            is not a batch job's call. Both rows are left exactly as they are and the
+            operator is told.
+
+        One `user.reissue` record per moved row, in the same transaction, because this
+        changes who may sign in as whom — the thing 110f found `--add-idp` was doing
+        without a trace.
+
+        Refused before anything is read when the two issuers are the same: the rows
+        would be stripped of their subjects and re-adopted at the issuer they were
+        already at, which is a no-op with one irreversible step in the middle.
+        """
+
     def find_user_by_external_id(
         self, tenant_id: str, issuer: str, external_id: str
     ) -> dict | None:
@@ -8331,6 +8369,14 @@ ADMIN_ACTIONS = frozenset(
         "user.create",
         "user.update",
         "user.adopt",
+        # Step 121. A person moved from one identity provider to another — the day a
+        # deployment that started on the bundled provider buys a real one. Its own
+        # action rather than `user.update`, because what changed is not an attribute:
+        # it is **who is allowed to sign in as this person**, which is the same class
+        # of fact `idp.save` and `role.grant` get their own rows for. The detail
+        # carries `from_issuer` and `to_issuer`, so the pair with the `user.adopt`
+        # that follows at the next sign-in is what shows the move completing.
+        "user.reissue",
         "user.disable",
         "user.enable",
         # The directory's credential, on `token.mint`/`token.revoke`'s terms: the

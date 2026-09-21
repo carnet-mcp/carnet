@@ -17,6 +17,20 @@ The provider half validates what `dev_idp.py` deliberately does not: `client_id`
 `redirect_uri` (exact match, at authorize and again at token), and PKCE. A bad
 client_id or redirect_uri is a 400 page, never a redirect — an unvalidated redirect
 target is an open redirect wearing an error message.
+
+**Two of the three jobs are optional (step 121, chunk A).** On the compose stack there
+is already a front door: Caddy terminates TLS, serves the bundle and proxies `/api/*`,
+and what is missing is only the provider. `EdgeConfig.provider_only` is that mode —
+`/idp/*` and nothing else, every other path a 404 — so the deployed provider and the
+`--local` one are **one handler rather than two implementations**, which is the drift
+that would actually matter: a login page, a PKCE check and a redirect allowlist
+maintained twice are maintained once and forgotten once.
+
+Note what does *not* change in that mode. One origin is still load-bearing, because
+`/idp/*` arrives through the same Caddy that serves the bundle — so `connect-src
+'self'` still covers the token exchange, the session cookie is still first-party in
+the renewal iframe, and the deployed CSP needs no provider-dependent source at all.
+The mode drops two jobs Caddy is already doing; it does not relax anything.
 """
 
 import http.client
@@ -73,9 +87,22 @@ class _BodyRefused(Exception):
         self.detail = detail
 
 
+# The provider's own pages — a login form and a register form, and nothing else. It is
+# deliberately stricter than the app's: no scripts at all, and `form-action 'self'` so
+# the one POST each page makes is the only navigation it can cause.
+#
+# **`frame-ancestors 'self'` is load-bearing since step 121, and it was missing.** On
+# `carnet --local` these pages were reached through an edge that sent this header and
+# no other; on the compose stack they are reached through a front door that also
+# stamps the *app's* policy on everything it serves, which carried `frame-ancestors`
+# for them. Step 121 had to stop that stamping — two policies enforce as their
+# intersection, and the app's `form-action 'none'` met this page's `'self'` and made
+# every registration and every sign-in **unsubmittable in a real browser** — so the
+# clickjacking clause has to be here, where it should have been all along. A password
+# form that any origin may frame is the one thing worse than a form nobody can submit.
 _PAGE_CSP = (
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
-    "base-uri 'none'"
+    "base-uri 'none'; frame-ancestors 'self'"
 )
 
 # The full policy for the *app's* HTML, served as a header exactly like the deploy
@@ -113,6 +140,13 @@ class EdgeConfig:
     # connection. False on loopback and on a plain-http origin, where a `Secure` cookie
     # would be dropped by the browser and silently refuse every login.
     secure_cookie: bool = False
+    # Step 121. Serve `/idp/*` and refuse everything else, for a deployment whose front
+    # door already serves the bundle and proxies the API (`localidp/service.py`). Then
+    # `dist_dir` and `api_port` are unused and the paths that read them are unreachable
+    # — which is why the refusal is one check at the top of each dispatcher rather than
+    # a branch in `_static` and `_proxy`: an unreachable path should be unreachable at
+    # the door, not somewhere inside the room.
+    provider_only: bool = False
 
     @property
     def origin(self) -> str:
@@ -141,6 +175,12 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            # Say so when this connection is not being kept (step 121). Something has
+            # already decided — a refused body, or a refusal that answered without
+            # reading one — and a client that is not told reuses the socket and gets a
+            # reset instead of a response.
+            if self.close_connection and not (extra or {}).get("Connection"):
+                self.send_header("Connection", "close")
             for name, value in (extra or {}).items():
                 self.send_header(name, value)
             self.end_headers()
@@ -213,7 +253,32 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
                     f"the request body ({length} bytes) is over this edge's "
                     f"{limit}-byte ceiling.",
                 )
+            # Recorded so the dispatchers can tell a handler that consumed the request
+            # from one that answered over it — see `do_POST`.
+            self._body_seen = True
             return self.rfile.read(length)
+
+        def _declares_a_body(self) -> bool:
+            """Does this request carry a body, whether or not anybody wants it?
+
+            Step 121's audit. `do_POST` decides after the fact — it knows whether a
+            handler called `_body` — but a GET handler never reads one, so the answer
+            is knowable *before* the response is written, which is the only moment a
+            `Connection: close` header can still be added to it.
+
+            A GET with a body is odd and entirely legal to send. Left alone it is the
+            same defect `do_POST` documents, reachable on purpose: the bytes stay on a
+            keep-alive socket, and behind a front door that pools its upstream
+            connections the next person's request is parsed out of them and answered
+            501. Found by driving the provider with raw sockets rather than a client
+            library, because every client library declines to send it.
+            """
+            if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+                return True
+            try:
+                return int(self.headers.get("Content-Length") or 0) > 0
+            except ValueError:
+                return True
 
         def _form(self) -> dict:
             raw = self._body(_MAX_FORM_BYTES).decode()
@@ -224,9 +289,31 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
 
         # --- routing -------------------------------------------------------------
 
+        def _outside_the_provider(self, path: str) -> bool:
+            """In provider-only mode, is this a path this server does not own?
+
+            One predicate, checked by every dispatcher, on `_closed_to_newcomers`'s
+            reasoning: a rule about what may be reached is the worst kind to spell
+            twice. `/config.json` is deliberately *not* carved out — on the compose
+            stack the front door writes and serves it, and a second copy served from
+            here is one the Caddyfile never routes to and nothing would notice going
+            stale.
+            """
+            return cfg.provider_only and not path.startswith("/idp")
+
         def do_GET(self):
             url = urllib.parse.urlparse(self.path)
             query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+
+            # Nothing below this line reads a request body, so a request that carries
+            # one is answered over it — see `_declares_a_body`. Decided here rather
+            # than in a `finally`, because here the response has not been written yet
+            # and can still say so.
+            if self._declares_a_body():
+                self.close_connection = True
+
+            if self._outside_the_provider(url.path):
+                return self._send(404, b'{"error":"not_found"}')
 
             if url.path == "/idp/v1/keys":
                 return self._send(200, json.dumps(provider.jwks()).encode())
@@ -236,7 +323,7 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
                 return self._page(
                     200,
                     pages.login_page(
-                        query, registration_open=cfg.registration == "open"
+                        query, registration_open=not self._closed_to_newcomers()
                     ),
                 )
             if url.path == "/idp/register":
@@ -268,7 +355,28 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
             return self._static(url.path)
 
         def do_POST(self):
+            """Dispatch a POST — and never keep a connection whose body went unread.
+
+            **Step 121, found by a browser behind the deployed front door.** Two paths
+            answer a POST without reading it: registration refused because this
+            deployment is closed, and the 404 below. `Content-Length` bytes then sit
+            unconsumed on a keep-alive socket, and the next request parsed off it
+            starts in the middle of that body — a garbage request line, answered 501.
+
+            Under `carnet --local` the client is a browser, which opens connections
+            freely, so the poisoned one was usually nobody's. Behind Caddy the upstream
+            connection is **pooled and shared**, so one refused registration broke the
+            *next person's* sign-in — which is how this was found: a refused stranger,
+            then an administrator's silent renewal failing on a 501.
+
+            `_refuse_body` already had this reasoning for the bodies it refuses
+            outright. This is the same rule for the bodies nobody asked for.
+            """
             url = urllib.parse.urlparse(self.path)
+            if self._outside_the_provider(url.path):
+                self.close_connection = True
+                return self._send(404, b'{"error":"not_found"}')
+            self._body_seen = False
             try:
                 if url.path == "/idp/v1/token":
                     return self._token()
@@ -280,6 +388,15 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
                     return self._proxy()
             except _BodyRefused as refused:
                 return self._refuse_body(refused)
+            finally:
+                # The net, not the notice. This runs *after* the handler's `_send` has
+                # already written its headers, so it cannot add `Connection: close` to
+                # that response — it only stops the socket being reused, which is the
+                # half that matters for correctness. A branch that means to refuse
+                # without reading says so itself, below, and gets the header too.
+                if not self._body_seen:
+                    self.close_connection = True
+            # Reached after the `finally` above, so this one does carry the header.
             return self._send(404, b'{"error":"not_found"}')
 
         def do_PUT(self):
@@ -293,12 +410,22 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
 
         def _proxy_or_404(self):
             path = urllib.parse.urlparse(self.path).path
-            if path == "/api" or path.startswith("/api/"):
-                try:
-                    return self._proxy()
-                except _BodyRefused as refused:
-                    return self._refuse_body(refused)
-            return self._send(404, b'{"error":"not_found"}')
+            self._body_seen = False
+            try:
+                if self._outside_the_provider(path):
+                    self.close_connection = True
+                    return self._send(404, b'{"error":"not_found"}')
+                if path == "/api" or path.startswith("/api/"):
+                    try:
+                        return self._proxy()
+                    except _BodyRefused as refused:
+                        return self._refuse_body(refused)
+                self.close_connection = True
+                return self._send(404, b'{"error":"not_found"}')
+            finally:
+                # `do_POST`'s rule, for the verbs that also carry bodies.
+                if not self._body_seen:
+                    self.close_connection = True
 
         def _refuse_body(self, refused: _BodyRefused):
             """Step 059's answer: the refusal as a sentence, in the API's own shape.
@@ -361,7 +488,7 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
                 return self._page(
                     200,
                     pages.login_page(
-                        query, registration_open=cfg.registration == "open"
+                        query, registration_open=not self._closed_to_newcomers()
                     ),
                 )
 
@@ -426,7 +553,7 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
                             "Too many attempts for that address. "
                             f"Try again in {retry} seconds."
                         ),
-                        registration_open=cfg.registration == "open",
+                        registration_open=not self._closed_to_newcomers(),
                     ),
                     "text/html; charset=utf-8",
                     extra={"Content-Security-Policy": _PAGE_CSP, "Retry-After": retry},
@@ -440,7 +567,7 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
                     pages.login_page(
                         form,
                         error="That address and password do not match an active account.",
-                        registration_open=cfg.registration == "open",
+                        registration_open=not self._closed_to_newcomers(),
                     ),
                 )
             throttle.succeeded(email)
@@ -453,6 +580,16 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
             two different ways, and a rule that decides who may create an account is
             the worst kind to keep two copies of: the two can drift and only one of
             them is the one an attacker meets.
+
+            **There was a third copy, and it drifted.** The sign-in page decided
+            whether to show *Create one* from `cfg.registration == "open"` alone, so a
+            deployment that is closed and has **nobody in it** hid the link — and the
+            first administrator, whose account the store would gladly have admitted,
+            had no way to reach the form but by typing `/idp/register` themselves.
+            That never showed under `carnet --local`, which defaults open on a loopback
+            trial; step 121 put this provider on a compose stack that publishes 443 and
+            therefore defaults **closed**, where it is a day-one dead end. Found by a
+            browser, in `e2e_browser_bundled.py`, on the first run of that script.
 
             **This is what renders the refusal, not what enforces it.** The enforcement
             is `create_account(only_if_first=...)`, which settles the question inside
@@ -482,6 +619,10 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
             # deployment still admits the first account and refuses every one after it.
             # Checked here too so the POST is never a path around the page's gate.
             if self._closed_to_newcomers():
+                # Answering over an unread body (step 121). `do_POST` would close the
+                # socket anyway; saying so here is what lets the client stop using it
+                # instead of discovering the reset.
+                self.close_connection = True
                 return self._page(403, pages.registration_closed_page())
             form = self._form()
             try:
@@ -502,6 +643,7 @@ def handler_for(cfg: EdgeConfig, provider: LocalProvider, db, throttle=None):
             except accounts_db.RegistrationClosed:
                 # Lost the race for the one account this deployment admits. Nothing
                 # they typed was wrong, so it is the closed page rather than the form.
+                # The body *was* read on this path, so the connection is fine.
                 return self._page(403, pages.registration_closed_page())
             except accounts_db.AccountError as exc:
                 return self._register_page(form, error=str(exc))

@@ -42,6 +42,7 @@ from .config import (
     DATABASE_URL,
     DEFAULT_TENANT_ID,
     PUBLIC_ORIGIN,
+    REQUEST_TIMEOUT,
 )
 from .storage import (
     ADMIN_ROLE,
@@ -762,6 +763,347 @@ def _add_idp(parser, args) -> None:
             "Note: no --domain given, so nobody will be created automatically on first "
             "login. Add one to let this provider vouch for its own people."
         )
+
+
+def _replace_idp(parser, tenant_id: str, old_issuer: str, new_issuer: str) -> None:
+    """Point this tenant's people at a different identity provider. Step 121, chunk F.
+
+    **This command exists because the bundled provider would otherwise be a door with
+    no exit.** A company that starts self-serve and later buys Okta needs its people to
+    keep being the same people, and nothing in this schema did that: identity is
+    `(issuer, subject)`, so a token from the new provider matches nobody, and 071's
+    by-address adoption does not reach across issuers — it matches only a row with no
+    subject *at the same issuer*. Everybody would get a second row, and their grants,
+    their connected accounts, the agents they own and their tokens would all stay on
+    the first.
+
+    `storage.move_users_to_issuer` is the write, and the argument for its shape is
+    there. Here is what belongs at the entry point:
+
+    **It refuses rather than guesses.** The new provider must already be registered —
+    otherwise this moves everybody to an issuer whose tokens nothing can verify, which
+    is a tenant nobody can sign into. Rows it cannot move are reported by address and
+    left exactly as they were.
+
+    **It is not automatic, and it is not on the identity-providers screen.** Registering
+    a second provider and retiring the first are different acts, a month apart in any
+    real migration, and a company will often run both for a while. This is the second
+    act, typed deliberately, once.
+
+    **It confirms on a terminal, and there is no flag past it.** `--delete-tenant`'s
+    rule: a sentence that claims a person is present must be backed by a check that
+    they are. Every person's next sign-in goes through this, so the blast radius is
+    everybody at once.
+    """
+    store = storage.active()
+
+    # Before the plan and before the confirmation: the storage layer refuses this too,
+    # but it would do so *after* a person had read a list of their colleagues and typed
+    # a word to approve it. A refusal that arrives after the confirmation teaches
+    # people that the confirmation is where the thinking happens.
+    if old_issuer == new_issuer:
+        parser.error(
+            f"--replace-idp and --with name the same issuer ({old_issuer}), so every "
+            "row would be stripped of its subject and re-adopted where it already was."
+        )
+
+    if not any(idp["issuer"] == new_issuer for idp in store.list_tenant_idps(tenant_id)):
+        parser.error(
+            f"tenant '{tenant_id}' has no identity provider registered at "
+            f"{new_issuer}. Register it first — in the browser, on the Identity "
+            "providers screen, or with --add-idp — because moving people to an issuer "
+            "nothing can verify is a tenant nobody can sign into."
+        )
+
+    people = [
+        person
+        for person in store.list_users(tenant_id)
+        if person["issuer"] == old_issuer
+    ]
+    if not people:
+        print(f"Nobody in tenant '{tenant_id}' signs in through {old_issuer}.")
+        return
+
+    # The tenant is named, and named first, because this command takes it from
+    # CARNET_TENANT rather than as an argument — so the one way to run it against the
+    # wrong customer is an environment variable nobody looked at, and the remedy is
+    # putting the answer in front of the person who is about to type 'move'.
+    print(
+        f"Tenant '{tenant_id}': moving {len(people)} person(s) from {old_issuer} "
+        f"to {new_issuer}:"
+    )
+    for person in people:
+        print(f"  {person['email'] or '<no address>':40} {person['id']}")
+    print(
+        "\nEach keeps their id, and with it their grants, their connected accounts, "
+        "the agents they own and their tokens. They are matched at the new provider "
+        "by their email address, at their next sign-in."
+    )
+    print(
+        "Anyone with no address, or whose address already exists at the new "
+        "provider, is skipped and named below."
+    )
+    print(
+        f"\nIf every one of them moves, {old_issuer} is UNREGISTERED at the end of "
+        "this — see below for why that is part of the same act."
+    )
+
+    if not sys.stdin.isatty():
+        parser.error(
+            "this changes how everybody in the tenant signs in, so it will not run "
+            "unattended. Run it from a terminal."
+        )
+    if input("\nType 'move' to confirm: ").strip() != "move":
+        raise SystemExit("nothing moved.")
+
+    try:
+        outcome = store.move_users_to_issuer(
+            tenant_id, old_issuer, new_issuer, actor="system:cli"
+        )
+    except StorageError as exc:
+        parser.error(str(exc))
+
+    print(f"\nMoved {len(outcome['moved'])}.")
+    for skip in outcome["skipped"]:
+        print(f"  left {skip['email'] or skip['id']}: {skip['why']}.")
+
+    # **Unregistering the old provider is part of the move, not a tidy-up afterwards**,
+    # and the step's own audit is what established that. Moving the rows does not stop
+    # the old provider vouching for people: its `tenant_idps` row is still registered,
+    # and the bundled provider's row carries the `"*"` domain wildcard — legal for that
+    # one issuer because the provider is the account authority. So a stale token, or
+    # anybody who still knows a password in `accounts.db`, signs in afterwards and is
+    # **created as a brand-new person in this tenant**. They arrive with no grants,
+    # which is the only reason this is a sharp edge rather than a breach; a migration
+    # that leaves somebody's old credentials working is not a migration.
+    if outcome["skipped"]:
+        print(
+            f"\n{old_issuer} is still registered, because not everybody moved. Until "
+            "it goes, anyone who can still authenticate there signs in as a NEW person "
+            "in this tenant — the rows above are the reason it has to stay for now. "
+            "Deal with them, run this again, and it will be removed."
+        )
+    elif outcome["moved"]:
+        store.delete_tenant_idp(tenant_id, old_issuer, actor="system:cli")
+        print(f"\nUnregistered {old_issuer}: its tokens are no longer accepted here.")
+        print(
+            "That stops it vouching for anybody. It does not stop it *running* — if it "
+            "was the bundled provider, set CARNET_IDP=external in .env, drop "
+            "`bundled-idp` from COMPOSE_PROFILES, and `docker compose up -d` to take "
+            "the service down and keep its accounts volume for as long as you want it."
+        )
+    print("\n--list-idps shows what is registered now.")
+
+
+# --- step 121: the `up` that completes itself ---------------------------------------
+
+
+def _discovery_document(parser, issuer: str) -> dict:
+    """An issuer's `.well-known/openid-configuration`, through the pinned dial.
+
+    **A second implementation of `routes_admin_idps._fetch_discovery`, knowingly.**
+    That one raises `HTTPException` and lives in `api/`, which this entry point has no
+    business importing — it would drag the whole web framework into `carnet --setup`,
+    and `api/` is a sibling entry point rather than a layer underneath. The shared rule
+    is two sentences long (the document's issuer must equal the one asked for; a
+    redirect is refused rather than followed, because the address a pin checked is the
+    only one it may dial), and both copies state it.
+
+    **A third copy means extracting them** — into `access/`, which already owns the
+    JWKS fetch this document points at, with the route's HTTP mapping left at the route.
+    Not done here because the route's tests monkeypatch its helper by name, and churning
+    a working path is not what this step is for.
+    """
+    import requests
+
+    from .tools.mcp import egress
+
+    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    with requests.Session() as session:
+        try:
+            response = egress.dial(
+                session, "GET", url, operator_consented=True, timeout=REQUEST_TIMEOUT
+            )
+        except requests.RequestException as exc:
+            parser.error(
+                f"could not fetch {url}: {exc}. Register the provider by hand with "
+                "--add-idp, which takes the JWKS URL directly."
+            )
+    if 300 <= response.status_code < 400:
+        parser.error(
+            f"{url} answered HTTP {response.status_code} redirecting to "
+            f"{response.headers.get('Location') or 'somewhere it did not name'}, and a "
+            "redirect is not followed. Set CARNET_OIDC_ISSUER to the address the "
+            "provider actually serves from."
+        )
+    if response.status_code != 200:
+        parser.error(f"{url} answered HTTP {response.status_code}.")
+    try:
+        document = response.json()
+    except ValueError as exc:
+        parser.error(f"{url} did not answer with JSON: {exc}")
+    if not isinstance(document, dict):
+        parser.error(f"{url} answered with JSON that is not an object.")
+    stated = document.get("issuer")
+    if stated != issuer:
+        parser.error(
+            f"the discovery document under {issuer} says its issuer is {stated!r}. A "
+            "token's `iss` is compared byte for byte against the registered issuer, so "
+            "set CARNET_OIDC_ISSUER to what the provider spells."
+        )
+    return document
+
+
+def _setup_idp_row(parser, tenant_id: str) -> tuple[dict | None, str]:
+    """The `tenant_idps` row this deployment's declaration implies, and a sentence.
+
+    Two shapes, and neither asks for the issuer twice. Under `bundled` there is no
+    issuer to declare at all — the row is the provider's own, pointed at the compose
+    service. Under `external` the issuer is declared once, in `.env`, and everything
+    else in the row is **derived** from it: the JWKS URL out of the discovery document,
+    the audience out of the client id the browser already uses.
+    """
+    mode = (os.environ.get("CARNET_IDP") or "").strip()
+    issuer = (os.environ.get("CARNET_OIDC_ISSUER") or "").strip()
+    if not mode:
+        mode = "external"
+
+    if mode == "bundled":
+        from .localidp.provider import LocalProvider
+        from .localidp.service import COMPOSE_JWKS_URI
+
+        return LocalProvider.idp_row(jwks_uri=COMPOSE_JWKS_URI), (
+            "the provider this deployment runs itself"
+        )
+
+    if mode != "external":
+        parser.error(f"CARNET_IDP must be 'bundled' or 'external', not {mode!r}.")
+
+    if not issuer:
+        return None, (
+            "NOT registered. Set CARNET_IDP=bundled for the provider this deployment "
+            "can run itself, or CARNET_OIDC_ISSUER and CARNET_OIDC_CLIENT_ID for your "
+            "own — then run this again."
+        )
+
+    client_id = (os.environ.get("CARNET_OIDC_CLIENT_ID") or "").strip()
+    if not client_id:
+        parser.error(
+            "CARNET_OIDC_ISSUER is set but CARNET_OIDC_CLIENT_ID is not, and the "
+            "client id is what a token's audience is checked against."
+        )
+
+    document = _discovery_document(parser, issuer)
+    jwks_uri = document.get("jwks_uri")
+    if not isinstance(jwks_uri, str) or not jwks_uri:
+        parser.error(
+            f"the discovery document at {issuer} names no jwks_uri. Register the "
+            "provider by hand with --add-idp."
+        )
+
+    # The one thing in the row that cannot be derived from anywhere: which email
+    # domains this provider may create people for. Empty is the safe reading and the
+    # CLI already says what it costs — people are authenticated and nobody is created —
+    # so it is left empty rather than guessed from the issuer's hostname, which would
+    # be a domain gate written by a regular expression over somebody's vendor.
+    domains = tuple(
+        part.strip().lower()
+        for part in (os.environ.get("CARNET_OIDC_DOMAINS") or "").split(",")
+        if part.strip()
+    )
+    return {
+        "issuer": issuer,
+        "jwks_uri": jwks_uri,
+        "audience": client_id,
+        "discriminator_claim": None,
+        "discriminator_value": None,
+        "subject_claim": "sub",
+        "email_claim": "email",
+        "groups_claim": None,
+        "allowed_domains": domains,
+    }, f"{issuer}, from its own discovery document"
+
+
+def _setup(parser, tenant_id: str) -> None:
+    """Everything between `docker compose up` and a working sign-in. Step 121.
+
+    The eight commands `deploy/README.md` used to end with were not hard; they were
+    *unannounced*. The stack coming up is not the install finishing, and nothing on the
+    screen said what was left — which is a person from here in the room for every
+    install, and under a premise that says people install this without an IT department
+    it is simply the install being lost.
+
+    So this runs as a one-shot service on every `up`, and it is **idempotent by
+    construction rather than by care**:
+
+      - the tenant is created if absent, and seeded only then, because a real
+        database's contents are the customer's and re-seeding on every restart would
+        resurrect whatever they deleted (`bootstrap.seed_tenant`'s own rule);
+      - the identity provider is written only when this tenant has no row at that
+        issuer. `save_tenant_idp` is an **upsert**, and re-running it would silently
+        reset every claim mapping to its default — which `--add-idp` prints a warning
+        about for exactly this reason. A command that runs unattended on every boot
+        cannot afford a warning nobody reads, so it does not write at all.
+
+    It does not appoint an administrator, and that is deliberate: appointment happens
+    at that person's first sign-in, against `CARNET_BOOTSTRAP_ADMIN`, and only while
+    the tenant holds no roles (`access/users._bootstrap_admin`). What this does instead
+    is **say whether that is going to happen**, which is the thing nobody could see.
+
+    Its last act is the report. A deployment that is up and unconfigured used to look
+    exactly like one that was finished; these five lines are the difference, and they
+    are printed to `docker compose logs setup` rather than to an unauthenticated route,
+    because *what is configured here* is reconnaissance and `/health/ready` is what a
+    load balancer drains on.
+    """
+    store = storage.active()
+    name = (os.environ.get("CARNET_TENANT_NAME") or "").strip() or tenant_id
+
+    fresh = store.get_tenant(tenant_id) is None
+    if fresh:
+        try:
+            bootstrap.seed_tenant(tenant_id, name=name)
+        except StorageError as exc:
+            # `create_tenant` refuses an id that was deleted — 018's rule, a tenant id
+            # is never reused — and this runs unattended on every `up`, so the refusal
+            # has to arrive as a sentence in `docker compose logs setup` rather than as
+            # a traceback. `--add-tenant` has caught this since 018; found by reading
+            # this path against that one.
+            parser.error(f"{exc} Set CARNET_TENANT in .env to a different id.")
+
+    row, provider_note = _setup_idp_row(parser, tenant_id)
+    registered = None
+    if row is not None:
+        existing = {idp["issuer"] for idp in store.list_tenant_idps(tenant_id)}
+        if row["issuer"] in existing:
+            provider_note = f"{row['issuer']} (already registered; not rewritten)"
+        else:
+            store.save_tenant_idp(tenant_id, row, actor="system:cli")
+            registered = row["issuer"]
+
+    admin = (os.environ.get("CARNET_BOOTSTRAP_ADMIN") or "").strip()
+    roles = store.list_platform_roles(tenant_id)
+
+    print("Carnet setup:")
+    print(f"  tenant          {tenant_id} ({name}) — {'created' if fresh else 'already here'}")
+    print(f"  provider        {provider_note}" + (" — registered" if registered else ""))
+    if roles:
+        print(f"  administrator   {len(roles)} role(s) already granted")
+    elif admin:
+        print(f"  administrator   {admin}, at their first sign-in")
+    else:
+        # The footgun `deploy/README.md` warned about in its own words. A warning in a
+        # file is worth what the attention of the person who did not read it is worth;
+        # this is the same sentence at the moment it becomes true.
+        print(
+            "  administrator   NOBODY. Set CARNET_BOOTSTRAP_ADMIN in .env and bring "
+            "the stack up again, or run --grant-role admin <email>."
+        )
+    origin = (os.environ.get("CARNET_PUBLIC_ORIGIN") or "").removesuffix("/api")
+    if row is None or not admin:
+        print("\n  The deployment is serving, and sign-in is not finished. See above.")
+    elif origin:
+        print(f"\n  Ready. Open {origin}/ and sign in as {admin}.")
 
 
 def _refuse(exc: NoAccess, tenant_id: str, agent_name: str) -> NoReturn:
@@ -4138,6 +4480,13 @@ def main() -> None:
 
     onboarding = parser.add_argument_group("onboarding a customer")
     onboarding.add_argument(
+        "--setup",
+        action="store_true",
+        help="finish the install: create this deployment's tenant if it has none, "
+        "register the identity provider the environment declares, and print what is "
+        "still missing. Idempotent — the compose stack runs it on every `up`",
+    )
+    onboarding.add_argument(
         "--add-tenant",
         nargs=2,
         metavar=("TENANT_ID", "NAME"),
@@ -4198,6 +4547,21 @@ def main() -> None:
         help="which claim carries the groups this person is in (Entra emits object ids "
         "in 'groups'; Okta emits names). Unset means the directory decides nothing: "
         "membership stays what --group-add makes it",
+    )
+    onboarding.add_argument(
+        "--replace-idp",
+        metavar="OLD_ISSUER",
+        help="move this tenant's people (CARNET_TENANT, default 'default') from one "
+        "identity provider to another — the day a deployment that started on the "
+        "bundled provider buys a real one. Needs --with. Everybody keeps their id, "
+        "and is matched at the new provider by email at their next sign-in",
+    )
+    onboarding.add_argument(
+        "--with",
+        dest="with_issuer",
+        metavar="NEW_ISSUER",
+        help="with --replace-idp: the issuer to move them to. It must already be "
+        "registered for this tenant",
     )
     onboarding.add_argument(
         "--list-idps",
@@ -4405,7 +4769,9 @@ def _with_store(parser: argparse.ArgumentParser, args: argparse.Namespace, tenan
         return
 
     if (
-        args.add_tenant
+        args.setup
+        or args.replace_idp
+        or args.add_tenant
         or args.tenant_status
         or args.delete_tenant
         or args.prune_logs
@@ -4481,6 +4847,23 @@ def _with_store(parser: argparse.ArgumentParser, args: argparse.Namespace, tenan
                 "the runtime uses an in-memory store, so anything created here "
                 "vanishes when this command exits."
             )
+
+    # Before --add-tenant, because it is the command that makes --add-tenant
+    # unnecessary: one verb the deployment runs itself rather than three an operator
+    # is told to run.
+    if args.setup:
+        _setup(parser, tenant_id)
+        return
+
+    if args.replace_idp:
+        if not args.with_issuer:
+            parser.error(
+                "--replace-idp needs --with <new issuer>. Naming only the provider to "
+                "leave would be an instruction to strip everybody's identity and put "
+                "it nowhere."
+            )
+        _replace_idp(parser, tenant_id, args.replace_idp, args.with_issuer)
+        return
 
     if args.add_tenant:
         _add_tenant(parser, *args.add_tenant)

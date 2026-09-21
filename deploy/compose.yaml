@@ -7,8 +7,19 @@
 #   api       the door — /mcp, the broker, and the administration surface
 #   front     the terminating proxy — the only service that publishes a port
 #
-# `migrate` and `api` are the same image with different commands, and the compose
-# file is where that is inspectable.
+# And two more since step 121:
+#
+#   setup     `carnet --setup`, one-shot, after `migrate` — the tenant, the identity
+#             provider row, and a report of what is still missing. It is what used to
+#             be three `docker compose exec` commands an operator was told to run, and
+#             nothing waits on it: a deployment whose door works must not be held up
+#             by a sign-in that is not configured yet
+#   idp       the bundled identity provider, behind the `bundled-idp` profile — the
+#             same image again, serving /idp/* and nothing else. Absent under
+#             CARNET_IDP=external, which is a deployment that brought its own Okta
+#
+# `migrate`, `api` and `idp` are the same image with different commands, and the
+# compose file is where that is inspectable.
 
 name: carnet
 
@@ -90,6 +101,22 @@ services:
       # wrong for every deployment on purpose; this is where the wrongness stops.
       CARNET_PUBLIC_ORIGIN: ${CARNET_PUBLIC_ORIGIN:-https://${CARNET_DOMAIN:?the name this deployment is reached at — `localhost` for a trial}/api}
       CARNET_BOOTSTRAP_ADMIN: ${CARNET_BOOTSTRAP_ADMIN:-}
+      # Read by `carnet --setup` only (step 121): the display name of the tenant it
+      # creates on a fresh deployment, and the tenant id when it is not set. Nothing
+      # else reads it, and changing it afterwards is a rename rather than a setting.
+      CARNET_TENANT_NAME: ${CARNET_TENANT_NAME:-}
+      # Which provider this deployment signs people in with. The front door reads it to
+      # compose /config.json and the CSP; `carnet --setup` reads the same value to
+      # decide which `tenant_idps` row to write — which is what keeps the row and the
+      # browser pointed at one provider without anybody declaring it twice.
+      CARNET_IDP: ${CARNET_IDP:-}
+      CARNET_OIDC_ISSUER: ${CARNET_OIDC_ISSUER:-}
+      CARNET_OIDC_CLIENT_ID: ${CARNET_OIDC_CLIENT_ID:-}
+      # The email domains an external provider may create people for, comma-separated,
+      # and the one thing in that row which cannot be derived from the issuer. Empty
+      # means people are authenticated and nobody is created automatically — the safe
+      # reading, and what --add-idp already says out loud when it is left off.
+      CARNET_OIDC_DOMAINS: ${CARNET_OIDC_DOMAINS:-}
       # Step 097: `on` lets every signed-in member administer this tenant — hosts,
       # connectors, vetting, consent flows, groups — with every act still recorded
       # against them. Writes no row; unset it and the gate is back. Off by default.
@@ -210,6 +237,37 @@ services:
         # without editing this file.
         required: false
 
+  # Step 121. What used to be three commands in deploy/README.md that an operator was
+  # told to run after `up`: --add-tenant, --add-idp and optionally --seed. The stack
+  # coming up was not the install finishing, and nothing on the screen said what was
+  # left — which is fine for a platform team with a runbook and fatal for the premise
+  # that people install this without an IT department.
+  #
+  # **Nothing depends on this.** It is advisory, and deliberately so: /api/mcp serves
+  # machine tokens that never sign in, so a deployment whose door is working must not
+  # be held up because an identity provider is unreachable this minute. A failure here
+  # is an `Exited (1)` in `docker compose ps` and a sentence in its logs, not an outage.
+  # **`docker compose up -d --wait` reports this service exiting and returns 1**, for a
+  # stack that is entirely healthy. Compose only expects a container to finish when
+  # something depends on it with `service_completed_successfully` — which `migrate` has
+  # and this deliberately does not, because that dependency would also mean a
+  # deployment refusing to serve when its identity provider is unreachable for a
+  # minute. `docker compose up -d` is the command; if you want `--wait`, name the
+  # services that stay up: `docker compose up -d --wait api front`.
+  setup:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+      args: *base-registry
+    image: ${CARNET_API_IMAGE:-carnet-api}
+    command: ["carnet", "--setup"]
+    restart: "no"
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   api:
     build:
       context: ..
@@ -250,6 +308,67 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # Step 121. The provider this deployment runs itself, for the company that has no
+  # identity provider to bring — which, under a premise that says people install this
+  # without an IT department, is the ordinary case rather than the trial.
+  #
+  # It is the API image running `carnet.localidp.service`: the SAME handler
+  # `carnet --local` has served since step 016, with two of its three jobs switched off
+  # because the front door above already does them. One provider, two front doors —
+  # a second implementation of a login page, a PKCE check and a redirect allowlist is
+  # the drift that would actually hurt, because nobody re-reads the one that works.
+  #
+  # **The profile is a second line in .env and therefore a second thing that can be
+  # wrong.** `CARNET_IDP` is the declaration a person makes; this profile is what
+  # compose needs in order to act on it, and nothing in compose can derive one from the
+  # other. So the disagreement is *refused* instead: the front door is handed
+  # COMPOSE_PROFILES and will not start if the two say different things. `setup.sh`
+  # writes both and never meets that sentence.
+  idp:
+    profiles: ["bundled-idp"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+      args: *base-registry
+    image: ${CARNET_API_IMAGE:-carnet-api}
+    command: ["python", "-m", "carnet.localidp.service"]
+    environment:
+      # The one address this deployment is reached at, from the one place it is said —
+      # the same expression `app-env` uses above, because a redirect allowlist that
+      # disagreed with the app's own origin is a sign-in that fails at the last hop.
+      # The provider drops the path and keeps the origin.
+      CARNET_PUBLIC_ORIGIN: ${CARNET_PUBLIC_ORIGIN:-https://${CARNET_DOMAIN:?the name this deployment is reached at — `localhost` for a trial}/api}
+      # Prefilled into the first registration form, so the address that becomes the
+      # administrator is typed once. It grants nothing here: the appointment is the
+      # API's, against this same variable, and only while the tenant holds no roles.
+      CARNET_BOOTSTRAP_ADMIN: ${CARNET_BOOTSTRAP_ADMIN:-}
+      # `closed` (the default) or `open`. This stack publishes 443, so it is exposed by
+      # construction — and on a bundled provider this setting is the WHOLE admission
+      # control for the tenant, because the provider is the account authority and its
+      # row carries the `"*"` domain wildcard that only it is entitled to. The FIRST
+      # account is admitted either way, which is how the deployment gets an
+      # administrator; `open` on a public address is a stranger creating an account.
+      CARNET_IDP_REGISTRATION: ${CARNET_IDP_REGISTRATION:-}
+    volumes:
+      # The accounts database, the signing key and the cookie key. **Back this up with
+      # the same sentence as the database**: losing it is losing every password, and
+      # under closed registration re-creating them is an operator's job. The signing
+      # key matters for a smaller reason — it is regenerated if lost, which signs
+      # everybody out an hour later when the API's JWKS cache expires.
+      - idp-data:/var/lib/carnet-idp
+    healthcheck:
+      # The JWKS, because that is the one endpoint the API actually depends on: a
+      # provider that cannot publish its keys is one whose every token fails
+      # verification, which reads as "nobody can sign in" rather than as a sick
+      # container.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/idp/v1/keys', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
   front:
     build:
       context: ..
@@ -279,6 +398,16 @@ services:
       # behaviour; `internal` is Caddy's own CA for a name Let's Encrypt cannot see;
       # `files` serves the pair mounted below, and refuses at start if it is not.
       CARNET_TLS_MODE: ${CARNET_TLS_MODE:-}
+      # Which provider browser sign-in uses (step 121): `external` (yours, above) or
+      # `bundled` (the `idp` service). Unset means `external` when CARNET_OIDC_* is
+      # declared — so a deployment that predates this variable upgrades untouched — and
+      # a refusal when it is not, because a stack that comes up with no provider at all
+      # is one nobody can sign into.
+      CARNET_IDP: ${CARNET_IDP:-}
+      # Read here for one purpose: to refuse the disagreement described on the `idp`
+      # service. Compose cannot tell a container which profiles it activated, so the
+      # declaration is passed in and checked rather than trusted.
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
     # The only published ports. Overridable for a trial beside other services;
     # ACME's HTTP challenge needs the real 80/443 when CARNET_DOMAIN is a real name.
     ports:
@@ -293,7 +422,15 @@ services:
       # PEM, at exactly these two names. Uncomment and adjust:
       #   - ./tls:/etc/carnet/tls:ro
     depends_on:
-      - api
+      # The long form for both, because they cannot be mixed — and the second needs it:
+      # `required: false` for the same reason the bundled database has it. The profile
+      # is what decides whether the provider exists, and a hard dependency would make an
+      # external-provider deployment refuse to start over a service it does not want.
+      api:
+        condition: service_started
+      idp:
+        condition: service_started
+        required: false
     restart: unless-stopped
 
 volumes:
@@ -301,3 +438,4 @@ volumes:
   var-data:
   caddy-data:
   caddy-config:
+  idp-data:

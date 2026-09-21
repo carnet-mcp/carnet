@@ -60,10 +60,26 @@ log
 # `Referrer-Policy` answers a hazard `routes_connections.py` names out loud — an OAuth
 # code ending up "in any proxy's access log, and in the Referer".
 header {
-	Content-Security-Policy "{$CARNET_CSP}"
 	X-Content-Type-Options "nosniff"
 	Referrer-Policy "no-referrer"
 }
+
+# The app's policy, and **not on the bundled provider's own pages** (step 121). Two
+# policies on one response enforce as their INTERSECTION, and the app's is
+# `form-action 'none'` — which is right for the app, whose forms are all fetch calls,
+# and fatal for a provider page whose whole job is to POST a password. Stamped on
+# `/idp/*` it met that page's `form-action 'self'` and produced `'none'`: registration
+# and sign-in were **unsubmittable in a real browser**, with every HTTP-level check
+# passing, because a CSP is enforced by a browser and by nothing else. Found by
+# `e2e_browser_bundled.py` on its first run — which is the second time this project
+# has paid for that sentence (plan 031 was the first).
+#
+# The provider sends its own, stricter policy on those pages (`localidp/edge.py`,
+# `_PAGE_CSP`), so excluding them here leaves exactly one policy per response rather
+# than none. Under `CARNET_IDP=external` nothing serves `/idp/*` at all and this
+# matcher is inert.
+@app not path /idp/*
+header @app Content-Security-Policy "{$CARNET_CSP}"
 
 # HSTS, but never on a `localhost` trial: the policy is keyed by host and ignores the
 # port, so pinning `localhost` would force HTTPS on every other local development
@@ -109,6 +125,16 @@ handle /config.json {
 	header Cache-Control "no-cache"
 	file_server
 }
+
+# The bundled identity provider, or nothing (step 121). Written by
+# frontdoor-entrypoint.sh from CARNET_IDP: under `bundled` this file routes /idp/* to
+# the `idp` service, and under `external` it is empty. Imported rather than made
+# conditional here, because this file stays static and declarative and the entrypoint
+# is the one surface where logic lives — the same division the CSP and /config.json
+# already follow. Before the fallback, for /config.json's reason: the provider's
+# discovery document answered with index.html is a JSON parse error about a server
+# that is plainly up.
+import /etc/caddy/idp.caddy
 
 # Hashed build output, and it is handled *before* the fallback on purpose: a missing
 # asset must be a 404, not index.html with a 200. Sent through the fallback — which is

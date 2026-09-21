@@ -134,7 +134,7 @@ browser also does, plus the operator's commands the browser deliberately does no
 | `--denials [N]` | the last N refused access attempts |
 | `--migrate` | apply pending schema migrations to `CARNET_DATABASE_URL`. Runs before the store is configured, so a database from any released version can be brought up to date |
 | `--seed` | write the shipped example agent and connector into this tenant, once and deliberately; never overwrites a configuration a person wrote |
-| `--generate-key` | print a fresh encryption key for stored credentials. Never generated automatically |
+| `--generate-key` | print a fresh encryption key for stored credentials. Printed, never stored — the server will not invent one if the variable is unset, because a key that regenerates makes every stored credential silently unreadable. `deploy/setup.sh` calls this and writes the result into `.env` for you; it keeps no copy either |
 | `--new-token` | print a fresh machine token for a `carnet.yaml` |
 | `--check-file PATH` | validate a `carnet.yaml` and report what it declares, or the first refusal by key |
 | `--finish-rotation` | re-encrypt every stored secret under the current key and report whether the old keys can be dropped. Exit 0 when they can, 1 while any row still needs one |
@@ -264,6 +264,7 @@ browser also does, plus the operator's commands the browser deliberately does no
 
 | Flag | What it does |
 | --- | --- |
+| `--setup` | finish the install: create this deployment's tenant if it has none, register the identity provider the environment declares, and report what is still missing. Idempotent; the compose stack runs it on every `up`, so day one needs no `docker compose exec` |
 | `--add-tenant TENANT_ID NAME` | create a customer |
 | `--tenant-status TENANT_ID STATUS` | `active` or `suspended`. Suspending stops sign-ins and refuses every door call; nothing is deleted |
 | `--prune-logs` | run one retention sweep now and report what went. Needs `CARNET_RETENTION_DAYS` |
@@ -277,6 +278,8 @@ browser also does, plus the operator's commands the browser deliberately does no
 | `--email-claim CLAIM` | which claim carries the email |
 | `--subject-claim CLAIM` | which claim carries the stable identity (`sub`, or `uid` for Okta access tokens) |
 | `--groups-claim CLAIM` | which claim carries the groups a person is in; unset means the directory decides nothing |
+| `--replace-idp OLD_ISSUER --with NEW_ISSUER` | move this tenant's people from one identity provider to another — the day a deployment that started on the bundled provider buys a real one. Everybody keeps their id, and with it their grants, connected accounts, agents and tokens; each is matched at the new provider by email at their next sign-in. Anyone with no address, or whose address already exists there, is skipped and named. **When everybody moves, the old provider is unregistered**, because leaving it registered leaves its old credentials working — anyone who can still authenticate there would sign in as a *new* person in the tenant. Confirms on a terminal; there is no flag past it |
+| `--with NEW_ISSUER` | the destination for `--replace-idp`; it must already be registered |
 | `--list-idps [TENANT_ID]` | show registered identity providers |
 
 ### Running the whole product locally
@@ -483,6 +486,7 @@ otherwise; a misspelt value is refused rather than defaulted.
 | `CARNET_SECRET_KEY` | the key stored credentials are sealed under. Required whenever there is a database; not needed under a file |
 | `CARNET_SECRET_KEYS_OLD` | retired keys, comma-separated, while `--finish-rotation` re-encrypts rows written under them |
 | `CARNET_TENANT` | the tenant the CLI acts on (default `default`) |
+| `CARNET_TENANT_NAME` | the display name `--setup` gives the tenant it creates on a fresh deployment; the tenant id when unset |
 | `CARNET_VAR_DIR` | where runtime artefacts go; set by the image and by `--local` |
 | `CARNET_LOCAL_STATE` | where `--local` keeps its database and accounts (default `var/local`) |
 
@@ -507,13 +511,17 @@ otherwise; a misspelt value is refused rather than defaulted.
 | `CARNET_EGRESS_INTERNAL_HOSTS` | the deployment's own networks — hostnames, or networks in CIDR such as `10.0.0.0/8` — which the door may dial over plain http or at private addresses. The operator's consent; a name is admitted for where it resolves |
 | `CARNET_EGRESS_PROXY` | the outbound proxy, `http://[user:pass@]host:port`. A declaration that the proxy is the arbiter of where a dial on the internet lands: names go through it intact and the DNS-rebinding check moves to it; the deployment's own networks are dialled direct. `HTTPS_PROXY` is never read, and refuses at start if set without this |
 | `REQUESTS_CA_BUNDLE` | a corporate CA the dial trusts — the root that re-signs intercepted TLS, or issues internal certificates. A file path, mounted; it replaces the bundled public roots rather than adding to them |
-| `CARNET_TLS_MODE` | where the front door's certificate comes from: `acme` (default), `internal` (Caddy's own CA, for a name Let's Encrypt cannot see) or `files` (your own, mounted at `/etc/carnet/tls/`). Read by the front door, not the API |
+| `CARNET_TLS_MODE` | where the front door's certificate comes from: `acme` (default), `internal` (Caddy's own CA, for a name Let's Encrypt cannot see) or `files` (your own, mounted at `/etc/carnet/tls/`). Read by the front door, not the API. `acme` refuses at start for an address or a single-label name, which it could never be issued for; `localhost` is signed by Caddy itself and stays legal |
 
 ### People and administration
 
 | Setting | What it does |
 | --- | --- |
 | `CARNET_BOOTSTRAP_ADMIN` | the address whose first sign-in becomes the first administrator; inert after that |
+| `CARNET_IDP` | which identity provider browser sign-in uses: `external` (yours, declared in `CARNET_OIDC_*`) or `bundled` (the one this deployment runs itself). Read by the front door. Offered, never defaulted — a deployment that declares neither is refused at start rather than guessed for |
+| `CARNET_IDP_REGISTRATION` | on `CARNET_IDP=bundled`, whether the sign-in screen offers *Create account*: `closed` (default) or `open`. The **first** account is admitted either way, which is how the deployment gets its administrator; `open` on a public address is a stranger creating one |
+| `CARNET_OIDC_DOMAINS` | on `CARNET_IDP=external`, the email domains that provider may create people for, comma-separated. Empty means people are authenticated and nobody is created automatically |
+| `CARNET_IDP_STATE` | where the bundled provider keeps its accounts database and signing key inside its container (default `/var/lib/carnet-idp`, where compose mounts a volume). Losing that volume is losing every password |
 | `CARNET_OPEN_ADMIN` | `on` lets every signed-in person administer, writing no role row; `off` (default) restores the gate |
 
 ### The log and the audit stream

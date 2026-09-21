@@ -75,7 +75,8 @@ def test_every_setting_is_catalogued():
         r"CARNET_[A-Z_]+",
         (SRC / "config.py").read_text(encoding="utf-8")
         + (SRC / "core" / "crypto.py").read_text(encoding="utf-8")
-        + (SRC / "localidp" / "frontdoor.py").read_text(encoding="utf-8"),
+        + (SRC / "localidp" / "frontdoor.py").read_text(encoding="utf-8")
+        + (SRC / "localidp" / "service.py").read_text(encoding="utf-8"),
     ))
     declared_to_the_stack = set(re.findall(
         r"CARNET_[A-Z_]+", (REPO / "deploy" / "compose.yaml").read_text(encoding="utf-8")

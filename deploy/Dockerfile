@@ -66,6 +66,20 @@ RUN pip install --no-cache-dir --no-deps . && pip check
 # var/ that is still a file (the outbox). compose.yaml mounts a volume there.
 RUN useradd --system --home-dir /var/lib/carnet --create-home carnet
 ENV CARNET_VAR_DIR=/var/lib/carnet
+# The bundled provider's state (step 121): the accounts database, the signing key and
+# the cookie key, under the volume compose mounts for the `idp` service.
+#
+# **It has to exist in the image, and that is not a tidiness.** Docker seeds a fresh
+# named volume from the image's directory at that path — including its ownership — so
+# a mount point the image does not have is created owned by root, and this image runs
+# as `carnet`. Found by running it: the provider crash-looped on
+# `PermissionError: /var/lib/carnet-idp/idp_signing.pem` while every other service
+# reported healthy. `/var/lib/carnet` above never showed it, because `--create-home`
+# happens to make that one.
+#
+# 700 rather than the umask, matching what the code does for each file it writes
+# there: `accounts.py` and `provider.py` both chmod their own to 600.
+RUN install -d -o carnet -g carnet -m 700 /var/lib/carnet-idp
 USER carnet
 
 # The default command is the API. `--host 0.0.0.0` is honest here because only the

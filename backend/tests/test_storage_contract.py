@@ -4172,6 +4172,19 @@ IN_SCOPE = (
         ),
     ),
     (
+        # Step 121: moved to a different identity provider, subject cleared, so the
+        # next sign-in there adopts the same row by address. One record per person,
+        # because what changed is who may sign in as them.
+        "user.reissue",
+        lambda s, t: (
+            _person_for(s, t),
+            s.move_users_to_issuer(
+                t, f"https://{t}.idp.example", "https://new.idp.example",
+                actor="user:u-1",
+            ),
+        ),
+    ),
+    (
         "user.disable",
         lambda s, t: (
             _person_for(s, t),

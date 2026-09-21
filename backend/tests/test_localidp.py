@@ -1227,3 +1227,465 @@ def test_only_if_first_still_admits_the_first_account(db):
 
     assert account["email"] == "admin@example.com"
     assert accounts.count(db) == 1
+
+
+# --- step 121: the provider alone, behind somebody else's front door ---------------
+
+
+@pytest.fixture
+def bare(tmp_path):
+    """The provider in `provider_only` mode — no bundle, no API, no proxy."""
+    db = accounts.open_db(str(tmp_path / "accounts.db"))
+    provider = LocalProvider(tmp_path)
+    cfg = EdgeConfig(
+        host="127.0.0.1",
+        port=0,
+        dist_dir="",
+        api_port=0,
+        provider_only=True,
+        registration="closed",
+        admin_email="priya@example.com",
+        redirect_uris=(REDIRECT,),
+    )
+    server = serve(cfg, provider, db)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    yield type("Bare", (), {"base": base, "db": db, "provider": provider, "cfg": cfg})
+    server.shutdown()
+
+
+def test_provider_only_still_serves_the_whole_flow(bare):
+    """The mode drops two jobs Caddy does; it must drop nothing of the provider.
+
+    Register, exchange, and a token that carries the spec-shaped claims — the same
+    walk the full edge makes, against a server that has no bundle and no API behind
+    it at all.
+    """
+    verifier, challenge = pkce_pair()
+    params = flow_params(challenge)
+
+    created = httpx.post(
+        f"{bare.base}/idp/register",
+        data={
+            "email": "priya@example.com",
+            "password": "correct horse battery",
+            "name": "Priya",
+            **params,
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 302
+    code = urllib.parse.parse_qs(
+        urllib.parse.urlparse(created.headers["location"]).query
+    )["code"][0]
+
+    exchanged = httpx.post(
+        f"{bare.base}/idp/v1/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": verifier,
+            "redirect_uri": REDIRECT,
+            "client_id": CLIENT_ID,
+        },
+    )
+    assert exchanged.status_code == 200
+
+    import jwt
+
+    claims = jwt.decode(
+        exchanged.json()["access_token"],
+        bare.provider.key.public_key(),
+        algorithms=["RS256"],
+        audience=AUDIENCE,
+    )
+    assert claims["email"] == "priya@example.com"
+    assert claims["iss"] == ISSUER
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/index.html",
+        "/assets/app.js",
+        "/config.json",
+        "/api/health",
+        "/.well-known/oauth-authorization-server",
+        "/agents",
+    ],
+)
+def test_provider_only_refuses_everything_outside_idp(bare, path):
+    """Every path the front door owns is a 404 here, including `/config.json`.
+
+    Not a stylistic choice: a second `/config.json` served from a service the
+    Caddyfile never routes to is a copy nothing would notice going stale, and the
+    deployed one is written by `frontdoor-entrypoint.sh` from one declaration.
+    """
+    assert httpx.get(f"{bare.base}{path}", follow_redirects=False).status_code == 404
+
+
+def test_provider_only_refuses_the_proxy_verbs(bare):
+    """PUT/PATCH/DELETE reached `_proxy` before the mode existed, and `api_port` is 0
+    here — an unreachable path should be unreachable at the door rather than an
+    attempted connection to port zero."""
+    for verb in ("put", "patch", "delete"):
+        response = getattr(httpx, verb)(f"{bare.base}/api/agents/x")
+        assert response.status_code == 404, verb
+
+
+def test_the_deployed_provider_reads_one_declaration_for_its_redirect(monkeypatch):
+    """`CARNET_PUBLIC_ORIGIN` is the single source of the browser's address.
+
+    The path is dropped rather than stripped of `/api`: the bundle builds its redirect
+    from `window.location.origin`, which has no path in it either.
+    """
+    from carnet.localidp import service
+
+    monkeypatch.setenv("CARNET_PUBLIC_ORIGIN", "https://carnet.example.com/api")
+    monkeypatch.delenv("CARNET_IDP_REGISTRATION", raising=False)
+    monkeypatch.setenv("CARNET_BOOTSTRAP_ADMIN", "priya@example.com")
+
+    cfg, state = service.config_from_environment()
+
+    assert cfg.redirect_uris == ("https://carnet.example.com/login/callback",)
+    assert cfg.secure_cookie is True
+    assert cfg.provider_only is True
+    assert cfg.admin_email == "priya@example.com"
+    assert state == service.DEFAULT_STATE
+
+
+def test_the_deployed_provider_closes_registration_by_default(monkeypatch):
+    """A compose stack publishes 443, so it is exposed by construction — the default
+    `--local` has to infer from a bind address is a fact here (step 052, B3)."""
+    from carnet.localidp import service
+
+    monkeypatch.setenv("CARNET_PUBLIC_ORIGIN", "https://carnet.example.com/api")
+    monkeypatch.delenv("CARNET_IDP_REGISTRATION", raising=False)
+
+    cfg, _ = service.config_from_environment()
+
+    assert cfg.registration == "closed"
+
+
+@pytest.mark.parametrize(
+    "variables, expected",
+    [
+        ({}, "CARNET_PUBLIC_ORIGIN is not set"),
+        ({"CARNET_PUBLIC_ORIGIN": "carnet.example.com"}, "must be an http(s) URL"),
+        (
+            {
+                "CARNET_PUBLIC_ORIGIN": "https://c.example.com/api",
+                "CARNET_IDP_REGISTRATION": "off",
+            },
+            "must be 'open' or 'closed'",
+        ),
+    ],
+)
+def test_the_deployed_provider_refuses_at_start_naming_the_setting(
+    monkeypatch, capsys, variables, expected
+):
+    """`frontdoor-entrypoint.sh`'s rule in Python: a misdeclared provider refuses
+    here, loudly and by name, rather than serving and failing in a browser."""
+    from carnet.localidp import service
+
+    for name in (
+        "CARNET_PUBLIC_ORIGIN",
+        "CARNET_IDP_REGISTRATION",
+        "CARNET_IDP_STATE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(SystemExit):
+        service.config_from_environment()
+
+    assert expected in capsys.readouterr().err
+
+
+def test_no_passwordless_route_can_reach_the_deployed_image():
+    """The covenant's sibling (step 121), and it is structural rather than remembered.
+
+    `scripts/dev_idp.py` keeps a passwordless `/_be/` switch **because it is a test
+    fixture and stays one**. Putting the provider on the compose stack is the first
+    time it is reachable from the internet, so the fixture's absence from that path is
+    worth asserting from both ends:
+
+      - `deploy/Dockerfile` copies `backend/pyproject.toml` and `backend/src` and
+        nothing else, so `backend/scripts/` is not in the image at all; and
+      - nothing under `src/` has such a route, so the copy list is not the only thing
+        standing between a deployment and a bypass.
+
+    Mirrors `test_the_server_never_imports_the_local_idp` and
+    `test_the_dev_auth_header_is_gone`.
+    """
+    import pathlib
+
+    import carnet
+
+    src = pathlib.Path(carnet.__file__).resolve().parent
+    repo = src.parents[2]
+
+    fixture = repo / "backend" / "scripts" / "dev_idp.py"
+    assert "/_be/" in fixture.read_text(), (
+        "the fixture this test guards against has moved or been renamed; re-point it "
+        "rather than deleting the assertion"
+    )
+
+    dockerfile = (repo / "deploy" / "Dockerfile").read_text()
+    copied = [
+        line.split()[1]
+        for line in dockerfile.splitlines()
+        if line.startswith("COPY ") and "backend/" in line
+    ]
+    assert copied == ["backend/pyproject.toml", "backend/src"], copied
+
+    # A *route*, not a mention. The prose above and `localidp/__init__.py`'s covenant
+    # both name the switch on purpose, so a grep would convict the two files whose job
+    # is to say it does not ship. What a route needs is a string literal somewhere
+    # other than a docstring, which the AST can tell apart and a grep cannot.
+    offenders = [
+        path.relative_to(src)
+        for path in src.rglob("*.py")
+        if any("/_be" in text for text in _literals(path))
+    ]
+    assert offenders == []
+
+
+def _literals(path):
+    """Every string constant in a module except its docstrings.
+
+    Docstrings are excluded by identity rather than by position, because a module,
+    a class and a function each carry one and all three are prose about the code
+    rather than values the code uses.
+    """
+    import ast
+
+    # `utf-8-sig` because at least one module in this tree carries a byte-order mark,
+    # which `ast.parse` refuses and the import machinery does not — a test that walks
+    # source has to read it the way Python reads it.
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            body = getattr(node, "body", [])
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstrings.add(id(body[0].value))
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    ]
+
+
+def test_the_front_door_and_the_provider_agree_on_the_bundled_declaration():
+    """`/config.json` is written by a shell script that cannot import this package.
+
+    `deploy/frontdoor-entrypoint.sh` composes the bundled declaration as a literal,
+    because it runs in the `front` image where there is no Python and no `carnet`.
+    That makes it a copy of `provider.config_json()` — the one kind of duplication
+    this tree tolerates, and only while something compares the two. A drift here is a
+    deployment whose app fetches a provider that is not the one running: the SPA would
+    ask a client id the provider refuses, and the symptom is a 400 page at sign-in.
+    """
+    import json
+    import pathlib
+    import re
+
+    from carnet.localidp.provider import config_json
+
+    entrypoint = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "deploy"
+        / "frontdoor-entrypoint.sh"
+    ).read_text()
+
+    literal = re.search(r"printf '(\{\"issuer\": \"/idp\".*?\})\\n'", entrypoint)
+    assert literal, "the bundled /config.json literal has moved; re-point this test"
+
+    assert json.loads(literal.group(1)) == json.loads(config_json())
+
+
+def test_the_compose_route_and_the_registered_jwks_uri_agree():
+    """The browser's `/idp/*` and the API's JWKS fetch must name one service.
+
+    They are written by two things that cannot see each other: the front door's
+    entrypoint composes a Caddy `reverse_proxy` line (shell, in the `front` image), and
+    `carnet --setup` writes a `tenant_idps` row (Python, in the `api` image). If they
+    ever named different services, the symptom would be a sign-in that renders a login
+    page and then fails verification — two halves of the same flow pointed at two
+    different providers, with nothing saying so.
+
+    `service.COMPOSE_HOST`/`PORT` is where it is said once; this is the comparison
+    against the copy that cannot import it.
+    """
+    import pathlib
+
+    from carnet.localidp.service import COMPOSE_HOST, COMPOSE_JWKS_URI, PORT
+
+    entrypoint = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "deploy"
+        / "frontdoor-entrypoint.sh"
+    ).read_text()
+
+    assert f"reverse_proxy {COMPOSE_HOST}:{PORT}" in entrypoint
+    assert COMPOSE_JWKS_URI == f"http://{COMPOSE_HOST}:{PORT}/idp/v1/keys"
+
+
+def test_a_closed_deployment_with_nobody_in_it_still_offers_the_first_account(tmp_path):
+    """The sign-in page must offer *Create one* while the first account is admissible.
+
+    Step 121, found by a browser. `edge._closed_to_newcomers` is the rule — closed
+    **and somebody already exists** — and the sign-in page used to decide from
+    `cfg.registration == "open"` alone. A compose deployment defaults closed, so the
+    first administrator arrived at a form with no way to reach the one the store would
+    have accepted, and the only route in was typing `/idp/register` by hand.
+
+    Both ends, because a link without its page is a link to a refusal.
+    """
+    db = accounts.open_db(str(tmp_path / "accounts.db"))
+    provider = LocalProvider(tmp_path)
+    cfg = EdgeConfig(
+        host="127.0.0.1", port=0, dist_dir="", api_port=0, provider_only=True,
+        registration="closed", admin_email="priya@example.com",
+        redirect_uris=(REDIRECT,),
+    )
+    server = serve(cfg, provider, db)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        empty = httpx.get(f"{base}/idp/login")
+        assert "Create one" in empty.text
+        assert httpx.get(f"{base}/idp/register").status_code == 200
+
+        accounts.create_account(db, "priya@example.com", "correct horse battery")
+
+        # And the moment somebody holds it, the same closed deployment stops offering.
+        taken = httpx.get(f"{base}/idp/login")
+        assert "Create one" not in taken.text
+        assert httpx.get(f"{base}/idp/register").status_code == 403
+    finally:
+        server.shutdown()
+
+
+def test_a_refusal_that_reads_no_body_does_not_poison_the_connection(tmp_path):
+    """The next request on a kept-alive socket must not be read out of the last body.
+
+    Step 121, found by a browser behind the deployed front door. Registration refused
+    because the deployment is closed answers *before* reading the form, so
+    `Content-Length` bytes stay on the wire — and with HTTP/1.1 keep-alive the next
+    request parsed off that connection began in the middle of them and came back 501.
+
+    It went unnoticed under `carnet --local`, where the client is a browser opening
+    connections freely. Behind Caddy the upstream connection is **pooled across
+    everybody**, so a refused stranger broke the next person's sign-in.
+
+    Driven over one socket on purpose: `httpx.Client` reuses it, which is the whole
+    condition, and the assertion is that the second response is the provider's rather
+    than a parser's.
+    """
+    db = accounts.open_db(str(tmp_path / "accounts.db"))
+    accounts.create_account(db, "first@example.com", "correct horse battery")
+    provider = LocalProvider(tmp_path)
+    cfg = EdgeConfig(
+        host="127.0.0.1", port=0, dist_dir="", api_port=0, provider_only=True,
+        registration="closed", redirect_uris=(REDIRECT,),
+    )
+    server = serve(cfg, provider, db)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with httpx.Client(base_url=base) as client:
+            refused = client.post(
+                "/idp/register",
+                data={"email": "sam@example.com", "password": "another password"},
+            )
+            assert refused.status_code == 403
+            # Said, not merely done: a client that is not told reuses the socket and
+            # gets a reset where a response should be.
+            assert refused.headers.get("connection") == "close"
+
+            # The next request, on the same client. Before the fix this was a 501
+            # about an unsupported method nobody sent.
+            after = client.get("/idp/v1/keys")
+            assert after.status_code == 200
+            assert after.json()["keys"]
+
+            # And the ordinary path still keeps its connection, or every form post
+            # would cost a new socket.
+            login = client.post(
+                "/idp/login", data={"email": "first@example.com", "password": "wrong"}
+            )
+            assert login.status_code == 400
+            assert login.headers.get("connection") != "close"
+    finally:
+        server.shutdown()
+
+
+def test_a_get_that_carries_a_body_does_not_poison_the_connection(tmp_path):
+    """The sibling hole, found by an audit with raw sockets. Step 121.
+
+    No GET handler reads a request body, so a GET that carries one is answered *over*
+    it — and the bytes stay on a keep-alive socket, where the next request parsed off
+    it begins mid-body and comes back 501. Same defect as the refused POST, reachable
+    deliberately rather than by accident, and invisible to every client library because
+    none of them will send it.
+
+    Driven with a raw socket for exactly that reason: `httpx` refuses to put a body on
+    a GET, so a test written with it would assert nothing.
+    """
+    import socket
+    import time
+
+    db = accounts.open_db(str(tmp_path / "accounts.db"))
+    provider = LocalProvider(tmp_path)
+    cfg = EdgeConfig(
+        host="127.0.0.1", port=0, dist_dir="", api_port=0, provider_only=True,
+        registration="closed", redirect_uris=(REDIRECT,),
+    )
+    server = serve(cfg, provider, db)
+    port = server.server_address[1]
+    try:
+        body = b"x" * 32
+        sock = socket.create_connection(("127.0.0.1", port))
+        sock.settimeout(5)
+        try:
+            sock.sendall(
+                b"GET /idp/v1/keys HTTP/1.1\r\nHost: t\r\n"
+                b"Content-Length: %d\r\n\r\n" % len(body) + body
+            )
+            time.sleep(0.3)
+            first = sock.recv(65536)
+            assert first.startswith(b"HTTP/1.1 200"), first[:60]
+            # Told, so a pooling client stops using the socket rather than discovering
+            # a reset on somebody else's request.
+            assert b"Connection: close" in first
+
+            # And the socket really is finished with, rather than kept and poisoned.
+            sock.sendall(b"GET /idp/v1/keys HTTP/1.1\r\nHost: t\r\n\r\n")
+            time.sleep(0.3)
+            try:
+                second = sock.recv(65536)
+            except ConnectionResetError:
+                second = b""
+            assert b"501" not in second, second[:80]
+        finally:
+            sock.close()
+
+        # The control: an ordinary GET keeps its connection, or every page load would
+        # cost a new socket.
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}") as client:
+            plain = client.get("/idp/v1/keys")
+            assert plain.status_code == 200
+            assert plain.headers.get("connection") != "close"
+            assert client.get("/idp/v1/keys").status_code == 200
+    finally:
+        server.shutdown()

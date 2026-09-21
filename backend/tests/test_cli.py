@@ -2917,3 +2917,420 @@ def test_withdraw_tool_and_deregister_connector_mirror_the_screen(monkeypatch, c
 
     run(monkeypatch, "--deregister-connector", "jira")
     assert "Nothing to do" in message(capsys)
+
+
+# --- step 121: --setup, the `up` that completes itself ----------------------------
+
+
+@pytest.fixture
+def bundled(monkeypatch):
+    """A deployment declaring the provider it runs itself."""
+    monkeypatch.setenv("CARNET_IDP", "bundled")
+    monkeypatch.setenv("CARNET_BOOTSTRAP_ADMIN", "priya@example.com")
+    monkeypatch.setenv("CARNET_PUBLIC_ORIGIN", "https://carnet.example.com/api")
+    monkeypatch.setenv("CARNET_TENANT_NAME", "Example Co")
+    for name in ("CARNET_OIDC_ISSUER", "CARNET_OIDC_CLIENT_ID", "CARNET_OIDC_DOMAINS"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_setup_creates_the_tenant_registers_the_provider_and_says_it_is_ready(
+    monkeypatch, capsys, bundled
+):
+    """The three `docker compose exec` commands, done by the deployment itself."""
+    run(monkeypatch, "--setup")
+
+    store = storage.active()
+    assert store.get_tenant("default")["name"] == "Example Co"
+    issuers = [idp["issuer"] for idp in store.list_tenant_idps("default")]
+    assert issuers == ["carnet-local"]
+    # The compose service name and port, from the one place they are said.
+    assert store.list_tenant_idps("default")[0]["jwks_uri"].startswith("http://idp:8080/")
+
+    said = message(capsys)
+    assert "tenant          default (Example Co) — created" in said
+    assert "priya@example.com, at their first sign-in" in said
+    assert "Ready. Open https://carnet.example.com/ and sign in" in said
+
+
+def test_setup_runs_on_every_up_and_the_second_one_rewrites_nothing(
+    monkeypatch, capsys, bundled
+):
+    """Idempotent by construction, not by care.
+
+    `save_tenant_idp` is an upsert, and re-running it would silently reset every claim
+    mapping to its default — the hazard `--add-idp` prints a warning about. A command
+    that runs unattended on every boot cannot rely on a warning nobody reads, so the
+    second run must not write at all.
+    """
+    run(monkeypatch, "--setup")
+    store = storage.active()
+    store.save_tenant_idp(
+        "default",
+        dict(store.list_tenant_idps("default")[0], groups_claim="groups"),
+        actor="system:cli",
+    )
+    capsys.readouterr()
+
+    run(monkeypatch, "--setup")
+
+    said = message(capsys)
+    assert "already here" in said and "already registered; not rewritten" in said
+    # The claim an administrator set survives the next `docker compose up`.
+    assert store.list_tenant_idps("default")[0]["groups_claim"] == "groups"
+
+
+def test_setup_does_not_reseed_a_tenant_that_already_exists(monkeypatch, bundled):
+    """A real database's contents are the customer's. `--local` settled this rule for
+    its own front door; a service that runs on every boot is where breaking it would
+    actually show — an agent deleted on Monday back on Tuesday."""
+    run(monkeypatch, "--setup")
+    store = storage.active()
+    store.delete_agent("default", "issue-reporter", actor="system:cli")
+
+    run(monkeypatch, "--setup")
+
+    assert [a["name"] for a in store.load_agents("default")] == []
+
+
+def test_setup_reports_a_deleted_tenant_id_rather_than_crashing(monkeypatch, capsys, bundled):
+    """A tenant id is never reused (018), and `--setup` runs unattended on every `up`.
+
+    So the deployment that deletes its tenant and then restarts meets this refusal with
+    nobody at the keyboard, and it has to arrive as a sentence in
+    `docker compose logs setup` rather than as a traceback. `--add-tenant` has caught
+    it since 018; found by reading this path against that one.
+    """
+    store = storage.active()
+    store.create_tenant("default", "Gone")
+    store.set_tenant_status("default", "suspended")
+    store.delete_tenant("default", actor="system:cli")
+
+    fails(monkeypatch, "--setup")
+
+    said = message(capsys)
+    assert "never reused" in said
+    assert "CARNET_TENANT" in said
+    assert "Traceback" not in said
+
+
+def test_setup_says_nobody_is_going_to_be_an_administrator(monkeypatch, capsys, bundled):
+    """`deploy/README.md` warned about this in its own words — read once at container
+    start, so set afterwards it is simply not seen. A warning in a file is worth the
+    attention of the person who did not read it; this is the same sentence at the
+    moment it becomes true."""
+    monkeypatch.delenv("CARNET_BOOTSTRAP_ADMIN", raising=False)
+
+    run(monkeypatch, "--setup")
+
+    said = message(capsys)
+    assert "administrator   NOBODY" in said
+    assert "sign-in is not finished" in said
+
+
+def test_setup_with_no_provider_declared_finishes_and_says_what_is_missing(
+    monkeypatch, capsys, bundled
+):
+    """Not a refusal. The tenant is still created, because the MCP door serves machine
+    tokens that never sign in — the same reasoning that keeps the front door booting
+    with no provider declared."""
+    monkeypatch.delenv("CARNET_IDP", raising=False)
+
+    run(monkeypatch, "--setup")
+
+    said = message(capsys)
+    assert storage.active().get_tenant("default") is not None
+    assert "NOT registered" in said
+    assert "sign-in is not finished" in said
+
+
+def test_setup_derives_an_external_registration_from_the_one_declaration(
+    monkeypatch, capsys, bundled
+):
+    """The issuer is declared once, in .env, and the row is derived from it: the JWKS
+    URL out of the discovery document, the audience out of the client id the browser
+    already uses. Nobody types `--jwks-uri`."""
+    monkeypatch.setenv("CARNET_IDP", "external")
+    monkeypatch.setenv("CARNET_OIDC_ISSUER", "https://acme.okta.example")
+    monkeypatch.setenv("CARNET_OIDC_CLIENT_ID", "0oa-spa")
+    monkeypatch.setenv("CARNET_OIDC_DOMAINS", "example.com, Example.Net")
+    monkeypatch.setattr(
+        cli,
+        "_discovery_document",
+        lambda parser, issuer: {
+            "issuer": issuer,
+            "jwks_uri": "https://acme.okta.example/oauth2/v1/keys",
+        },
+    )
+
+    run(monkeypatch, "--setup")
+
+    row = storage.active().list_tenant_idps("default")[0]
+    assert row["issuer"] == "https://acme.okta.example"
+    assert row["jwks_uri"] == "https://acme.okta.example/oauth2/v1/keys"
+    assert row["audience"] == "0oa-spa"
+    assert row["allowed_domains"] == ("example.com", "example.net")
+    assert "from its own discovery document" in message(capsys)
+
+
+def test_setup_refuses_an_issuer_with_no_client_id(monkeypatch, capsys, bundled):
+    """The client id is what a token's audience is checked against, so half a
+    declaration here is a row that would refuse every token it was written for."""
+    monkeypatch.setenv("CARNET_IDP", "external")
+    monkeypatch.setenv("CARNET_OIDC_ISSUER", "https://acme.okta.example")
+
+    fails(monkeypatch, "--setup")
+
+    assert "CARNET_OIDC_CLIENT_ID" in message(capsys)
+
+
+def test_setup_refuses_a_carnet_idp_that_is_neither(monkeypatch, capsys, bundled):
+    monkeypatch.setenv("CARNET_IDP", "okta")
+
+    fails(monkeypatch, "--setup")
+
+    assert "'bundled' or 'external'" in message(capsys)
+
+
+# --- step 121: --replace-idp, the exit from the bundled provider -------------------
+
+
+@pytest.fixture(autouse=True)
+def _one_tenant(monkeypatch, request):
+    """`--replace-idp` acts on the CLI's tenant (CARNET_TENANT), like `--setup`, rather
+    than taking one as an argument — so these tests point that default at the tenant
+    they build."""
+    if "replac" in request.node.name:
+        monkeypatch.setattr(cli, "DEFAULT_TENANT_ID", TENANT)
+
+
+def a_person(tenant: str, issuer: str, subject: str, email: str) -> str:
+    """Somebody an identity provider vouched for, the way a first sign-in makes them."""
+    user_id = f"u_{subject}"
+    storage.active().create_user(
+        tenant,
+        {
+            "id": user_id,
+            "issuer": issuer,
+            "subject": subject,
+            "email": email,
+            "display_name": email or subject,
+        },
+    )
+    return user_id
+
+
+def test_replacing_the_provider_keeps_everybody_who_they_were(monkeypatch, capsys):
+    """**The test this whole chunk exists for.**
+
+    A company starts on the bundled provider and later buys Okta. Without this, a
+    token from the new issuer matches nobody — identity is `(issuer, subject)`, and
+    071's by-address adoption reaches only a row with no subject at the *same* issuer
+    — so everybody gets a second row and their grants, connected accounts, agents and
+    tokens all stay on the first.
+
+    Here: the same id before and after, adopted by address at the next sign-in, with
+    the agent they own still theirs.
+    """
+    from carnet.access import oidc, providers, users
+
+    store = storage.active()
+    store.create_tenant(TENANT, "Acme")
+    store.save_tenant_idp(TENANT, {**dict(zip(
+        ("issuer", "jwks_uri", "audience"),
+        ("carnet-local", "http://idp:8080/idp/v1/keys", "carnet-local"))),
+        "allowed_domains": ("*",)}, actor="system:cli")
+    store.save_tenant_idp(TENANT, {
+        "issuer": "https://acme.okta.example",
+        "jwks_uri": "https://acme.okta.example/oauth2/v1/keys",
+        "audience": "0oa-spa",
+        "allowed_domains": ("example.com",),
+    }, actor="system:cli")
+
+    before = a_person(TENANT, "carnet-local", "lu_priya", "priya@example.com")
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _="": "move")
+    run(monkeypatch, "--replace-idp", "carnet-local", "--with",
+        "https://acme.okta.example", )
+
+    assert "Moved 1." in message(capsys)
+
+    # The row is now exactly what 071's adoption path matches: same tenant, new
+    # issuer, no subject, same address.
+    moved = store.get_user(TENANT, before)
+    assert moved["issuer"] == "https://acme.okta.example"
+    assert moved["subject"] is None
+
+    # And the next sign-in at the new provider takes it, rather than creating a second
+    # person — driven through `users.resolve`, the call `api/deps.py` makes.
+    row = store.list_tenant_idps(TENANT)
+    okta = next(idp for idp in row if idp["issuer"] == "https://acme.okta.example")
+    principal = users.resolve(okta, {"sub": "okta-987", "email": "priya@example.com"})
+
+    assert principal.id == before, "the same person, or every grant they hold is lost"
+    assert len(store.list_users(TENANT)) == 1
+    assert store.find_user("https://acme.okta.example", "okta-987")["id"] == before
+    assert oidc and providers  # imported for the reader: this is the production path
+
+
+def test_replacing_the_provider_unregisters_the_one_it_replaced(monkeypatch, capsys):
+    """Moving the rows is not the whole move, and the step's own audit found out how.
+
+    The old provider's `tenant_idps` row survives the move, and the bundled provider's
+    carries the `"*"` domain wildcard — so a stale token, or anybody who still knows a
+    password in its accounts database, signs in afterwards and is **created as a new
+    person in this tenant**. A migration that leaves the old credentials working is not
+    a migration, so unregistering is part of the same confirmed act.
+    """
+    store = storage.active()
+    store.create_tenant(TENANT, "Acme")
+    store.save_tenant_idp(TENANT, {
+        "issuer": "carnet-local", "jwks_uri": "http://idp:8080/idp/v1/keys",
+        "audience": "carnet-local", "allowed_domains": ("*",),
+    }, actor="system:cli")
+    store.save_tenant_idp(TENANT, {
+        "issuer": "https://acme.okta.example",
+        "jwks_uri": "https://acme.okta.example/oauth2/v1/keys",
+        "audience": "0oa-spa", "allowed_domains": ("example.com",),
+    }, actor="system:cli")
+    a_person(TENANT, "carnet-local", "lu_priya", "priya@example.com")
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _="": "move")
+    run(monkeypatch, "--replace-idp", "carnet-local", "--with",
+        "https://acme.okta.example")
+
+    said = message(capsys)
+    assert "is UNREGISTERED at the end of this" in said, "said before the confirmation"
+    assert "Unregistered carnet-local" in said
+    assert [idp["issuer"] for idp in store.list_tenant_idps(TENANT)] == [
+        "https://acme.okta.example"
+    ]
+
+
+def test_replacing_the_provider_keeps_the_old_one_while_somebody_is_left_on_it(
+    monkeypatch, capsys
+):
+    """The exception, and the reason it is an exception. A row that could not move
+    still signs in through the old provider, so removing it would lock that person
+    out — and the sentence has to say that is why, or the next person to read it
+    removes it by hand."""
+    store = storage.active()
+    store.create_tenant(TENANT, "Acme")
+    store.save_tenant_idp(TENANT, {
+        "issuer": "carnet-local", "jwks_uri": "http://idp:8080/idp/v1/keys",
+        "audience": "carnet-local", "allowed_domains": ("*",),
+    }, actor="system:cli")
+    store.save_tenant_idp(TENANT, {
+        "issuer": "https://acme.okta.example",
+        "jwks_uri": "https://acme.okta.example/oauth2/v1/keys",
+        "audience": "0oa-spa", "allowed_domains": ("example.com",),
+    }, actor="system:cli")
+    a_person(TENANT, "carnet-local", "lu_priya", "priya@example.com")
+    a_person(TENANT, "carnet-local", "lu_ghost", "")
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _="": "move")
+    run(monkeypatch, "--replace-idp", "carnet-local", "--with",
+        "https://acme.okta.example")
+
+    said = message(capsys)
+    assert "still registered, because not everybody moved" in said
+    assert "signs in as a NEW person" in said
+    assert "carnet-local" in [idp["issuer"] for idp in store.list_tenant_idps(TENANT)]
+
+
+def test_replacing_the_provider_refuses_an_unregistered_destination(monkeypatch, capsys):
+    """Moving people to an issuer nothing can verify is a tenant nobody can sign
+    into — and it would be discovered by everybody at once, at their next sign-in."""
+    store = storage.active()
+    store.create_tenant(TENANT, "Acme")
+    a_person(TENANT, "carnet-local", "lu_priya", "priya@example.com")
+
+    fails(monkeypatch, "--replace-idp", "carnet-local", "--with", "https://nowhere.test")
+
+    assert "no identity provider registered" in message(capsys)
+    assert store.find_user("carnet-local", "lu_priya") is not None
+
+
+def test_replacing_the_provider_needs_somewhere_to_move_to(monkeypatch, capsys):
+    fails(monkeypatch, "--replace-idp", "carnet-local")
+
+    assert "--with" in message(capsys)
+
+
+def test_replacing_the_provider_will_not_run_unattended(monkeypatch, capsys):
+    """Every person's next sign-in goes through this, so the blast radius is everybody
+    at once. `--delete-tenant`'s rule: the check must be as strong as the sentence."""
+    store = storage.active()
+    store.create_tenant(TENANT, "Acme")
+    store.save_tenant_idp(TENANT, {
+        "issuer": "https://acme.okta.example",
+        "jwks_uri": "https://acme.okta.example/oauth2/v1/keys",
+        "audience": "0oa-spa",
+        "allowed_domains": ("example.com",),
+    }, actor="system:cli")
+    a_person(TENANT, "carnet-local", "lu_priya", "priya@example.com")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    fails(monkeypatch, "--replace-idp", "carnet-local", "--with",
+          "https://acme.okta.example")
+
+    assert "will not run unattended" in message(capsys)
+    assert store.find_user("carnet-local", "lu_priya") is not None
+
+
+def test_replacing_the_provider_skips_what_it_must_not_decide(monkeypatch, capsys):
+    """Two rows a machine has no business moving, and neither is an error.
+
+    A person with no address could never be adopted — the match is on one — so moving
+    them is locking them out. A person whose address already exists at the new
+    provider is a merge of two real people, which is not a batch job's call.
+    """
+    store = storage.active()
+    store.create_tenant(TENANT, "Acme")
+    store.save_tenant_idp(TENANT, {
+        "issuer": "https://acme.okta.example",
+        "jwks_uri": "https://acme.okta.example/oauth2/v1/keys",
+        "audience": "0oa-spa",
+        "allowed_domains": ("example.com",),
+    }, actor="system:cli")
+
+    movable = a_person(TENANT, "carnet-local", "lu_priya", "priya@example.com")
+    nameless = a_person(TENANT, "carnet-local", "lu_ghost", "")
+    duplicate = a_person(TENANT, "carnet-local", "lu_sam", "sam@example.com")
+    a_person(TENANT, "https://acme.okta.example", "okta-sam", "Sam@Example.com")
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _="": "move")
+    run(monkeypatch, "--replace-idp", "carnet-local", "--with",
+        "https://acme.okta.example")
+
+    said = message(capsys)
+    assert "Moved 1." in said
+    assert "no email address" in said
+    assert "already exists at the new provider" in said
+    assert store.get_user(TENANT, movable)["issuer"] == "https://acme.okta.example"
+    assert store.get_user(TENANT, nameless)["issuer"] == "carnet-local"
+    assert store.get_user(TENANT, duplicate)["issuer"] == "carnet-local"
+
+
+def test_replacing_a_provider_with_itself_is_refused(monkeypatch, capsys):
+    """Every row would be stripped of its subject and re-adopted where it already was:
+    a no-op with one irreversible step in the middle."""
+    store = storage.active()
+    store.create_tenant(TENANT, "Acme")
+    store.save_tenant_idp(TENANT, {
+        "issuer": "https://acme.okta.example",
+        "jwks_uri": "https://acme.okta.example/oauth2/v1/keys",
+        "audience": "0oa-spa",
+        "allowed_domains": ("example.com",),
+    }, actor="system:cli")
+    a_person(TENANT, "https://acme.okta.example", "okta-1", "priya@example.com")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _="": "move")
+
+    fails(monkeypatch, "--replace-idp", "https://acme.okta.example", "--with",
+          "https://acme.okta.example")
+
+    assert "the same" in message(capsys)

@@ -1,24 +1,40 @@
 # Deploying Carnet
 
 This directory is the deployment: a compose file, the image it builds, and the front
-door in front of it. It is written for the platform team running this in their own
-cloud or their own datacentre — which, for this product, is the normal case, not the
-exception. If that datacentre has a proxy, an intercepting CA, an internal registry or
-no internet at all, [`docs/OFFLINE.md`](../docs/OFFLINE.md) is the page for that, one
-setting each; this one assumes the open internet and says where it does.
+door in front of it. Running it in your own cloud or your own datacentre is the normal
+case for this product, not the exception — and since step 121, **so is running it
+without a platform team**. `./setup.sh` is day one; everything below it is for somebody
+who would rather read each line than run it. If your datacentre has a proxy, an
+intercepting CA, an internal registry or no internet at all,
+[`docs/OFFLINE.md`](../docs/OFFLINE.md) is the page for that, one setting each; this
+one assumes the open internet and says where it does.
 
 ```
-                        443 (TLS terminates here)
-                          │
-                       ┌──▼───┐   /api/* (prefix stripped, body limits enforced)
-        the bundle ◄───┤ front ├──────────────► api ──┐
-                       └──────┘                       ├──► db (Postgres 16,
-                                            migrate ──┘     bundled or yours)
+                     443 (TLS terminates here)
+                       │
+                    ┌──▼───┐  /api/*  (prefix stripped, body limits enforced)
+     the bundle ◄───┤ front ├─────────────────► api ──────┐
+                    │      │                              │
+                    │      │  /idp/*  ┌─────┐             ├──► db (Postgres 16,
+                    └──────┘─────────►│ idp │             │     bundled or yours)
+                                      └─────┘             │
+                              migrate ──► setup ──────────┘
+                              (once)     (once)
 ```
 
-Four services. `migrate` and `api` are one image in two roles — an agent here is a
-row in the database, not a container, so there is no per-agent artifact and no
-pipeline: deploying an agent is giving it a door, and this stack is the door.
+Six services at most, and two of them exit. `db`, `api` and `front` are the deployment;
+`migrate` and `setup` run once on every `up`; `idp` is there only under
+`CARNET_IDP=bundled`. Four of them — `migrate`, `setup`, `api`, `idp` — are **one image
+in four roles**, because an agent here is a row in the database rather than a
+container: there is no per-agent artifact and no pipeline, deploying an agent is giving
+it a door, and this stack is the door.
+
+- `migrate` applies the schema, and everything waits for it.
+- `setup` finishes the install — the tenant, the identity provider row, and a report of
+  what is still missing. Nothing waits for it, on purpose: `/api/mcp` serves machine
+  tokens that never sign in, so a door that works must not be held up by a sign-in that
+  is not configured yet.
+- `idp` is the bundled identity provider, present only under `CARNET_IDP=bundled`.
 
 ## The shape, stated
 
@@ -30,10 +46,12 @@ them should be a deliberate edit:
   brokered model call, where a deployment vets one, spends under that connector's own
   credential. The API is deliberately not replicated — its ceilings assume one
   process, and that assumption is written down rather than multiplied.
-- **Where `CARNET_SECRET_KEY` comes from, and who holds it.** You generate it
-  once (`.env.example` has the command), you hold it — in the same secret store as
-  your database passwords — and the platform never keeps a copy. Every delegated
-  credential is encrypted with it; losing it is losing all of them.
+- **Where `CARNET_SECRET_KEY` comes from, and who holds it.** It is generated once —
+  by `setup.sh`, or by you with the command in `.env.example` — and **you** hold it,
+  in the same secret store as your database passwords, or in `.env` on a host you back
+  up if that is what you have. The platform never keeps a copy, and a script generating
+  it for you is not the same as keeping it. Every delegated credential is encrypted
+  with it; losing it is losing all of them.
 - **Who runs `--migrate`, and when.** The deployment itself, first, every time it
   comes up: `migrate` is a one-shot service and `api` waits for it to
   complete. Re-running is free (applied migrations are checksummed and skipped) and
@@ -42,6 +60,68 @@ them should be a deliberate edit:
   convenience.
 
 ## Day one
+
+```bash
+cd deploy
+./setup.sh
+```
+
+Four questions — the address, your organisation's name, your email, and who signs
+people in — and then the stack comes up and tells you it is ready. There is nothing to
+run afterwards.
+
+What it does, so that running it is not an act of faith:
+
+- **Generates `CARNET_SECRET_KEY`** by running the image's own `carnet --generate-key`,
+  prints it to your terminal, and writes it to `./.env` at mode 600. **That file is the
+  only copy.** Every delegated credential this deployment stores is encrypted with it,
+  we keep no copy, and there is no recovery — so put it in your password manager while
+  the script is waiting for you. Generating it for you is not keeping it.
+- **Writes the rest of `.env`** from `.env.example`, so every answer lands beside the
+  paragraph that explains it and the file is still the one to edit afterwards.
+- **Chooses a certificate that can actually be issued.** A real name gets ACME; anything
+  else — `localhost`, a bare hostname, an IP address, or a deployment on a port other
+  than 443 — gets Caddy's own CA, because ACME's challenge arrives at the real name on
+  the real port and would otherwise spend ten minutes failing in a log.
+- **Finds another port if 80 or 443 is taken**, and then sets `CARNET_PUBLIC_ORIGIN` to
+  match, because the browser's origin is what every OAuth redirect URI is built from.
+- **Brings the stack up**, which runs `carnet --setup` inside it: the tenant, the
+  identity provider row, and a report of anything still missing.
+
+### Who signs people in
+
+The question with two answers, and it is asked rather than defaulted.
+
+**Carnet itself** (`CARNET_IDP=bundled`) runs an identity provider on the stack: email
+and password, the first account is the first administrator, nothing else to install.
+It is a real OIDC provider and the API verifies its tokens through exactly the path it
+verifies Okta's — *local* is a fact about who signs, never about what is checked.
+Registration is **closed** by default: the first account is yours and nobody else can
+create one, which on a deployment reachable from the internet is the whole of the
+admission control. Open it briefly (`CARNET_IDP_REGISTRATION=open`,
+`docker compose up -d idp`) to let colleagues in, and close it again.
+
+What it is *not* is a directory. No groups, no provisioning, no offboarding by anything
+but a hand. A company that has Entra or Okta should use it.
+
+**Your own provider** (`CARNET_IDP=external`) is the answer for anybody who has one.
+You give the issuer URL and the SPA client id once, in `.env`; `carnet --setup` reads
+the provider's discovery document and registers it with the API itself, so the issuer
+is not declared twice. Register `https://<CARNET_DOMAIN>/login/callback` as the
+redirect URI at your provider's end. Any OIDC provider works — Okta, Entra, Ping,
+Auth0, Keycloak, Google.
+
+Moving from the bundled provider to a real one later is `carnet --replace-idp`, which
+keeps everybody's id — and with it their grants, their connected accounts and the
+agents they own. When everybody moves it **unregisters the provider it replaced**, so
+the old email-and-password accounts stop being a way in; the service and its accounts
+volume are left alone until you take them down by setting `CARNET_IDP=external` and
+dropping `bundled-idp` from `COMPOSE_PROFILES`.
+
+### The same thing by hand
+
+`setup.sh` writes a file and runs `docker compose`. A platform team that would rather
+read every line can do exactly what it does:
 
 ```bash
 cd deploy
@@ -55,33 +135,29 @@ chmod 600 .env   # it is about to hold the master encryption key
 docker build -t carnet-api --target api -f Dockerfile ..
 docker run --rm carnet-api carnet --generate-key
 
-# put the key in your secret store, set it in .env, set CARNET_DOMAIN — and set
-# CARNET_OIDC_ISSUER + CARNET_OIDC_CLIENT_ID to your identity provider
-# (.env.example documents them; any OIDC provider, not only Okta).
-#
-# Set CARNET_BOOTSTRAP_ADMIN here too — the address that becomes this deployment's
-# first administrator at their first login. It is read once, when the container starts,
-# so it MUST be in .env before the `up` below: set afterwards it is simply not seen, and
-# you land on a working sign-in with no administrator and nothing saying why.
+# Put the key in your secret store and set it in .env, with CARNET_DOMAIN, and
+# CARNET_BOOTSTRAP_ADMIN (the address that becomes this deployment's first
+# administrator at their first login — it is read once, when the container starts,
+# so it must be in .env before the `up` below). Then either:
+#   CARNET_IDP=bundled  and  COMPOSE_PROFILES=bundled-db,bundled-idp
+#   CARNET_IDP=external and  CARNET_OIDC_ISSUER + CARNET_OIDC_CLIENT_ID
 docker compose up -d --build
 
-# name the workspace and register the same identity provider with the API. The
-# --issuer here and CARNET_OIDC_ISSUER above must name the same provider: the first
-# is how the API verifies tokens, the second is how the browser obtains them.
-docker compose exec api carnet --add-tenant default "Your Company"
-docker compose exec api carnet --add-idp default \
-    --issuer https://your-issuer.example.com \
-    --jwks-uri https://your-issuer.example.com/oauth2/v1/keys \
-    --audience your-client-id
-# optionally, the shipped example agent:
-docker compose exec api carnet --seed
+# and that is all: the `setup` service has already created the tenant and registered
+# the provider. It prints what it did, and what is still missing:
+docker compose logs setup
 ```
 
-Then open `https://<CARNET_DOMAIN>/` and sign in as the bootstrap-admin address. If
-you forgot to set `CARNET_BOOTSTRAP_ADMIN` before the `up` above — or want to appoint
-the first administrator by hand — set it in `.env` and `docker compose up -d` to restart
-with it read, or grant the role directly:
-`docker compose exec api carnet --grant-role admin <email>`.
+If you forgot `CARNET_BOOTSTRAP_ADMIN` — or want to appoint the first administrator by
+hand — set it in `.env` and `docker compose up -d` to restart with it read, or grant the
+role directly: `docker compose exec api carnet --grant-role admin <email>`.
+
+**`docker compose up -d --wait` returns 1 on a healthy stack.** Compose counts the
+one-shot `setup` service exiting as a failure, because nothing depends on it with
+`service_completed_successfully` — and nothing does on purpose, since that dependency
+would also stop the door serving whenever the identity provider was unreachable. Use
+`docker compose up -d`, or name the services that stay up:
+`docker compose up -d --wait api front`.
 
 **Upgrades:** `git pull && docker compose up -d --build`. The dependency graph runs
 the migration before new code serves; `docs/UPGRADING.md` is the contract for what a
@@ -317,7 +393,10 @@ in `docs/plans/030-deployment-artifacts.md`, decision 5.
   server — none of it, until a customer asks in words.
 - **A backup story beyond Postgres's own.** `db-data` (or your managed instance) is
   the deployment; dump it like any Postgres. `docs/UPGRADING.md` covers what a
-  restore is promised to preserve.
+  restore is promised to preserve. **On a bundled provider there is a second volume**,
+  `idp-data`, which holds the accounts database and the provider's signing key — back
+  it up in the same sentence as the database, because losing it is losing every
+  password, and under closed registration re-creating them is an operator's job.
 
 `scripts/e2e_deploy.py` drives this stack end to end — TLS on, limits enforced,
 prefix rewritten, no superuser serving, `/config.json` and the CSP agreeing — and is

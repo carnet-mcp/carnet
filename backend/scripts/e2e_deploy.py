@@ -12,7 +12,11 @@ Eight scenes — six landing on decisions in `docs/plans/030-deployment-artifact
 and two (`the_sign_in_wiring`, `the_provider_declaration`) on
 `docs/plans/031-deployed-sign-in.md`:
 
-  - `the_first_five_minutes`  the README's day-one commands, run verbatim, plus the
+  - `the_one_command`         step 121: `deploy/setup.sh` is day one now, and the
+                              two refusals that protect a key it must never
+                              overwrite. The README agrees, asserted rather than
+                              assumed.
+  - `the_first_five_minutes`  the README's by-hand day one, run verbatim, plus the
                               two refusals decision 10 promises. This is the scene
                               that found the chicken-and-egg: compose interpolates
                               the whole file for *every* subcommand, so while the
@@ -338,6 +342,67 @@ def the_first_five_minutes() -> None:
 
     for leftover in (example, nodomain, noadmin):
         leftover.unlink(missing_ok=True)
+
+
+def the_one_command() -> None:
+    """`deploy/setup.sh`, and the two refusals that protect somebody's key (step 121).
+
+    The script is interactive and stands a stack up, which this file already does its
+    own way — so what is driven here is the part that must be right whatever anybody
+    types at it. The full run is a hand-run, reported in the step.
+
+    **Run against a copy in the scratch directory, never against `deploy/` itself.**
+    Both refusals happen before the script reads or writes anything else, so a lone
+    copy of the file is enough to reach them — and the alternative, moving a real
+    `.env` aside to make room for the test, is a test that can lose somebody's key if
+    it dies in the middle. That is the same property the refusal itself is for.
+
+    The first refusal is the load-bearing one. `.env` holds the key that opens every
+    delegated credential this deployment has stored and there is no copy anywhere else,
+    so a setup script that can overwrite one is a setup script that can destroy a
+    running deployment's data from a mistyped command. It refuses under every flag,
+    because there is no flag.
+    """
+    say("day one: one command, and the file it will not overwrite")
+
+    setup = DEPLOY / "setup.sh"
+    check("setup.sh is executable, or `./setup.sh` is not the instruction",
+          os.access(setup, os.X_OK), True)
+
+    sandbox = SCRATCH / "e2e_deploy_setup"
+    shutil.rmtree(sandbox, ignore_errors=True)
+    sandbox.mkdir(parents=True)
+    shutil.copy2(setup, sandbox / "setup.sh")
+
+    def run_it() -> subprocess.CompletedProcess:
+        return subprocess.run(["sh", "./setup.sh"], cwd=sandbox,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True)
+
+    piped = run_it()
+    check("with no terminal it refuses and names the by-hand path",
+          piped.returncode != 0 and "docker compose up -d --build" in piped.stderr, True)
+
+    # And with a file present it says *that* instead — the ordering is the finding, not
+    # a preference. With the terminal check first, somebody piping into this script on
+    # a deployment that was already set up was told to copy .env.example to .env, which
+    # is advice to create the file that already exists and holds their key.
+    (sandbox / ".env").write_text("CARNET_SECRET_KEY=not-a-real-key\n")
+    guarded = run_it()
+    check("an existing .env is refused before anything else is even checked",
+          guarded.returncode != 0 and "already exists" in guarded.stderr, True)
+    check("...and the refusal says why that file matters",
+          "CARNET_SECRET_KEY" in guarded.stderr, True)
+    check("...and it really is untouched",
+          (sandbox / ".env").read_text().strip(), "CARNET_SECRET_KEY=not-a-real-key")
+
+    shutil.rmtree(sandbox, ignore_errors=True)
+
+    # The README is the other half of this promise: day one is one command there too.
+    readme = (DEPLOY / "README.md").read_text()
+    day_one = readme[readme.index("## Day one"):readme.index("**Upgrades:**")]
+    check("the README's day one is that command", "./setup.sh" in day_one, True)
+    check("...and the by-hand path is still printed for a team that wants it",
+          "cp .env.example .env" in day_one, True)
 
 
 def the_running_stack() -> None:
@@ -687,12 +752,17 @@ def the_provider_declaration() -> None:
     say("the provider declaration: every way to get CARNET_OIDC_* wrong")
 
     def run(**env):
+        # A domain always, because compose always supplies one (`:?`) and the
+        # entrypoint's `acme` branch reads it since step 121 — a case run without one
+        # is a case the deployment cannot produce.
+        env.setdefault("CARNET_DOMAIN", "carnet.example.com")
         args = []
         for key, value in env.items():
             args += ["-e", f"{key}={value}"]
         return subprocess.run(
             ["docker", "run", "--rm", *args, "carnet-front", "sh", "-c",
-             'echo "CSP=$CARNET_CSP"; cat /srv/config.json 2>/dev/null'],
+             'echo "CSP=$CARNET_CSP"; cat /srv/config.json 2>/dev/null; '
+             'echo "ROUTE=$(cat /etc/caddy/idp.caddy)"'],
             capture_output=True, text=True,
         )
 
@@ -762,12 +832,87 @@ def the_provider_declaration() -> None:
               done.returncode != 0 and "front door:" in done.stderr, True)
 
     version = subprocess.run(
-        ["docker", "run", "--rm", "-e", "CARNET_OIDC_ISSUER=https://i.test",
+        ["docker", "run", "--rm", "-e", "CARNET_DOMAIN=carnet.example.com",
+         "-e", "CARNET_OIDC_ISSUER=https://i.test",
          "-e", f"CARNET_OIDC_CLIENT_ID={ok}", "carnet-front", "caddy", "version"],
         capture_output=True, text=True,
     )
     check("and the image still runs the command it is given, not one of its own",
           version.stdout.startswith("v2."), True)
+
+    # --- step 121: the third artifact, and the choice between providers -------------
+    #
+    # `CARNET_IDP` turns the same one declaration into a THIRD thing: whether /idp/*
+    # reaches a provider at all. The route is a file the Caddyfile imports
+    # unconditionally, so "no bundled provider" is an empty file rather than an absent
+    # one — an import that may or may not resolve is a routing table that depends on
+    # whether a previous boot happened to write one.
+    bundled = run(CARNET_IDP="bundled", COMPOSE_PROFILES="bundled-db,bundled-idp")
+    check("bundled writes the provider's own /config.json, origin-relative",
+          '"issuer": "/idp"' in bundled.stdout
+          and '"client_id": "carnet-local"' in bundled.stdout, True)
+    check("bundled routes /idp/* to the provider service",
+          "reverse_proxy idp:8080" in bundled.stdout, True)
+    # The point of one origin, asserted rather than described: the bundled policy is
+    # byte-for-byte the policy a deployment with NO provider serves, because an
+    # origin-relative issuer needs no provider-dependent source. If this ever differs,
+    # the shipped `connect-src 'self'` has stopped covering the token exchange.
+    check("and its CSP is exactly the unconfigured one — one origin, no exception",
+          csp_of(CARNET_IDP="bundled", COMPOSE_PROFILES="bundled-idp")
+          == csp_of(), True)
+
+    external = run(CARNET_OIDC_ISSUER="https://acme.okta.com/oauth2/default",
+                   CARNET_OIDC_CLIENT_ID=ok)
+    check("an external provider routes /idp/* nowhere, and the file is empty not absent",
+          "ROUTE=" in external.stdout
+          and "reverse_proxy idp" not in external.stdout, True)
+
+    # A deployment that predates CARNET_IDP must upgrade untouched, and one with no
+    # provider at all must still come up: this container also serves /api/mcp, so
+    # refusing to boot over a *browser* setting would take the MCP door down with it.
+    # **That corrects plan 121's decision 3**, which asked for a refusal here.
+    quiet = run()
+    check("no provider declared at all still comes up, as it did before 121",
+          quiet.returncode == 0 and "ROUTE=" in quiet.stdout, True)
+    check("and says so on stderr rather than leaving a sign-in screen to explain it",
+          "no identity provider is declared" in quiet.stderr
+          and "/api/mcp is unaffected" in quiet.stderr, True)
+
+    # Every way to make the two halves of the choice disagree. The compose profile is
+    # the one thing here that cannot be derived — a container is not told which
+    # profiles were activated — so it is passed in and checked, which is the
+    # difference between a sentence and a 502 on the sign-in page.
+    for label, env in (
+        ("bundled with no bundled-idp profile, which would 502",
+         {"CARNET_IDP": "bundled"}),
+        ("the bundled-idp profile with an external provider",
+         {"CARNET_IDP": "external", "COMPOSE_PROFILES": "bundled-idp"}),
+        ("bundled beside an issuer, where nothing says which one signs",
+         {"CARNET_IDP": "bundled", "COMPOSE_PROFILES": "bundled-idp",
+          "CARNET_OIDC_ISSUER": "https://i.test", "CARNET_OIDC_CLIENT_ID": ok}),
+        ("bundled beside a scopes setting nothing would request",
+         {"CARNET_IDP": "bundled", "COMPOSE_PROFILES": "bundled-idp",
+          "CARNET_OIDC_SCOPES": "openid"}),
+        ("a CARNET_IDP that is neither", {"CARNET_IDP": "yes"}),
+    ):
+        done = run(**env)
+        check(f"the front door refuses {label}",
+              done.returncode != 0 and "front door:" in done.stderr, True)
+
+    for mode, profiles in (("bundled", "bundled-idp"), ("external", "")):
+        adapted = subprocess.run(
+            ["docker", "run", "--rm", "-e", "CARNET_DOMAIN=carnet.example.com",
+             "-e", f"CARNET_IDP={mode}", "-e", f"COMPOSE_PROFILES={profiles}",
+             *(["-e", "CARNET_OIDC_ISSUER=https://i.test",
+                "-e", f"CARNET_OIDC_CLIENT_ID={ok}"] if mode == "external" else []),
+             "carnet-front", "caddy", "validate", "--config", "/etc/caddy/Caddyfile",
+             "--adapter", "caddyfile"],
+            capture_output=True, text=True,
+        )
+        # An imported file Caddy cannot parse is a front door that does not start, and
+        # the empty half is the one a reader doubts: `import` of an empty file.
+        check(f"and the Caddyfile still adapts under CARNET_IDP={mode}",
+              "Valid configuration" in adapted.stderr + adapted.stdout, True)
 
 
 def _self_signed(name: str) -> tuple[bytes, bytes, str]:
@@ -815,6 +960,10 @@ def the_operators_certificate() -> None:
     say("the operator's certificate: CARNET_TLS_MODE across its three modes")
 
     def run(**env):
+        # CARNET_DOMAIN always, because compose always supplies it (`:?`) and since
+        # step 121 the `acme` branch reads it — a case run without one is a case the
+        # deployment cannot produce.
+        env.setdefault("CARNET_DOMAIN", "carnet.example.com")
         args = []
         for key, value in env.items():
             args += ["-e", f"{key}={value}"]
@@ -830,6 +979,27 @@ def the_operators_certificate() -> None:
           run(CARNET_TLS_MODE="acme").stdout.strip(), "TLS=")
     check("internal is Caddy's own CA for any name",
           run(CARNET_TLS_MODE="internal").stdout.strip(), "TLS=tls internal")
+
+    # Step 121. `acme` is the default, so the name it cannot work for is the one a
+    # self-serve installer is most likely to have: a VM reached by address. The
+    # failure it replaces is the least legible in the stack — a front door that comes
+    # up, serves nothing usable, and retries an ACME challenge for minutes in a log
+    # nobody is reading, while the browser names no cause.
+    for label, domain in (("an address", "10.0.0.5"),
+                          ("a single-label name", "carnet"),
+                          ("nothing at all", "")):
+        refused = run(CARNET_DOMAIN=domain)
+        check(f"acme refuses {label}, and names the mode that works",
+              refused.returncode != 0
+              and ("internal" in refused.stderr or "no name" in refused.stderr), True)
+    # And the two that Caddy really does issue for itself, which the documented trial
+    # rests on: a refusal that caught these would break `localhost` for everybody.
+    for domain in ("localhost", "app.localhost"):
+        check(f"...but {domain} is still fine, because Caddy signs it itself",
+              run(CARNET_DOMAIN=domain).stdout.strip(), "TLS=")
+    check("...and the address is served the moment a mode that can is chosen",
+          run(CARNET_DOMAIN="10.0.0.5", CARNET_TLS_MODE="internal").stdout.strip(),
+          "TLS=tls internal")
     missing = run(CARNET_TLS_MODE="files")
     check("files without the files refuses at start, naming the mount",
           missing.returncode != 0 and "/etc/carnet/tls/cert.pem" in missing.stderr
@@ -902,7 +1072,9 @@ def the_knobs() -> None:
         (package / "config.py").read_text() + (package / "core" / "crypto.py").read_text()
         # Step 109: the front door reads settings of its own, in its entrypoint, and
         # CARNET_TLS_MODE was the first one that could have shipped unreachable.
-        + (DEPLOY / "frontdoor-entrypoint.sh").read_text(),
+        + (DEPLOY / "frontdoor-entrypoint.sh").read_text()
+        # Step 121: so does the bundled provider, in its own entry point.
+        + (package / "localidp" / "service.py").read_text(),
     )
     # Five names the regex catches that are not deployment settings: the dev-auth bypass
     # is deleted rather than disabled (config.py says so), VAR_DIR and LOCAL_STATE are set
@@ -920,11 +1092,17 @@ def the_knobs() -> None:
     # And three the entrypoint contributes (109): CARNET_CSP and CARNET_TLS are what
     # it *exports* to the Caddyfile, not settings anybody sets; CARNET_OIDC_ is the
     # prefix as it appears in a refusal's wording.
+    #
+    # And one from step 121, on CARNET_VAR_DIR's reasoning exactly: CARNET_IDP_STATE is
+    # a path *inside* the provider's container, where compose mounts its volume. A
+    # deployment that moved it would have moved the mount, which is an edit to
+    # compose.yaml rather than a line in .env — so offering it in the closed list would
+    # be offering a way to separate the provider from its own accounts database.
     not_a_deployment_setting = {
         "CARNET_INSECURE_DEV_AUTH", "CARNET_VAR_DIR",
         "CARNET_LOCAL_STATE", "CARNET_TENANT", "CARNET_CONNECTOR_",
         "CARNET_FILE", "CARNET_TOKEN_", "CARNET_TOKEN_ALICE",
-        "CARNET_CSP", "CARNET_TLS", "CARNET_OIDC_",
+        "CARNET_CSP", "CARNET_TLS", "CARNET_OIDC_", "CARNET_IDP_STATE",
     }
     wanted = set(read_by_the_app) - not_a_deployment_setting
     compose_text = COMPOSE_FILE.read_text()
@@ -1360,11 +1538,16 @@ def the_second_coming() -> None:
 
     say("and what came back is the door, nothing more")
     # What a restart must prove is that the service set is still exactly the door's.
+    # Five since step 121: `setup` joins `migrate` as a one-shot that runs on every
+    # `up`. **`idp` is deliberately not in this list** — this world declares no
+    # provider, so the `bundled-idp` profile is off and the bundled one does not
+    # exist, which is the assertion that a deployment bringing its own identity
+    # provider runs nothing extra for the one it did not ask for.
     listed = compose("ps", "-a", "--format", "json", capture_output=True, text=True)
     names = sorted({json.loads(line)["Service"]
                     for line in listed.stdout.splitlines() if line.strip()})
-    check("the services after a restart are the door's four",
-          names, ["api", "db", "front", "migrate"])
+    check("the services after a restart are the door's, and no provider it did not ask for",
+          names, ["api", "db", "front", "migrate", "setup"])
 
     say("readiness tells the truth about the database; liveness deliberately does not")
     # Step 056, the red half asserted in the one place a real database can actually
@@ -1644,7 +1827,8 @@ def main() -> int:
 
     ENV_FILE = write_env(SCRATCH / "e2e_deploy.env")
     try:
-        for scene in (the_first_five_minutes, the_running_stack, the_sign_in_wiring,
+        for scene in (the_first_five_minutes, the_one_command, the_running_stack,
+                      the_sign_in_wiring,
                       the_provider_declaration, the_operators_certificate, the_knobs,
                       the_internal_registry, the_carried_artefact, the_second_coming,
                       the_owner_check_can_go_red, the_managed_database):

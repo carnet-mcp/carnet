@@ -1,31 +1,123 @@
 #!/bin/sh
-# The front door's boot: turn ONE provider declaration into the TWO things a browser
-# needs to sign in, then hand off to the image's own command (plan 031, decision 3).
+# The front door's boot: turn ONE provider declaration into the THREE things a browser
+# needs to sign in, then hand off to the image's own command (plan 031, decision 3;
+# step 121, decision 3).
 #
-# The two things must never disagree — /config.json (which the app fetches at boot to
-# find its provider) and the Content-Security-Policy header (which decides what the
-# browser may connect to and frame). Deriving both here, from CARNET_OIDC_*, is what
-# makes disagreement unrepresentable. The Caddyfile stays static and declarative; this
-# script is the only place any logic lives, so it is the whole surface to audit.
+# The three must never disagree — /config.json (which the app fetches at boot to find
+# its provider), the Content-Security-Policy header (which decides what the browser
+# may connect to and frame), and, since 121, the route that decides whether /idp/*
+# reaches a provider at all. Deriving all of them here, from CARNET_IDP and
+# CARNET_OIDC_*, is what makes disagreement unrepresentable. The Caddyfile stays static
+# and declarative; this script is the only place any logic lives, so it is the whole
+# surface to audit.
 #
-# Unconfigured is not an error: day one runs `docker compose up` before a provider is
-# decided, and a front door that refused to start until then would be the key
-# generation's chicken-and-egg wearing new clothes. No issuer means no /config.json (a
-# real 404 — the SPA fallback deliberately does not catch it) and a CSP of 'self'
-# alone; the sign-in screen says what is missing. Anything OTHER than "all of it" or
-# "none of it" is a refusal, loudly and by name: a half-declared provider is always a
-# mistake, and serving anyway would fail later, quieter, and in a browser.
+# Unconfigured is not an error *for an external provider*: day one runs `docker compose
+# up` before somebody's Okta is decided, and a front door that refused to start until
+# then would be the key generation's chicken-and-egg wearing new clothes. No issuer
+# means no /config.json (a real 404 — the SPA fallback deliberately does not catch it)
+# and a CSP of 'self' alone; the sign-in screen says what is missing. Anything OTHER
+# than "all of it" or "none of it" is a refusal, loudly and by name: a half-declared
+# provider is always a mistake, and serving anyway would fail later, quieter, and in a
+# browser.
+#
+# CARNET_IDP (step 121) is the choice *between* providers, and it has three values
+# rather than two because an existing deployment must upgrade untouched:
+#
+#   external   yours, declared in CARNET_OIDC_* — everything above, unchanged
+#   bundled    the provider this deployment runs itself (the `idp` service). No issuer
+#              to declare: /config.json is origin-relative, so the CSP needs no
+#              provider-dependent source and stays exactly the unconfigured one
+#   unset      `external`, so nothing that worked before this variable existed changes
+#
+# Bundled is offered and never defaulted: the failure mode of a default here is a
+# company running somebody else's account store for a year without having decided to.
+# The choice is made a *conscious* one by `deploy/setup.sh`, which asks before the
+# stack ever comes up — not by refusing to start, and the difference is the whole of
+# the correction below.
+#
+# **Plan 121, decision 3 said an undeclared provider should refuse at start. That is
+# wrong and the plan is the thing that is out of date.** This container serves
+# `/api/*`, and `/api/mcp` is the MCP door — the product. A deployment brokering tool
+# calls for machine tokens minted at the CLI needs no browser sign-in at all, and
+# refusing to boot over a *browser* setting would take the door down with it. So an
+# undeclared provider stays what plan 031 made it: the stack comes up, /config.json is
+# a real 404, the sign-in screen says what is missing, and one line here says it too.
+# What IS refused is a declaration that contradicts itself, which no working
+# deployment has ever had.
 set -eu
 
+idp="${CARNET_IDP:-}"
 issuer="${CARNET_OIDC_ISSUER:-}"
 client_id="${CARNET_OIDC_CLIENT_ID:-}"
 scopes="${CARNET_OIDC_SCOPES:-openid profile email}"
 extra_origins="${CARNET_OIDC_EXTRA_ORIGINS:-}"
+profiles="${COMPOSE_PROFILES:-}"
+
+# Where the /idp/* route lands. The Caddyfile imports this file unconditionally and it
+# is empty under `external`, so the routing table is composed from the same declaration
+# as the other two artifacts rather than from a second one.
+IDP_ROUTE=/etc/caddy/idp.caddy
 
 refuse() {
     echo "front door: $*" >&2
     exit 1
 }
+
+# --- which provider, and what a disagreement is --------------------------------------
+
+case "$idp" in
+    "") idp=external ;;
+    external | bundled) ;;
+    *)
+        refuse "CARNET_IDP must be 'bundled' or 'external', not '$idp'."
+        ;;
+esac
+
+
+if [ "$idp" = bundled ]; then
+    # Two providers declared is the half-declaration's bigger sibling: nothing here
+    # could say which one signs the tokens the API is registered to verify.
+    for name in CARNET_OIDC_ISSUER CARNET_OIDC_CLIENT_ID CARNET_OIDC_SCOPES \
+        CARNET_OIDC_EXTRA_ORIGINS; do
+        eval "value=\${$name:-}"
+        [ -z "$value" ] || refuse "CARNET_IDP=bundled, but $name is also set." \
+            "The bundled provider IS the provider — clear the CARNET_OIDC_*" \
+            "settings, or choose CARNET_IDP=external and keep them."
+    done
+    # The `idp` service is switched on by a compose profile, which is a second line in
+    # .env and therefore a second thing that can be wrong. It is not derivable from
+    # here — a container cannot see which profiles compose activated — so it is passed
+    # in and checked, and the check is the difference between this sentence and a 502
+    # on the sign-in page. `deploy/setup.sh` writes both lines and never meets it.
+    case ",$profiles," in
+        *,bundled-idp,*) ;;
+        *)
+            refuse "CARNET_IDP=bundled, but COMPOSE_PROFILES does not list" \
+                "'bundled-idp', so the provider service is not running and /idp/*" \
+                "would be a 502. Add it in .env:" \
+                "COMPOSE_PROFILES=bundled-db,bundled-idp"
+            ;;
+    esac
+else
+    case ",$profiles," in
+        *,bundled-idp,*)
+            refuse "COMPOSE_PROFILES lists 'bundled-idp', but CARNET_IDP is" \
+                "'external' — so the bundled provider would run with nothing routed" \
+                "to it. Remove the profile, or set CARNET_IDP=bundled."
+            ;;
+    esac
+fi
+
+# After the refusals above, not before them: advice about a provider nobody declared
+# has no business arriving ahead of a sentence about a declaration that contradicts
+# itself. Not a refusal — see the header. Said once, on stderr, because the symptom
+# otherwise is a sign-in screen and a question nobody has the answer to.
+if [ "$idp" = external ] && [ -z "$issuer" ] && [ -z "$client_id" ]; then
+    echo "front door: no identity provider is declared, so nobody can sign in" \
+        "through a browser. Set CARNET_IDP=bundled for the one this deployment can" \
+        "run itself, or CARNET_OIDC_ISSUER and CARNET_OIDC_CLIENT_ID for your own." \
+        "The MCP door at /api/mcp is unaffected — machine tokens do not sign in." >&2
+fi
 
 # --- what may be declared, and what half a declaration is ----------------------------
 
@@ -133,8 +225,48 @@ if [ -n "$issuer" ]; then
 
     printf '{"issuer": "%s", "client_id": "%s", "scopes": "%s"}\n' \
         "$issuer" "$client_id" "$scopes" >/srv/config.json
+elif [ "$idp" = bundled ]; then
+    # The bundled provider's own /config.json, and it carries NO origin: the issuer is
+    # origin-relative, so the SPA fetches {origin}/idp/.well-known/openid-configuration
+    # and every request it makes is already covered by `connect-src 'self'`. That is
+    # why this branch leaves `origins` empty and the CSP below is byte-for-byte the
+    # unconfigured one — one origin is the load-bearing decision, inherited from
+    # `carnet --local` (localidp/edge.py).
+    #
+    # **These three values are a copy of `localidp/provider.config_json()`**, which a
+    # shell script cannot import. `test_the_front_door_and_the_provider_agree` compares
+    # them, so the copy cannot drift without the suite saying so.
+    printf '{"issuer": "/idp", "client_id": "carnet-local", "scopes": "openid profile email"}\n' \
+        >/srv/config.json
 else
     rm -f /srv/config.json
+fi
+
+# The third artifact (step 121): whether /idp/* reaches a provider. Written in both
+# cases — empty under `external` — because the Caddyfile imports it unconditionally,
+# and an import of a file that may or may not exist is a front door whose routing
+# table depends on whether a previous boot happened to write one.
+if [ "$idp" = bundled ]; then
+    # Before the SPA fallback, for /config.json's reason: answered by the fallback
+    # these would be index.html with a 200, and the sign-in flow would read an HTML
+    # page as a discovery document.
+    cat >"$IDP_ROUTE" <<'CADDY'
+handle /idp/* {
+	reverse_proxy idp:8080
+}
+CADDY
+else
+    # **A real 404, not an empty file** (found by the step's own audit). `/idp/*` is a
+    # server namespace and never an app route, so with nothing written here the SPA
+    # fallback answered `/idp/login` with index.html and a 200 — the same masking this
+    # Caddyfile calls out by name for /config.json and /assets/*, and the shape that
+    # once shipped a deployment nobody could sign into. A deployment that brought its
+    # own provider says so plainly instead.
+    cat >"$IDP_ROUTE" <<'CADDY'
+handle /idp/* {
+	respond "this deployment uses its own identity provider; nothing is bundled here" 404
+}
+CADDY
 fi
 
 # The whole policy, in one place. The bundle's meta tag carries the provider-
@@ -171,7 +303,46 @@ export CARNET_CSP
 # the browser reports.
 tls_mode="${CARNET_TLS_MODE:-acme}"
 case "$tls_mode" in
-    acme) CARNET_TLS="" ;;
+    acme)
+        # Step 121. `acme` is the default and it cannot work for a name Let's Encrypt
+        # will not issue for: an IP address, or a single-label hostname. Caddy handles
+        # `localhost` and `*.localhost` with its own CA and those stay legal, which is
+        # what the documented trial rests on.
+        #
+        # Refused here rather than endured, because the failure otherwise is the least
+        # legible in the whole stack: the front door comes up, serves nothing usable,
+        # and spends minutes retrying an ACME challenge in a log nobody is reading —
+        # while the browser shows a connection error that names no cause. One sentence
+        # at start, and the remedy is one word in .env. `deploy/setup.sh` picks the
+        # right mode by itself, so this is for a file somebody edited by hand.
+        case "${CARNET_DOMAIN:-}" in
+            localhost | *.localhost) ;;
+            *[!0-9.]*)
+                case "${CARNET_DOMAIN:-}" in
+                    *.*) ;;
+                    *)
+                        refuse "CARNET_TLS_MODE is acme (the default) but" \
+                            "CARNET_DOMAIN is '${CARNET_DOMAIN:-}', which is a" \
+                            "single-label name Let's Encrypt cannot issue for." \
+                            "Set CARNET_TLS_MODE=internal for Caddy's own CA, or" \
+                            "files for a certificate you mount."
+                        ;;
+                esac
+                ;;
+            "")
+                refuse "CARNET_DOMAIN is empty, so there is no name to get a" \
+                    "certificate for."
+                ;;
+            *)
+                refuse "CARNET_TLS_MODE is acme (the default) but CARNET_DOMAIN is" \
+                    "'${CARNET_DOMAIN}', an address rather than a name — ACME" \
+                    "issues for names, and the challenge would never arrive. Set" \
+                    "CARNET_TLS_MODE=internal for Caddy's own CA, or files for a" \
+                    "certificate you mount."
+                ;;
+        esac
+        CARNET_TLS=""
+        ;;
     internal) CARNET_TLS="tls internal" ;;
     files)
         for f in /etc/carnet/tls/cert.pem /etc/carnet/tls/key.pem; do

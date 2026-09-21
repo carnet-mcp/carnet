@@ -3931,6 +3931,82 @@ class PostgresStorage:
                 ) from exc
             raise
 
+    def move_users_to_issuer(
+        self, tenant_id: str, from_issuer: str, to_issuer: str, *, actor: str
+    ) -> dict:
+        split_actor(actor)
+        if from_issuer == to_issuer:
+            raise StorageError(
+                "the old and the new issuer are the same, so every row would be "
+                "stripped of its subject and re-adopted where it already was."
+            )
+
+        columns = ", ".join(self._USER_COLUMNS)
+        moved: list[str] = []
+        skipped: list[dict] = []
+        with self._transaction() as cur:
+            # One transaction for the read, the collision check and every write: an
+            # operator reading a plan and a command acting on a different set of rows
+            # is the shape this command must not have.
+            rows = [
+                dict(zip(self._USER_COLUMNS, row))
+                for row in cur.execute(
+                    f"""
+                    SELECT {columns} FROM users
+                     WHERE tenant_id = %s AND issuer = %s
+                     ORDER BY created_at, id
+                    """,
+                    (tenant_id, from_issuer),
+                ).fetchall()
+            ]
+            taken = {
+                normalize_email(row[0])
+                for row in cur.execute(
+                    "SELECT email FROM users WHERE tenant_id = %s AND issuer = %s",
+                    (tenant_id, to_issuer),
+                ).fetchall()
+                if normalize_email(row[0])
+            }
+
+            for row in rows:
+                address = normalize_email(row["email"])
+                if not address:
+                    skipped.append(
+                        {"id": row["id"], "email": "", "why": "no email address"}
+                    )
+                    continue
+                if address in taken:
+                    skipped.append(
+                        {
+                            "id": row["id"],
+                            "email": row["email"],
+                            "why": "that address already exists at the new provider",
+                        }
+                    )
+                    continue
+                cur.execute(
+                    """
+                    UPDATE users SET issuer = %s, subject = NULL
+                     WHERE tenant_id = %s AND id = %s
+                    """,
+                    (to_issuer, tenant_id, row["id"]),
+                )
+                self._write_admin(
+                    cur,
+                    tenant_id,
+                    make_admin_record(
+                        "user.reissue",
+                        "user",
+                        row["id"],
+                        actor,
+                        {"from_issuer": from_issuer, "to_issuer": to_issuer},
+                    ),
+                )
+                taken.add(address)
+                moved.append(row["id"])
+
+        return {"moved": moved, "skipped": skipped}
+
     def find_user_by_external_id(
         self, tenant_id: str, issuer: str, external_id: str
     ) -> dict | None:

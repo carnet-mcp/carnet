@@ -53,7 +53,9 @@
 #             end to end (e2e_deploy.py — TLS, the rewrite, body limits, the
 #             non-superuser owner, the managed-database BYOC shape), then a real
 #             browser signing into the deployed stack against a non-Okta provider
-#             (e2e_browser_deploy.py — the header-served CSP no meta tag can stand
+#             (e2e_browser_bundled.py — the provider this deployment runs itself,
+#             installed and signed into by a stranger with no `docker compose exec`;
+#             e2e_browser_deploy.py — the header-served CSP no meta tag can stand
 #             in for). Added in 054, after plan 049's audit found the 030 register
 #             row's trigger had fired: the scripts were hand-run, had drifted since
 #             042, and the drift hid a real defect (the unreachable spend ceilings,
@@ -546,6 +548,24 @@ jobs:
           python scripts/e2e_browser_deploy.py | tee /tmp/e2e_browser_deploy.log
           if grep -q "SKIPPED:" /tmp/e2e_browser_deploy.log; then
             echo "::error::the browser deploy e2e skipped — its world is missing from this job."
+            exit 1
+          fi
+
+      - name: A stranger installs it and signs in, in a real browser
+        working-directory: backend
+        shell: bash
+        # Step 121. The sibling of the step above and its opposite case: the identity
+        # provider this deployment runs itself, on one origin, with nothing else
+        # configured — so it needs no host.docker.internal and no override file, which
+        # is the same sentence the step is about, stated as a job's dependency list.
+        # It is the only thing that proves a person can complete a sign-in under the
+        # policy the front door actually serves; the first run of it found a CSP that
+        # made the form unsubmittable and a refusal that poisoned a pooled connection,
+        # neither of which any HTTP-level check could see.
+        run: |
+          python scripts/e2e_browser_bundled.py | tee /tmp/e2e_browser_bundled.log
+          if grep -q "SKIPPED:" /tmp/e2e_browser_bundled.log; then
+            echo "::error::the bundled-provider browser e2e skipped — its world is missing from this job."
             exit 1
           fi
 
