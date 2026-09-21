@@ -1066,6 +1066,111 @@ class Storage(Protocol):
         an ISO string — so the API projects it the way it projects any denial.
         """
 
+    # --- approvals --------------------------------------------------------------
+    #
+    # Migration 057. Three methods and the first is the control: see `claim_approval`.
+
+    def claim_approval(
+        self,
+        tenant_id: str,
+        record: dict,
+        *,
+        call_id: str,
+        grant_window,
+        request_window,
+    ) -> dict:
+        """Spend a live approval for this call, or open/refresh the ask. **The control.**
+
+        Returns a dict with `outcome` — `"granted"`, `"pending"` or `"denied"` — plus
+        `request_id`, and for a denial the `decided_at`/`decided_by_id` the refusal
+        sentence names. `"granted"` means the yes **has been spent, by this call**, and
+        the caller may proceed; nothing else in the interface can produce that word.
+
+        `record` is `make_approval_record`'s output. `call_id` is the audit correlation
+        id the spending call will be recorded under, written onto the row so an approver
+        can see which call their yes bought. `grant_window` and `request_window` are
+        `timedelta`s from config — passed rather than read here, because this layer is
+        rows in, rows out and a ceiling it read for itself would be a policy decision
+        taken in the wrong building.
+
+        ## Why this is one method and not a read the caller acts on
+
+        **Two identical calls arriving together must not both spend one yes.** A
+        `SELECT … then UPDATE` admits both at every isolation level this product runs at,
+        and the failure — one approval, two payments sent — is the exact failure the
+        feature exists to prevent. So the spend is a single conditional `UPDATE` that
+        takes the row lock and returns a row to exactly one caller, and the reopen is a
+        single `INSERT … ON CONFLICT DO UPDATE` whose `CASE` is the whole state machine.
+        `spend_mcp_call` is the same shape one table over, for the same reason.
+
+        It follows that this method **writes on every call it is asked about**, including
+        the ones it refuses. That is affordable because the broker reaches it only for a
+        tool the agent's permission list actually names, after the budget step has
+        already charged the caller — see `core/approvals.py`, which owns that ordering.
+
+        ## Expiry is read, never swept
+
+        A grant past `granted_until` is not spendable and a pending ask older than
+        `request_window` is not alive, and neither fact is stored: both are the clock
+        compared against a column at the moment of the decision. A fifth state would need
+        a sweeper, and a sweeper makes the row wrong for as long as it takes to run.
+        `approval_display_state` is the same arithmetic for a reader.
+        """
+
+    def approval_requests(
+        self,
+        tenant_id: str,
+        *,
+        agents: "Sequence[str] | None" = None,
+        states: "Sequence[str] | None" = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Approval rows, most recently asked first. `APPROVAL_FIELDS` with `id`.
+
+        `agents` is the filter the approver's screen is built on — the caller holds
+        `editor` on some agents and not others, and *which* is the agent ladder's answer,
+        computed by `access/grants.py` and passed in. An empty sequence means **no
+        agents**, and returns nothing; `None` means no filter. Those two differing is the
+        whole of the method's safety, so it is stated rather than left to a truthiness
+        test at the call site.
+
+        **No `before` paging, unlike the three logs.** This is not a log: it holds live
+        requests, one row per distinct call, and a tenant with a thousand of them has a
+        problem paging would hide. `limit` is capped by the route, and the route says so.
+        """
+
+    def decide_approval(
+        self,
+        tenant_id: str,
+        request_id: str,
+        *,
+        decision: str,
+        by_kind: str,
+        by_id: str,
+        note: str,
+        grant_window,
+        actor: str,
+    ) -> dict | None:
+        """Grant or refuse one ticket, and record it. Returns the row, or None if absent.
+
+        `decision` is one of `APPROVAL_DECISIONS`. Raises `ValueRefused` when the ticket
+        is not `pending` — a screen shows a yes button for a request somebody else
+        answered thirty seconds ago, and that has to be a sentence rather than a second
+        approval.
+
+        **The `admin_audit` row is written in the same transaction**, because this is
+        precisely what that log is: who changed who may do what. `approval.grant` and
+        `approval.deny`, against target kind `approval` and the request id — so the
+        permanent record of every decision taken on this mutable table lives somewhere
+        that is not.
+
+        The detail names the agent, the tool and the window. **It does not carry the
+        arguments**: `AGENT_DETAIL_REDACTED` keeps an agent's prompt out of a record kept
+        forever, and a tool call's arguments are the same class of content wearing a
+        different key — they are already in `audit` under the redaction the tool was
+        vetted with, and this log has no redaction of its own.
+        """
+
     # --- the door's traffic -----------------------------------------------------
     #
     # Not a fourth log. A reader over `audit`, filtered to the rows a run can never have
@@ -8096,6 +8201,11 @@ ADMIN_TARGET_KINDS = frozenset(
         # target and never an actor: a provider vouches for people, and the person who
         # registered it is the one the record names.
         "idp",
+        # `approval` arrives with 114, and it joins for `scim_token`'s reason exactly: a
+        # ticket is something a record is *about* — granted, refused — and never an
+        # actor. The actor is the person who holds `editor` on the agent, a `user`
+        # principal, and `ADMIN_ACTOR_KINDS` is unchanged.
+        "approval",
     }
 )
 
@@ -8291,6 +8401,17 @@ ADMIN_ACTIONS = frozenset(
         # smuggle it in here.
         "role.grant",
         "role.revoke",
+        # Step 114. A person allowing one call an agent's permission list says needs a
+        # yes. It belongs on this list and not in `audit` beside the call, because the
+        # act being recorded is **not a call** — it is somebody deciding that a call may
+        # happen, minutes before it does and possibly never. `migration 057`'s table
+        # holds the live state and is mutable; these two rows are the part that is not.
+        #
+        # Recorded against the request id rather than the agent, which is why `approval`
+        # joins `ADMIN_TARGET_KINDS`: "who allowed REQ-4b2f91c7d3e0" is the question an
+        # incident asks, and the agent, the tool and the window ride in `detail`.
+        "approval.grant",
+        "approval.deny",
         # Step 018, and the first action whose subject is the log itself: how many rows
         # aged out of each table, and where the boundary fell.
         #
@@ -8585,6 +8706,12 @@ def agent_detail(config: dict) -> dict:
         # the prompt say" is not.
         "fields": sorted(k for k in config if k not in AGENT_DETAIL_REDACTED),
         "tools": sorted(permissions.get("tools") or ()),
+        # Step 114. Which of those tools a person has to allow — recorded for `tools`'
+        # own reason, and more sharply: taking a name *off* this list is the one edit
+        # that silently widens what an agent may do without changing what it may reach,
+        # so a log that named the tools and not this would answer "nothing changed" about
+        # the change most worth finding.
+        "approval": sorted(permissions.get("approval") or ()),
         # The scope is the thing an incident asks about — what could this agent reach —
         # and it is patterns from the catalogue rather than anything a person typed free
         # hand. See `_validate_scope_matches_tools`, which is why the two agree.
@@ -8702,3 +8829,205 @@ def make_denial_record(
         "required": required,
         "held": held,
     }
+
+
+# --- approvals ---------------------------------------------------------------------
+#
+# Migration 057. Everything below is shared by both implementations, for the reason the
+# denial log's constants are shared: `audit.credential` once shipped written by Postgres
+# and silently dropped by the fake, with the whole suite green, because nothing named the
+# fields in one place.
+
+# Present from the first row, for the reason `audit.v` is. Bumped when the meaning of a
+# field changes, never when one is added.
+APPROVAL_V = 1
+
+# Every field a row carries, in the order both stores return it. `id` is prepended by the
+# readers, matching `DENIAL_FIELDS`' treatment.
+APPROVAL_FIELDS = (
+    "tenant_id",
+    "v",
+    "request_id",
+    "fingerprint",
+    "agent",
+    "tool",
+    "arguments",
+    "principal_kind",
+    "principal_id",
+    "acting_for",
+    "state",
+    "requested_at",
+    "last_asked_at",
+    "asked_count",
+    "decided_by_kind",
+    "decided_by_id",
+    "decided_at",
+    "note",
+    "granted_until",
+    "spent_at",
+    "spent_call_id",
+)
+
+# The four states, and the CHECK in the column carries the same set — migration 017's
+# precedent, because a rule that lives only in a Python constant is one the next caller
+# widens.
+#
+# There is deliberately no `expired`. A grant that runs out and a request nobody answered
+# are both **derived** from a timestamp and the clock, not stored: a fifth state would
+# have to be written by somebody, which means a sweeper, which means a state that is wrong
+# between the moment it becomes true and the moment the sweeper runs. `claim_approval`
+# reads the clock at the moment it decides, and the screen does the same arithmetic for
+# display. See `approval_display_state`.
+APPROVAL_STATES = frozenset({"pending", "granted", "denied", "spent"})
+
+# What an approver may do to a ticket. The two `admin_audit` actions are named from these
+# — `approval.grant`, `approval.deny` — so the vocabulary the route validates and the
+# vocabulary the log records cannot drift apart.
+APPROVAL_DECISIONS = ("grant", "deny")
+
+# What the model is told to relay. `REQ-` because the one thing it must never be is
+# mistakable for a call id or a run id: `door.CALL_ID_PREFIX` is `door-` for exactly that
+# reason, and a person searching the request log for `REQ-…` should find nothing rather
+# than the wrong thing.
+APPROVAL_REQUEST_PREFIX = "REQ-"
+
+# The phrase a held call's refusal carries and — with no `control` column on an audit row
+# — the only thing that identifies one after the fact. The fourth such marker, and it sits
+# here for the reason the other three do: two layers need the string, `storage` is the
+# lower one and imports nothing from the app, so the definition is at the bottom and
+# whoever needs it binds to it (`core.approvals.REFUSAL_MARKER`).
+#
+# **It must not overlap the other three as a substring**, because the overview classifies
+# a denial with `LIKE '%…%'` against one column and a row that matches two bands is a row
+# counted twice — or, worse, counted in the wrong one forever. `CEILING_REFUSAL_MARKER`'s
+# comment carries the whole argument; `test_the_refusal_markers_do_not_overlap` is what
+# holds it.
+#
+# Without this marker every held call would be filed as an ordinary **policy** denial,
+# which would over-report the broker's permission engine on the one chart built to be
+# trusted at a glance. That is the silent wrong number the three markers above exist to
+# prevent, arriving for a fourth control.
+APPROVAL_REFUSAL_MARKER = "held for approval as"
+
+
+def new_request_id() -> str:
+    """One ticket id. `REQ-` and twelve hex characters.
+
+    Twelve rather than the four in plan 112's illustration, and it is the same arithmetic
+    `door.new_call_id` made: an id is copied out of a model's sentence by a person and
+    searched for, so a collision is not a correlation somebody untangles — it is somebody
+    approving a different call than the one in front of them. `UNIQUE (tenant_id,
+    request_id)` is the backstop; twelve hex is what keeps the backstop from ever firing.
+    """
+    return f"{APPROVAL_REQUEST_PREFIX}{uuid.uuid4().hex[:12]}"
+
+
+def check_approval_state(state: str) -> None:
+    """Guards every write to `approvals`. `check_denial_resource_kind`'s device.
+
+    Extracted for that function's recorded reason: a vocabulary reachable only through a
+    builder is one the *public* storage method accepts in the fake and the column refuses
+    in Postgres, which is the direction `test_storage_contract.py` exists to catch.
+    """
+    if state not in APPROVAL_STATES:
+        raise StorageError(
+            f"'{state}' is not a state an approval can be in; the states are "
+            f"{sorted(APPROVAL_STATES)}"
+        )
+
+
+def make_approval_record(
+    request_id: str,
+    fingerprint: str,
+    agent: str,
+    tool: str,
+    arguments: dict,
+    principal_kind: str,
+    principal_id: str,
+    acting_for: str = "",
+) -> dict:
+    """One `approvals` row as it is first opened, less its tenant. Both stores build it alike.
+
+    Always `pending`: a row is born when a caller asks, and nothing may hand this builder
+    a state — a store that could be told *insert this already granted* is a store with a
+    second way to approve a call, reachable without an approver.
+
+    **`arguments` is the recorded form and this function does not check that it is.** It
+    cannot: what redaction a tool declares is the tool registry's fact and this layer knows
+    no tool. What holds the line is that there is exactly one producer,
+    `core/approvals.py`, which builds it from `audit.redact_arguments` — the same function
+    the audit row goes through, asked rather than reimplemented. The consequence if that
+    ever stops being true is a raw argument on a screen and in a fingerprint, so the
+    producer says so at its own definition too.
+    """
+    check_principal_kind(principal_kind)
+
+    if not request_id.startswith(APPROVAL_REQUEST_PREFIX):
+        raise StorageError(
+            f"'{request_id}' is not a request id — one begins with "
+            f"'{APPROVAL_REQUEST_PREFIX}'. See `new_request_id`."
+        )
+    if not fingerprint:
+        raise StorageError(
+            "an approval needs a fingerprint: it is the identity of the call being "
+            "asked about, and a row without one can never be matched by the next call"
+        )
+    if not agent or not tool:
+        raise StorageError(
+            "an approval names the agent it would be attributed to and the tool it "
+            "would call; a row missing either is one no approver could act on"
+        )
+
+    now = datetime.now(timezone.utc)
+    return {
+        "v": APPROVAL_V,
+        "request_id": request_id,
+        "fingerprint": fingerprint,
+        "agent": agent,
+        "tool": tool,
+        "arguments": dict(arguments),
+        "principal_kind": principal_kind,
+        "principal_id": principal_id,
+        "acting_for": acting_for,
+        "state": "pending",
+        "requested_at": now,
+        "last_asked_at": now,
+        "asked_count": 1,
+        "decided_by_kind": "",
+        "decided_by_id": "",
+        "decided_at": None,
+        "note": "",
+        "granted_until": None,
+        "spent_at": None,
+        "spent_call_id": "",
+    }
+
+
+def approval_display_state(row: dict, now: datetime, request_window) -> str:
+    """What a *reader* should call this row: the four stored states, plus `expired`.
+
+    **The clock is a parameter and the fifth state is never written.** A grant whose
+    window has passed is still `granted` in the column — nothing swept it, because a
+    sweeper would make the row wrong for however long it took to run — and a request
+    nobody answered is still `pending`. Both are `expired` to anybody looking, and
+    `claim_approval` reaches the same conclusion by reading the same clock at the moment
+    it decides. One rule, two readers, no background job.
+
+    A `denied` row does not expire here even though a denial stops binding after
+    `CARNET_APPROVAL_REQUEST_HOURS`: what that window releases is the *ticket*, on the next
+    ask, and until somebody asks again the honest word for the row is the answer the person
+    gave. `claim_approval` owns that reopening, where it belongs — it is the only thing
+    that knows an ask happened.
+    """
+    state = row.get("state")
+    if state == "granted":
+        until = row.get("granted_until")
+        return "expired" if until is not None and until <= now else "granted"
+    if state == "pending":
+        # The request window, measured from the last ask rather than the first: an agent
+        # that is still asking keeps its own ticket alive, which is the behaviour that
+        # makes `asked_count` worth showing.
+        floor = row.get("last_asked_at")
+        if floor is not None and floor <= now - request_window:
+            return "expired"
+    return state or ""

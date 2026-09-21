@@ -164,6 +164,36 @@ def validate(tenant_id: str, agent: dict) -> None:
                 f"tool. Known tools: {', '.join(sorted(known))}"
             )
 
+    # Step 114. The third dimension of a permission list: which of the granted tools a
+    # person has to say yes to before the broker will run them.
+    #
+    # **A list of tool names, and deliberately nothing that evaluates.** `DEFERRED_2.0`
+    # refused gates — *"a permission is a list, not a subprocess"* — and plan 112 named
+    # the way that refusal gets undone: not by adding a gate, but by letting the approval
+    # *rule* become an expression language. So there is no `when amount > 1000`, no
+    # `effect: write` shorthand, and no argument inspection. A reviewer reading this key
+    # can tell what it does without running it, and a screen can render it as checkboxes.
+    #
+    # Every name must also be in `tools`, for `_validate_scope_matches_tools`' reason one
+    # key over: a requirement on a tool the agent cannot call is a rule that can never
+    # fire, which is a silent nothing rather than a safe default.
+    approval = permissions.get("approval", [])
+    if not isinstance(approval, list):
+        raise InvalidAgentError(
+            f"agent '{name}': permissions['approval'] must be a list of tool names, each "
+            "of which this agent is also granted. It is the set of calls a person has to "
+            "allow before the broker will make them."
+        )
+    granted_set = set(permissions["tools"])
+    for tool_name in approval:
+        if tool_name not in granted_set:
+            listed = ", ".join(sorted(granted_set)) or "<none>"
+            raise InvalidAgentError(
+                f"agent '{name}' requires approval for '{tool_name}', which it is not "
+                f"granted. An approval requirement on a tool this agent cannot call can "
+                f"never fire. Granted tools: {listed}"
+            )
+
     # A typo'd limit key would store a ceiling nobody can read back — the agent would
     # look capped in review and would not be. See `KNOWN_LIMITS`.
     for key, value in agent.get("limits", {}).items():

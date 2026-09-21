@@ -518,6 +518,11 @@ def drive():
         # with the credential sentence above the button (107 D5).
         page.wait_for_selector("h2:text-is('Available tools')", timeout=15000)
         check("step five of six is lit", page.locator("ol.steps li.on").inner_text().strip().endswith("Tools"), True)
+        # The credential sentence is fetched after the heading paints, exactly like the
+        # `Done` step below — so it is waited for rather than read on arrival. Without
+        # this the check passed on a fast machine and failed on a slower runner, which
+        # is the worst shape a gate can have: a red that means "this runner was busy".
+        page.wait_for_selector("text=no credential yet", timeout=15000)
         says("and says which credential discovery will use",
              page.locator("section.card:has(h2:text-is('Available tools'))").inner_text(),
              "no credential yet")

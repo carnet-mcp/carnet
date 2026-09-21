@@ -88,6 +88,9 @@ from .base import (
     CONNECTOR_IN_USE,
     connected_accounts,
     DEADLINE_PASSED,
+    APPROVAL_DECISIONS,
+    APPROVAL_FIELDS,
+    check_approval_state,
     DENIAL_FIELDS,
     DERIVED_CONNECTOR_FIELDS,
     FIRST_VERSION,
@@ -275,6 +278,13 @@ class InMemoryStorage:
         # gives in Postgres. Records vanish at exit, which is true of every table here;
         # the contract suite still holds the shape.
         self._denials: list[tuple] = []
+        # Migration 057, and **not** a fourth flat list. The table is one row per distinct
+        # call, keyed by `(tenant, fingerprint)` — its UNIQUE — because an approval is
+        # state rather than a log: the row is upserted as the agent keeps asking and
+        # mutated as a person answers. `_approval_by_request` is the second index, which
+        # in Postgres is the second UNIQUE and here is a scan, on `_agent_by_name`'s
+        # reasoning: a dict of this size makes an index a fiction with a maintenance cost.
+        self._approvals: dict[tuple, dict] = {}
         # Keyed by (issuer, discriminator_claim, discriminator_value) — the same
         # UNIQUE the table declares, so a conflict here is the conflict there.
         self._idps: dict[tuple, dict] = {}
@@ -512,6 +522,10 @@ class InMemoryStorage:
                 self._oauth_apps,
                 self._refresh_locks,
                 self._mcp_budget,
+                # Migration 057: `approvals` cascades from `tenants`, and a fake that
+                # kept a customer's pending approvals past the customer is the drift the
+                # "nothing left behind" test exists to catch.
+                self._approvals,
             ):
                 for key in [k for k in collection if k[0] == tenant_id]:
                     del collection[key]
@@ -1903,6 +1917,208 @@ class InMemoryStorage:
             row = {**copy.deepcopy(found), "tenant_id": tenant_id}
         row["ts"] = row["ts"].isoformat(timespec="milliseconds")
         return row
+
+    # --- approvals --------------------------------------------------------------
+
+    def claim_approval(
+        self,
+        tenant_id: str,
+        record: dict,
+        *,
+        call_id: str,
+        grant_window,
+        request_window,
+    ) -> dict:
+        # `record_denial`'s device on a fourth table, and here it is not optional: this
+        # method is the **control**, so a fake that admitted what Postgres refuses would
+        # be a fake that lets a call through in a test suite and stops it in production.
+        check_principal_kind(record["principal_kind"])
+        check_approval_state(record["state"])
+
+        # Built from `APPROVAL_FIELDS` rather than kept verbatim, which is what the real
+        # store's INSERT does: it names its columns, so it raises on a missing one and
+        # ignores an extra.
+        fresh = {field: record[field] for field in APPROVAL_FIELDS[1:]}
+
+        now = datetime.now(timezone.utc)
+        key = (tenant_id, record["fingerprint"])
+
+        with self._lock:
+            # `append_audit`'s check, for its reason: Postgres refuses an unknown tenant
+            # through the foreign key, and a store that keeps taking rows for a deleted
+            # customer re-populates a table the deletion just emptied.
+            self._require_tenant(tenant_id)
+
+            held = self._approvals.get(key)
+
+            # The two statements Postgres runs, in the order it runs them and under one
+            # lock — this store's whole version of that transaction, the device
+            # `_append_admin` documents. The spend is first and it is conditional on the
+            # window, so a grant nobody used in time is not spendable here either.
+            if (
+                held is not None
+                and held["state"] == "granted"
+                and held["granted_until"] is not None
+                and held["granted_until"] > now
+            ):
+                held["state"] = "spent"
+                held["spent_at"] = now
+                held["spent_call_id"] = call_id
+                return {"outcome": "granted", "request_id": held["request_id"]}
+
+            if held is None:
+                self._approvals[key] = {**copy.deepcopy(fresh), "id": self._next_approval_id()}
+                return {"outcome": "pending", "request_id": fresh["request_id"]}
+
+            # The `CASE` in the real store's `ON CONFLICT DO UPDATE`, spelled out. A
+            # granted-but-expired row and a spent row both reopen; a denial reopens only
+            # once its window has passed, which is what stops a refused agent re-queueing
+            # the same question at the same person all afternoon.
+            held["asked_count"] += 1
+            held["last_asked_at"] = now
+            if held["state"] in ("granted", "spent"):
+                self._reopen(held)
+            elif held["state"] == "denied" and held["decided_at"] is not None:
+                if held["decided_at"] <= now - request_window:
+                    self._reopen(held)
+            elif held["state"] == "pending" and held["last_asked_at"] is not None:
+                # A pending row is kept alive by being asked for, so there is nothing to
+                # reopen — the bump above is the whole of it.
+                pass
+
+            if held["state"] == "denied":
+                return {
+                    "outcome": "denied",
+                    "request_id": held["request_id"],
+                    "decided_at": held["decided_at"],
+                    "decided_by_id": held["decided_by_id"],
+                }
+            return {"outcome": "pending", "request_id": held["request_id"]}
+
+    @staticmethod
+    def _reopen(row: dict) -> None:
+        """Put a settled row back to `pending`, clearing what the last decision left.
+
+        **The request id is kept.** It is what a person has already searched for and what
+        a model may still be relaying, and minting a second one for the same call would
+        make the audit trail of one request read as two.
+        """
+        row["state"] = "pending"
+        row["decided_by_kind"] = ""
+        row["decided_by_id"] = ""
+        row["decided_at"] = None
+        row["note"] = ""
+        row["granted_until"] = None
+        row["spent_at"] = None
+        row["spent_call_id"] = ""
+
+    def _next_approval_id(self) -> int:
+        """One rising id, from the same counter the three logs share. Caller holds the lock.
+
+        Unlike the logs, insertion order is **not** this table's ordering guarantee —
+        `approval_requests` orders by `last_asked_at`, which moves. The id is here because
+        the column is (BIGINT IDENTITY) and because it is what a reader ties a row to; the
+        ordering it gives is incidental and nothing depends on it.
+        """
+        self._log_ids += 1
+        return self._log_ids
+
+    def approval_requests(
+        self,
+        tenant_id: str,
+        *,
+        agents: "Sequence[str] | None" = None,
+        states: "Sequence[str] | None" = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        # `None` is no filter and an empty sequence is *no agents*. The two differing is
+        # the whole of this method's safety — see the protocol — so it is a membership
+        # test against a set built from `None`, never a truthiness test.
+        wanted_agents = None if agents is None else set(agents)
+        wanted_states = None if states is None else set(states)
+
+        with self._lock:
+            rows = [
+                {**copy.deepcopy(row), "tenant_id": tid}
+                for (tid, _), row in self._approvals.items()
+                if tid == tenant_id
+                and (wanted_agents is None or row["agent"] in wanted_agents)
+                and (wanted_states is None or row["state"] in wanted_states)
+            ]
+
+        # Most recently asked first, ties broken by id so the order is total — the same
+        # property `ORDER BY last_asked_at DESC, id DESC` gives in the real store, and the
+        # reason it is spelled there rather than left to the engine.
+        rows.sort(key=lambda row: (row["last_asked_at"], row["id"]), reverse=True)
+        if limit is not None:
+            rows = rows[:limit] if limit > 0 else []
+        return rows
+
+    def decide_approval(
+        self,
+        tenant_id: str,
+        request_id: str,
+        *,
+        decision: str,
+        by_kind: str,
+        by_id: str,
+        note: str,
+        grant_window,
+        actor: str,
+    ) -> dict | None:
+        if decision not in APPROVAL_DECISIONS:
+            raise StorageError(
+                f"'{decision}' is not something an approver can do; the decisions are "
+                f"{list(APPROVAL_DECISIONS)}"
+            )
+        check_principal_kind(by_kind)
+
+        with self._lock:
+            found = next(
+                (
+                    row
+                    for (tid, _), row in self._approvals.items()
+                    if tid == tenant_id and row["request_id"] == request_id
+                ),
+                None,
+            )
+            if found is None:
+                return None
+
+            now = datetime.now(timezone.utc)
+            if found["state"] != "pending":
+                raise ValueRefused(
+                    f"{request_id} is already {found['state']} and cannot be decided "
+                    "again. Whoever holds this screen open has an answer somebody else "
+                    "gave; reload it."
+                )
+            # Built before anything is mutated, so an unusable actor leaves the row
+            # untouched rather than decided-and-unrecorded. `_append_admin`'s ordering,
+            # and the property Postgres gets from the transaction.
+            record = make_admin_record(
+                f"approval.{decision}",
+                "approval",
+                request_id,
+                actor,
+                {
+                    "agent": found["agent"],
+                    "tool": found["tool"],
+                    "asked_count": found["asked_count"],
+                    "minutes": int(grant_window.total_seconds() // 60)
+                    if decision == "grant"
+                    else 0,
+                },
+            )
+
+            found["state"] = "granted" if decision == "grant" else "denied"
+            found["decided_by_kind"] = by_kind
+            found["decided_by_id"] = by_id
+            found["decided_at"] = now
+            found["note"] = note
+            found["granted_until"] = now + grant_window if decision == "grant" else None
+
+            self._append_admin(tenant_id, record)
+            return {**copy.deepcopy(found), "tenant_id": tenant_id}
 
     # --- the door's traffic -----------------------------------------------------
 
