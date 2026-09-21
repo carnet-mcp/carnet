@@ -10,16 +10,6 @@ An agent's `permissions` field has two dimensions:
         },
     }
 
-Since step 114 there is a third key, `approval`, and **this module does not read it.**
-It is the list of granted tools a person has to say yes to before the broker will run
-them, and it is checked at step 2.5 by `core/approvals.py` — after this function has
-already allowed the call. The separation is the point: `check` answers *may this agent do
-this at all*, purely, from rows, with no clock and no ticket; approval answers *has
-somebody allowed this particular call in the last fifteen minutes*, which is neither pure
-nor a property of the agent. Folding the second into this function would put a storage
-read and a window on the one code path `door.simulate` calls precisely because it touches
-nothing.
-
 Grants are written against **resource types**, not argument names. A tool declares
 which of its arguments are resources of which type (see tools/base.py), so one
 `github.repo` grant covers every tool that touches a repo — including tools we didn't

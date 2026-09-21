@@ -471,52 +471,6 @@ MCP_MAX_ACTING_FOR_BYTES = int(
     os.environ.get("CARNET_MCP_MAX_ACTING_FOR_BYTES") or 16384
 )
 
-# --- approvals, step 114 -------------------------------------------------------------
-#
-# How long a yes stays spendable, and how long a ticket nobody has answered stays alive.
-# Both in the units a person would set them in, because these two are read by whoever is
-# deciding a policy rather than by a machine: minutes for the first, hours for the second.
-#
-# **The grant window exists because *once* alone is unusable.** An approval admits one
-# identical call and is then spent (see `docs/plans/114`), and between the approver
-# clicking yes and the agent's next attempt there is a person walking back to their desk.
-# Fifteen minutes is long enough for any retry loop and short enough that a yes nobody
-# used is not still sitting there tomorrow — an unspent approval expires, and the next
-# identical call opens the ticket again rather than finding a stale one.
-#
-# **Unlike every other dial here, zero does not mean off.** `MCP_CALLS_PER_DAY` and its
-# neighbours read `<= 0` as *an operator's explicit decision to run unmetered*, which is a
-# widening: the ceiling stops refusing. The same reading here would be a *narrowing* that
-# looks like a widening — a grant window of zero makes every approval expire the instant
-# it is given, so nothing would ever be admitted and the agent would loop forever on a
-# tool somebody keeps approving. There is no "off" for these, because the way to turn an
-# approval requirement off is to take the tool out of the agent's `approval` list, where
-# the decision is written down and versioned. A value below one is refused into the
-# default rather than honoured.
-APPROVAL_GRANT_MINUTES = max(
-    1, int(os.environ.get("CARNET_APPROVAL_GRANT_MINUTES") or 15)
-)
-
-# How long a ticket lives without being asked for again, and how long a refusal binds.
-#
-# Measured from the **last** ask rather than the first, which is what makes an agent that
-# is still asking keep its own ticket alive and an agent that has given up let it go. The
-# same window releases a denial: *no, not today* and *no, never* are different answers,
-# and a table that can only honestly store the first has to let the question be asked
-# again eventually. A day is that eventually — long enough that a refused agent is not
-# re-queueing the same question at the same person, short enough that the answer is not
-# still binding when the circumstances it was given in have gone.
-APPROVAL_REQUEST_HOURS = max(
-    1, int(os.environ.get("CARNET_APPROVAL_REQUEST_HOURS") or 24)
-)
-
-# The most characters an approver's note may carry. **The one value on an `approvals` row
-# a person types**, which is what makes it the one that needs a bound: everything else is
-# derived from a call the door already measured (`MCP_MAX_CALL_BYTES`). Bounded at the
-# route, on `access_denials.resource_id`'s recorded lesson — an unbounded TEXT column
-# somebody can write to is a column somebody writes a megabyte into.
-APPROVAL_NOTE_MAX = 500
-
 # Environment variables that belong to the platform, never to a connector — step 050,
 # blocker B1 of plan 049.
 #

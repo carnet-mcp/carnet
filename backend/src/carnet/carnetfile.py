@@ -508,22 +508,6 @@ class _Reader:
         if not isinstance(name, str):
             self.refuse(where, "an agent's name must be a string")
         spec = self.mapping(spec, where)
-        # **`approval` is refused here rather than being absent from `AGENT_KEYS`**, so
-        # the sentence says why rather than listing the two keys that are allowed. Step
-        # 114: an approval requirement is a call held until somebody who holds `editor`
-        # on the agent allows it, on a screen, signed in. This artefact has no database
-        # to hold the ticket past a restart, no identity provider to say who is asking,
-        # and no browser to answer in — so the key would store a rule nobody in this
-        # deployment can ever satisfy, which is an agent whose granted tool silently
-        # never works.
-        if isinstance(spec, dict) and "approval" in spec:
-            self.refuse(
-                f"{where}.approval",
-                "an approval requirement needs somebody to give it — a person holding "
-                "'editor' on this agent, signed in, on a screen. A file-borne door has "
-                "no sign-in and no durable store, so a held call could never be "
-                "released. Run the platform artefact if you need approvals.",
-            )
         self.only_keys(spec, AGENT_KEYS, where)
 
         granted = self.strings(spec.get("tools"), f"{where}.tools", required=True)
